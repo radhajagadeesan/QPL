@@ -8,6 +8,12 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "phase1: marks tests as Phase 1 contract tests"
     )
+    config.addinivalue_line(
+        "markers", "phase2: marks tests as Phase 2 TenTerm tests"
+    )
+    config.addinivalue_line(
+        "markers", "integration: marks tests as integration tests"
+    )
 
 
 DEFAULT_SEED = int(os.environ.get("QPL_SEED", "12345"))
