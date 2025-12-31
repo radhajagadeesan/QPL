@@ -40,3 +40,6 @@ env/
 # Misc
 .DS_Store
 tmp/
+
+# Private notes/messages
+RadhaMSGtoClaude/

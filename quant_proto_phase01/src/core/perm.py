@@ -78,6 +78,29 @@ class WirePerm:
     def apply_new_to_old(self, i_new: int) -> int:
         return self.new_to_old[i_new]
 
+    def restrict(self, indices: "Set[int]") -> "WirePerm":
+        """Restrict permutation to a subset of wire indices.
+
+        Returns a new permutation on len(indices) wires that represents
+        the behavior of this permutation restricted to the given indices.
+
+        The indices are mapped to [0, len(indices)) in sorted order.
+        """
+        sorted_indices = sorted(indices)
+        index_map = {old: new for new, old in enumerate(sorted_indices)}
+
+        new_to_old = []
+        for i in sorted_indices:
+            old_target = self.new_to_old[i]
+            if old_target not in index_map:
+                raise ValueError(
+                    f"Restriction invalid: wire {i} maps to {old_target} "
+                    f"which is not in the restriction set {indices}"
+                )
+            new_to_old.append(index_map[old_target])
+
+        return WirePerm(len(indices), new_to_old)
+
 
 def identity(n: int) -> WirePerm:
     return WirePerm(n=n, new_to_old=list(range(n)))

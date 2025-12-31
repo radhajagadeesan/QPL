@@ -12,6 +12,7 @@ from lang.terms import (
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR,
+    Feedback,
     H, S, CX,
 )
 
@@ -71,6 +72,35 @@ def type_of(t: Term) -> DomCod:
         dom = Ten(t.a, Plus(t.b, t.c))
         cod = Plus(Ten(t.a, t.b), Ten(t.a, t.c))
         return (dom, cod)
+
+    if isinstance(t, Feedback):
+        # Feedback_k(body) : A → B
+        # where body : (A ⊗ X) → (B ⊗ X) with width(X) = k
+        body_dom, body_cod = type_of(t.body)
+        k = t.k
+        body_width = width(body_dom)
+        if width(body_cod) != body_width:
+            raise TypeCheckError(
+                f"Feedback body must have equal input/output width, got "
+                f"dom width {body_width}, cod width {width(body_cod)}"
+            )
+        if k < 0 or k > body_width:
+            raise TypeCheckError(
+                f"Feedback loop size k={k} out of range for body width {body_width}"
+            )
+        # The external type has width = body_width - k
+        # We return a "synthetic" type based on width
+        # For Phase 3, we use a width-based approach:
+        # dom/cod of Feedback is (body_width - k) wires
+        from lang.types import Q
+        external_width = body_width - k
+        if external_width == 0:
+            raise TypeCheckError("Feedback cannot have zero external wires")
+        # Build type as Q^external_width
+        ext_ty = Q()
+        for _ in range(external_width - 1):
+            ext_ty = Ten(ext_ty, Q())
+        return (ext_ty, ext_ty)
 
     if isinstance(t, (H, S)):
         n = width(t.ty_total)

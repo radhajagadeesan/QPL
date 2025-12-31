@@ -133,6 +133,22 @@ class DistR:
     c: Ty
 
 
+# -- Feedback (Phase 3 GOI)
+
+@dataclass(frozen=True, slots=True)
+class Feedback:
+    """Feedback_k(body) : explicit GOI feedback operator.
+
+    If body : (A ⊗ X) → (B ⊗ X) with width(X) = k,
+    then Feedback_k(body) : A → B.
+
+    This is the ONLY construct that may introduce cycles.
+    Feedback is explicit and fenced—no implicit GOI elsewhere.
+    """
+    k: int           # number of loop wires
+    body: "Term"     # the body term
+
+
 # -- Gate terms (Phase 0 minimal)
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +199,7 @@ Term = Union[
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR,
+    Feedback,
     H, S, CX,
 ]
 

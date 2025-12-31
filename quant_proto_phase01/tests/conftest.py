@@ -12,6 +12,9 @@ def pytest_configure(config):
         "markers", "phase2: marks tests as Phase 2 TenTerm tests"
     )
     config.addinivalue_line(
+        "markers", "phase3: marks tests as Phase 3 GOI feedback tests"
+    )
+    config.addinivalue_line(
         "markers", "integration: marks tests as integration tests"
     )
 
