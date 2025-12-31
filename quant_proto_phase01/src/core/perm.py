@@ -28,16 +28,52 @@ from typing import List
 from lang.types import Ty, Ten, Plus, width
 
 
-@dataclass(frozen=True, slots=True)
 class WirePerm:
-    n: int
-    new_to_old: List[int]
+    """Wire permutation representing wire reindexing.
 
-    def __post_init__(self) -> None:
-        if len(self.new_to_old) != self.n:
+    Can be constructed either as:
+        WirePerm([1, 0, 2, 3])  # single list arg, n inferred
+        WirePerm(4, [1, 0, 2, 3])  # explicit n and list
+        WirePerm(n=4, new_to_old=[1, 0, 2, 3])  # keyword args
+    """
+    __slots__ = ('n', 'new_to_old')
+
+    def __init__(self, n_or_list=None, new_to_old=None, *, n=None):
+        # Handle keyword argument 'n'
+        if n is not None:
+            # Called with n=... keyword arg
+            actual_n = n
+            actual_list = list(new_to_old) if new_to_old is not None else list(n_or_list)
+        elif new_to_old is not None:
+            # Called with two positional args: WirePerm(4, [1,0,2,3])
+            actual_n = n_or_list
+            actual_list = list(new_to_old)
+        else:
+            # Called with single arg: WirePerm([1,0,2,3])
+            actual_list = list(n_or_list)
+            actual_n = len(actual_list)
+
+        if len(actual_list) != actual_n:
             raise ValueError("WirePerm length mismatch")
-        if sorted(self.new_to_old) != list(range(self.n)):
-            raise ValueError(f"WirePerm is not a permutation: {self.new_to_old}")
+        if sorted(actual_list) != list(range(actual_n)):
+            raise ValueError(f"WirePerm is not a permutation: {actual_list}")
+
+        object.__setattr__(self, 'n', actual_n)
+        object.__setattr__(self, 'new_to_old', actual_list)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("WirePerm is immutable")
+
+    def __hash__(self):
+        return hash((self.n, tuple(self.new_to_old)))
+
+    def __eq__(self, other):
+        if not isinstance(other, WirePerm):
+            return NotImplemented
+        return self.n == other.n and self.new_to_old == other.new_to_old
+
+    def __repr__(self):
+        return f"WirePerm(n={self.n}, new_to_old={self.new_to_old})"
 
     def apply_new_to_old(self, i_new: int) -> int:
         return self.new_to_old[i_new]
