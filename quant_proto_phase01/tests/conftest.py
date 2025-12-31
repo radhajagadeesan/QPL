@@ -17,6 +17,12 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: marks tests as integration tests"
     )
+    config.addinivalue_line(
+        "markers", "phase4a: marks tests as Phase 4A Extraction++ tests"
+    )
+    config.addinivalue_line(
+        "markers", "regression: marks tests as regression tests for Phase 0-3 lockdown"
+    )
 
 
 DEFAULT_SEED = int(os.environ.get("QPL_SEED", "12345"))

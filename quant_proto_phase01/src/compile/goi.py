@@ -3,7 +3,7 @@
 
 This module provides:
 - GOI data structures (GateAtom, LoopSpec, GOIArtifact)
-- Normalization pass (normalize_goi)
+- Physicalization helper (physicalize_wires)
 - Yankability check (is_yankable)
 - Feedback collapse (collapse_feedback)
 - Extraction pass (try_extract)
@@ -13,6 +13,11 @@ Design invariants (from Phase 3 spec):
 - No gate → no SWAPs unless materialize=True
 - Extraction is sound but intentionally incomplete
 - Failure to extract is not an error
+
+Phase 4A Design Decision:
+- GateAtom.wires are LOGICAL (pre-routing) indices
+- Physicalization is deferred to the backend
+- Only the backend may compute physical wire positions
 """
 
 from __future__ import annotations
@@ -25,17 +30,34 @@ from core.perm import WirePerm, identity, compose
 
 @dataclass(frozen=True, slots=True)
 class GateAtom:
-    """Opaque gate atom with explicit wire indices.
+    """Opaque gate atom with effective wire indices.
 
-    Gate atoms are opaque - normalization may only rewrite wire indices,
-    never the gate_name or any internal parameters.
+    Gate atoms are opaque - extraction may reason about wire support
+    but never inspects or modifies the gate_name or internal parameters.
+
+    The wires field contains EFFECTIVE indices - the perm at emit time
+    is already applied, capturing the routing state when the gate was emitted.
     """
     gate_name: str
-    wires: Tuple[int, ...]  # physical wire indices
+    wires: Tuple[int, ...]  # effective wire indices (perm applied at emit)
 
     def support(self) -> Set[int]:
         """Return the set of wires this gate touches."""
         return set(self.wires)
+
+
+def physicalize_wires(atom: GateAtom, perm: WirePerm) -> Tuple[int, ...]:
+    """Compute physical wire positions for a gate atom.
+
+    This is the ONLY function that should convert logical to physical.
+    Called only at backend lowering time.
+    """
+    return tuple(perm.apply_new_to_old(w) for w in atom.wires)
+
+
+def physical_support(atom: GateAtom, perm: WirePerm) -> Set[int]:
+    """Compute the physical wire support of a gate under a permutation."""
+    return set(physicalize_wires(atom, perm))
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +75,10 @@ class GOIArtifact:
     """GOI intermediate representation.
 
     Contains boundary info, routing permutation, gate atoms, and loop specs.
+
+    - atoms contain LOGICAL wire indices
+    - perm defines the routing from logical to physical
+    - Physical positions = perm.apply(logical)
     """
     n_in: int
     n_out: int
@@ -71,7 +97,11 @@ class GOIArtifact:
 # Result types for extraction
 @dataclass(frozen=True, slots=True)
 class Extracted:
-    """Successful extraction result: flat circuit + boundary permutation."""
+    """Successful extraction result: flat circuit + boundary permutation.
+
+    atoms contain LOGICAL wire indices.
+    perm maps logical to physical for the external boundary.
+    """
     atoms: Tuple[GateAtom, ...]
     perm: WirePerm
 
@@ -83,20 +113,24 @@ ExtractResult = Union[Extracted, GOIArtifact]
 def loop_wires(goi: GOIArtifact, loop: LoopSpec) -> Set[int]:
     """Return the set of wire indices that belong to this loop.
 
-    Canonical form: last k wires of the output.
+    Canonical form: last k wires of the output (physical positions).
     """
     start = goi.n_out - loop.k
     return set(range(start, goi.n_out))
 
 
 def normalize_goi(goi: GOIArtifact) -> GOIArtifact:
-    """Push all structural effects (permutation) into gate atom wire indices.
+    """Push permutation into gate atom wire indices.
 
     After normalization:
     - perm is identity
     - atom wires are rewritten via the original perm
     - loop structure is preserved verbatim
     - gate types and order are unchanged (firewall rule)
+
+    Note: For GOIArtifacts created by compile_goi, atoms already have
+    effective indices (perm applied at emit time). This function is
+    mainly useful for manually constructed GOIArtifacts in tests.
     """
     perm = goi.perm
     new_atoms = []
@@ -118,8 +152,8 @@ def normalize_goi(goi: GOIArtifact) -> GOIArtifact:
 def is_yankable(goi: GOIArtifact) -> bool:
     """Check if all loops in the GOI artifact are eliminable.
 
-    A loop is yankable iff no gate atom touches any loop wire
-    after normalization.
+    A loop is yankable iff no gate atom touches any loop wire.
+    Atom wires are effective indices (perm already applied at emit time).
 
     This check is deliberately conservative:
     - False negatives are acceptable (sound but incomplete)
@@ -128,7 +162,21 @@ def is_yankable(goi: GOIArtifact) -> bool:
     for loop in goi.loops:
         L = loop_wires(goi, loop)
         for atom in goi.atoms:
-            if any(w in L for w in atom.wires):
+            if atom.support() & L:
+                return False
+    return True
+
+
+def is_yankable_under_perm(goi: GOIArtifact, perm: WirePerm) -> bool:
+    """Check yankability under a specific permutation.
+
+    Note: With effective wire indices, atoms already have the perm applied.
+    This function is retained for API compatibility but uses atom.wires directly.
+    """
+    for loop in goi.loops:
+        L = loop_wires(goi, loop)
+        for atom in goi.atoms:
+            if atom.support() & L:
                 return False
     return True
 
@@ -139,7 +187,9 @@ def collapse_feedback(goi: GOIArtifact) -> WirePerm:
     When a loop is yankable, the feedback wires can be "erased" and only
     the external boundary routing is retained.
 
-    Precondition: goi should be normalized and yankable.
+    Precondition: goi should be yankable.
+
+    Returns a perm that maps external logical wires to external physical wires.
     """
     if not goi.loops:
         return goi.perm
@@ -153,17 +203,14 @@ def collapse_feedback(goi: GOIArtifact) -> WirePerm:
         raise ValueError("Cannot collapse feedback with no external wires")
 
     # The boundary permutation is the restriction of goi.perm to external wires
-    # Since we're normalized, perm should be identity, but we still compute
-    # the restriction properly.
-    #
-    # External wires are indices [0, external_size)
+    # External wires are indices [0, external_size) in both logical and physical space
     # We build a new permutation on external_size wires.
     new_to_old = []
     for i in range(external_size):
         old = goi.perm.apply_new_to_old(i)
         if old >= external_size:
             # This wire maps to a loop wire - this shouldn't happen
-            # if properly yankable and normalized
+            # if properly yankable
             raise ValueError(f"External wire {i} maps to loop wire {old}")
         new_to_old.append(old)
 
@@ -175,26 +222,31 @@ def try_extract(goi: GOIArtifact) -> ExtractResult:
 
     Returns:
     - Extracted(atoms, perm) if all loops are yankable
-    - The original GOIArtifact (as ResidualGOI) if extraction fails
+    - The original GOIArtifact (as residual) if extraction fails
 
     Failure is not an error - it preserves all information for later refinement.
+
+    Note: Extracted.atoms contain LOGICAL wire indices.
     """
     # If no loops, extraction is trivial
     if not goi.loops:
         return Extracted(atoms=goi.atoms, perm=goi.perm)
 
-    # Normalize first
-    goi_norm = normalize_goi(goi)
-
-    # Check yankability
-    if not is_yankable(goi_norm):
-        # Return the original (not normalized) as residual
-        # to preserve all structural information
+    # Check yankability (uses physical positions internally)
+    if not is_yankable(goi):
+        # Return as residual to preserve all structural information
         return goi
 
     # Collapse the feedback to a boundary permutation
-    new_perm = collapse_feedback(goi_norm)
+    new_perm = collapse_feedback(goi)
 
     # Filter atoms to only those on external wires
     # (loop-touching atoms would have failed yankability check)
-    return Extracted(atoms=goi_norm.atoms, perm=new_perm)
+    # Atoms stay in logical form
+    external_size = goi.n_out - goi.loops[0].k
+    external_atoms = tuple(
+        atom for atom in goi.atoms
+        if all(w < external_size for w in atom.wires)
+    )
+
+    return Extracted(atoms=external_atoms, perm=new_perm)

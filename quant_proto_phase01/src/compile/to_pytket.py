@@ -27,8 +27,9 @@ from backends.materialize import swaps_for_perm, apply_swaps
 from compile.goi import (
     GateAtom, LoopSpec, GOIArtifact, Extracted,
     normalize_goi, is_yankable, collapse_feedback, try_extract,
-    ExtractResult,
+    ExtractResult, physicalize_wires,
 )
+from compile.extract_v2 import try_extract_v2
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,12 +277,17 @@ def compile_goi(term: Term, *, materialize: bool = False, explain: bool = False)
     log: List[str] = []
 
     def emit_atom(gate_name: str, wires: List[int], offset: int = 0) -> None:
-        """Emit a gate atom with physical wire indices."""
+        """Emit a gate atom with effective wire indices.
+
+        The perm is applied at emit time to capture the routing state.
+        This ensures gates appear at the correct physical positions
+        when structure and gates are interleaved.
+        """
         global_wires = [w + offset for w in wires]
-        phys_wires = tuple(p.apply_new_to_old(g) for g in global_wires)
-        atoms.append(GateAtom(gate_name, phys_wires))
+        effective_wires = tuple(p.apply_new_to_old(g) for g in global_wires)
+        atoms.append(GateAtom(gate_name, effective_wires))
         if explain:
-            log.append(f"{gate_name} local {wires} + offset {offset} -> physical {phys_wires}")
+            log.append(f"{gate_name} local {wires} + offset {offset} -> effective {effective_wires}")
 
     def embed_local_perm(local_perm: WirePerm, offset: int) -> WirePerm:
         """Embed a local permutation into the global n-wire space."""
@@ -411,14 +417,15 @@ def compile_goi(term: Term, *, materialize: bool = False, explain: bool = False)
         loops=tuple(loops)
     )
 
-    # Attempt extraction
-    result = try_extract(goi)
+    # Attempt extraction (Phase 4A: use v2 which delegates to v1 first)
+    result = try_extract_v2(goi)
 
     if isinstance(result, Extracted):
         # Use the extracted perm's size for circuit
         ext_n = result.perm.n
         circ = Circuit(ext_n)
 
+        # Emit atoms directly - they already have effective wire indices
         for atom in result.atoms:
             if atom.gate_name == "H":
                 circ.H(atom.wires[0])
@@ -428,6 +435,8 @@ def compile_goi(term: Term, *, materialize: bool = False, explain: bool = False)
                 circ.CX(atom.wires[0], atom.wires[1])
             else:
                 raise ValueError(f"Unknown gate: {atom.gate_name}")
+            if explain:
+                log.append(f"Emit {atom.gate_name} on wires {atom.wires}")
 
         final_perm = result.perm
 
