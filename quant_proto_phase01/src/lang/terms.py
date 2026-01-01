@@ -149,7 +149,7 @@ class Feedback:
     body: "Term"     # the body term
 
 
-# -- Gate terms (Phase 0 minimal)
+# -- Gate terms (Phase 0 minimal + Phase 4C extensions)
 
 @dataclass(frozen=True, slots=True)
 class H:
@@ -194,13 +194,189 @@ class CX:
             object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
 
 
+# -- Phase 4C: Additional fixed gates
+
+@dataclass(frozen=True, slots=True)
+class X:
+    """Pauli-X gate on wire i."""
+    i: int = 0
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class Y:
+    """Pauli-Y gate on wire i."""
+    i: int = 0
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class Z:
+    """Pauli-Z gate on wire i."""
+    i: int = 0
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class T:
+    """T gate (π/4 phase) on wire i."""
+    i: int = 0
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class Tdg:
+    """T-dagger gate (inverse of T) on wire i."""
+    i: int = 0
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class Sdg:
+    """S-dagger gate (inverse of S) on wire i."""
+    i: int = 0
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class CZ:
+    """Controlled-Z gate with control i and target j."""
+    i: int = 0
+    j: int = 1
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class CCX:
+    """Toffoli (CCX) gate with controls i, j and target k."""
+    i: int = 0
+    j: int = 1
+    k: int = 2
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Ten(Q(), Q()), Q()))
+
+
+# -- Phase 4C: Parameterized gates
+
+@dataclass(frozen=True, slots=True)
+class Rz:
+    """Rz(θ) rotation around Z-axis on wire i.
+
+    θ is in radians.
+    """
+    theta: float
+    i: int = 0
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class Rx:
+    """Rx(θ) rotation around X-axis on wire i.
+
+    θ is in radians.
+    """
+    theta: float
+    i: int = 0
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class Ry:
+    """Ry(θ) rotation around Y-axis on wire i.
+
+    θ is in radians.
+    """
+    theta: float
+    i: int = 0
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class Phase:
+    """Global phase gate e^{iφ} on wire i.
+
+    φ is in radians. This applies a phase rotation.
+    """
+    phi: float
+    i: int = 0
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class CRz:
+    """Controlled-Rz(θ) with control i and target j.
+
+    θ is in radians.
+    """
+    theta: float
+    i: int = 0
+    j: int = 1
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
 Term = Union[
     Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR,
     Feedback,
+    # Phase 0 gates
     H, S, CX,
+    # Phase 4C fixed gates
+    X, Y, Z, T, Tdg, Sdg, CZ, CCX,
+    # Phase 4C parameterized gates
+    Rz, Rx, Ry, Phase, CRz,
 ]
 
 

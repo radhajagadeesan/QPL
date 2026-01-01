@@ -15,7 +15,12 @@ from lang.terms import (
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR,
+    # Phase 0 gates
     H, S, CX,
+    # Phase 4C fixed gates
+    X, Y, Z, T, Tdg, Sdg, CZ, CCX,
+    # Phase 4C parameterized gates
+    Rz, Rx, Ry, Phase, CRz,
     Feedback,
 )
 from compile.to_pytket import compile, compile_goi, Compiled, CompiledGOI
@@ -64,9 +69,16 @@ def get_gate_names(circ: Circuit) -> List[str]:
 def is_unitary_only(circ: Circuit) -> bool:
     """Check if circuit contains only unitary gates (no measurements, etc.)."""
     # For now, just check for known unitary gates
-    allowed = {"H", "S", "CX", "SWAP", "X", "Y", "Z", "T", "Tdg", "Sdg", "Rz", "Rx", "Ry"}
+    allowed = {
+        # Phase 0
+        "H", "S", "CX", "SWAP",
+        # Phase 4C fixed
+        "X", "Y", "Z", "T", "TDG", "SDG", "CZ", "CCX",
+        # Phase 4C parameterized
+        "RZ", "RX", "RY", "U1", "CRZ",
+    }
     for cmd in circ.get_commands():
-        if cmd.op.type.name.upper() not in {g.upper() for g in allowed}:
+        if cmd.op.type.name.upper() not in allowed:
             return False
     return True
 
@@ -403,3 +415,142 @@ def non_swap_signature(circ: Circuit) -> List[CmdSig]:
         wires = tuple(int(q.index[0]) for q in cmd.qubits)
         result.append(CmdSig(op=name, qubits=wires))
     return result
+
+
+# -----------------------------------------------------------------
+# Phase 4C corpus builders
+# -----------------------------------------------------------------
+
+import math
+
+def mk_phase4c_fixed_gates_corpus() -> Dict[str, Term]:
+    """Phase 4C fixed gates corpus."""
+    q = Q()
+    qq = Ten(Q(), Q())
+    q3 = qpow(3)
+
+    return {
+        "p4c_x": X(0, q),
+        "p4c_y": Y(0, q),
+        "p4c_z": Z(0, q),
+        "p4c_t": T(0, q),
+        "p4c_tdg": Tdg(0, q),
+        "p4c_sdg": Sdg(0, q),
+        "p4c_cz": CZ(0, 1, qq),
+        "p4c_ccx": CCX(0, 1, 2, q3),
+        "p4c_seq_fixed": Seq(X(0, qq), Y(1, qq), Z(0, qq)),
+        "p4c_mixed_fixed": Seq(H(0, qq), T(1, qq), CX(0, 1, qq)),
+    }
+
+
+def mk_phase4c_param_gates_corpus() -> Dict[str, Term]:
+    """Phase 4C parameterized gates corpus."""
+    q = Q()
+    qq = Ten(Q(), Q())
+    theta = math.pi / 4
+    phi = math.pi / 3
+
+    return {
+        "p4c_rz": Rz(theta, 0, q),
+        "p4c_rx": Rx(theta, 0, q),
+        "p4c_ry": Ry(theta, 0, q),
+        "p4c_phase": Phase(phi, 0, q),
+        "p4c_crz": CRz(theta, 0, 1, qq),
+        "p4c_seq_param": Seq(Rz(theta, 0, qq), Rx(theta, 1, qq)),
+        "p4c_mixed_param": Seq(H(0, qq), Rz(theta, 0, qq), CX(0, 1, qq)),
+    }
+
+
+def mk_phase4c_with_structure_corpus() -> Dict[str, Term]:
+    """Phase 4C gates with structure."""
+    qq = Ten(Q(), Q())
+    q3 = qpow(3)
+    theta = math.pi / 4
+
+    return {
+        "p4c_twist_t": Seq(TwistTen(Q(), Q()), T(0, qq)),
+        "p4c_t_twist_t": Seq(T(0, qq), TwistTen(Q(), Q()), T(1, qq)),
+        "p4c_assoc_rz": Seq(AssocTenL(Q(), Q(), Q()), Rz(theta, 0, q3)),
+        "p4c_tenterm_fixed": TenTerm(X(0, Q()), Y(0, Q())),
+        "p4c_tenterm_param": TenTerm(Rz(theta, 0, Q()), Rx(theta, 0, Q())),
+    }
+
+
+def mk_phase4c_feedback_yankable_corpus() -> Dict[str, Term]:
+    """Phase 4C feedback cases that should extract (gates off loop wires)."""
+    q3 = qpow(3)
+    q4 = qpow(4)
+    theta = math.pi / 4
+
+    return {
+        # Fixed gates on external wires, loop on wire 2
+        "p4c_fb_x_yankable": Feedback(k=1, body=X(0, q3)),
+        "p4c_fb_t_yankable": Feedback(k=1, body=T(1, q3)),
+        "p4c_fb_cz_yankable": Feedback(k=1, body=CZ(0, 1, q3)),
+        # Parameterized gates on external wires
+        "p4c_fb_rz_yankable": Feedback(k=1, body=Rz(theta, 0, q3)),
+        "p4c_fb_rx_yankable": Feedback(k=1, body=Rx(theta, 1, q3)),
+        # Mixed gates
+        "p4c_fb_mixed_yankable": Feedback(k=1, body=Seq(X(0, q3), Rz(theta, 1, q3))),
+        # k=2 cases
+        "p4c_fb_k2_yankable": Feedback(k=2, body=Seq(T(0, q4), Sdg(1, q4))),
+    }
+
+
+def mk_phase4c_feedback_residual_corpus() -> Dict[str, Term]:
+    """Phase 4C feedback cases that should remain residual (gates on loop wires)."""
+    q3 = qpow(3)
+    q4 = qpow(4)
+    theta = math.pi / 4
+
+    return {
+        # Fixed gates on loop wire 2
+        "p4c_fb_x_on_loop": Feedback(k=1, body=X(2, q3)),
+        "p4c_fb_t_on_loop": Feedback(k=1, body=T(2, q3)),
+        # Parameterized gates on loop wire
+        "p4c_fb_rz_on_loop": Feedback(k=1, body=Rz(theta, 2, q3)),
+        # Two-wire gates spanning into loop
+        "p4c_fb_cz_spans_loop": Feedback(k=1, body=CZ(1, 2, q3)),
+        "p4c_fb_crz_spans_loop": Feedback(k=1, body=CRz(theta, 1, 2, q3)),
+        # CCX with target on loop
+        "p4c_fb_ccx_on_loop": Feedback(k=1, body=CCX(0, 1, 2, q3)),
+        # Mixed with one on loop
+        "p4c_fb_mixed_on_loop": Feedback(k=1, body=Seq(X(0, q3), Y(2, q3))),
+    }
+
+
+def mk_phase4c_all_corpus() -> Dict[str, Term]:
+    """Combined Phase 4C corpus."""
+    result = {}
+    result.update(mk_phase4c_fixed_gates_corpus())
+    result.update(mk_phase4c_param_gates_corpus())
+    result.update(mk_phase4c_with_structure_corpus())
+    return result
+
+
+def extract_cmd_stream_with_params(circ: Circuit) -> List[str]:
+    """Extract command stream including parameters for Phase 4C gates."""
+    result: List[str] = []
+    for cmd in circ.get_commands():
+        name = cmd.op.type.name
+        wires = [q.index[0] for q in cmd.qubits]
+        params = list(cmd.op.params)
+        if params:
+            param_str = ",".join(f"{p:.6f}" for p in params)
+            result.append(f"{name}({','.join(map(str, wires))})[{param_str}]")
+        else:
+            result.append(f"{name}({','.join(map(str, wires))})")
+    return result
+
+
+def residual_fingerprint_with_params(goi: GOIArtifact) -> str:
+    """Generate fingerprint including gate parameters."""
+    data = {
+        "n_in": goi.n_in,
+        "n_out": goi.n_out,
+        "perm": list(goi.perm.new_to_old),
+        "atoms": [(a.gate_name, list(a.wires), list(a.params)) for a in goi.atoms],
+        "loops": [l.k for l in goi.loops],
+    }
+    json_str = json.dumps(data, sort_keys=True)
+    return hashlib.sha256(json_str.encode()).hexdigest()[:32]

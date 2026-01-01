@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from pytket.circuit import Circuit
 
@@ -14,7 +14,12 @@ from lang.terms import (
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR,
     Feedback,
+    # Phase 0 gates
     H, S, CX,
+    # Phase 4C fixed gates
+    X, Y, Z, T, Tdg, Sdg, CZ, CCX,
+    # Phase 4C parameterized gates
+    Rz, Rx, Ry, Phase, CRz,
 )
 from lang.types import width
 from typing_.check import type_of, assert_well_typed, TypeCheckError
@@ -108,6 +113,65 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
         circ.CX(phys_i, phys_j)
         if explain:
             log.append(f"CX local ({i},{j}) + offset {offset} = global ({global_i},{global_j}) -> physical ({phys_i},{phys_j})")
+
+    # Phase 4C: Additional fixed gate emitters
+    def emit_X(i: int, offset: int = 0) -> None:
+        phys = p.apply_new_to_old(i + offset)
+        circ.X(phys)
+
+    def emit_Y(i: int, offset: int = 0) -> None:
+        phys = p.apply_new_to_old(i + offset)
+        circ.Y(phys)
+
+    def emit_Z(i: int, offset: int = 0) -> None:
+        phys = p.apply_new_to_old(i + offset)
+        circ.Z(phys)
+
+    def emit_T(i: int, offset: int = 0) -> None:
+        phys = p.apply_new_to_old(i + offset)
+        circ.T(phys)
+
+    def emit_Tdg(i: int, offset: int = 0) -> None:
+        phys = p.apply_new_to_old(i + offset)
+        circ.Tdg(phys)
+
+    def emit_Sdg(i: int, offset: int = 0) -> None:
+        phys = p.apply_new_to_old(i + offset)
+        circ.Sdg(phys)
+
+    def emit_CZ(i: int, j: int, offset: int = 0) -> None:
+        phys_i = p.apply_new_to_old(i + offset)
+        phys_j = p.apply_new_to_old(j + offset)
+        circ.CZ(phys_i, phys_j)
+
+    def emit_CCX(i: int, j: int, k: int, offset: int = 0) -> None:
+        phys_i = p.apply_new_to_old(i + offset)
+        phys_j = p.apply_new_to_old(j + offset)
+        phys_k = p.apply_new_to_old(k + offset)
+        circ.CCX(phys_i, phys_j, phys_k)
+
+    # Phase 4C: Parameterized gate emitters
+    def emit_Rz(theta: float, i: int, offset: int = 0) -> None:
+        phys = p.apply_new_to_old(i + offset)
+        circ.Rz(theta, phys)
+
+    def emit_Rx(theta: float, i: int, offset: int = 0) -> None:
+        phys = p.apply_new_to_old(i + offset)
+        circ.Rx(theta, phys)
+
+    def emit_Ry(theta: float, i: int, offset: int = 0) -> None:
+        phys = p.apply_new_to_old(i + offset)
+        circ.Ry(theta, phys)
+
+    def emit_Phase(phi: float, i: int, offset: int = 0) -> None:
+        phys = p.apply_new_to_old(i + offset)
+        # pytket uses U1 for phase gate: U1(phi) = diag(1, e^{i*phi})
+        circ.U1(phi, phys)
+
+    def emit_CRz(theta: float, i: int, j: int, offset: int = 0) -> None:
+        phys_i = p.apply_new_to_old(i + offset)
+        phys_j = p.apply_new_to_old(j + offset)
+        circ.CRz(theta, phys_i, phys_j)
 
     def embed_local_perm(local_perm: WirePerm, offset: int) -> WirePerm:
         """Embed a local permutation into the global n-wire space.
@@ -204,6 +268,36 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
         if isinstance(t, CX):
             emit_CX(t.i, t.j, offset); return
 
+        # Phase 4C: Additional fixed gates
+        if isinstance(t, X):
+            emit_X(t.i, offset); return
+        if isinstance(t, Y):
+            emit_Y(t.i, offset); return
+        if isinstance(t, Z):
+            emit_Z(t.i, offset); return
+        if isinstance(t, T):
+            emit_T(t.i, offset); return
+        if isinstance(t, Tdg):
+            emit_Tdg(t.i, offset); return
+        if isinstance(t, Sdg):
+            emit_Sdg(t.i, offset); return
+        if isinstance(t, CZ):
+            emit_CZ(t.i, t.j, offset); return
+        if isinstance(t, CCX):
+            emit_CCX(t.i, t.j, t.k, offset); return
+
+        # Phase 4C: Parameterized gates
+        if isinstance(t, Rz):
+            emit_Rz(t.theta, t.i, offset); return
+        if isinstance(t, Rx):
+            emit_Rx(t.theta, t.i, offset); return
+        if isinstance(t, Ry):
+            emit_Ry(t.theta, t.i, offset); return
+        if isinstance(t, Phase):
+            emit_Phase(t.phi, t.i, offset); return
+        if isinstance(t, CRz):
+            emit_CRz(t.theta, t.i, t.j, offset); return
+
         raise TypeError(f"Unknown term node: {t!r}")
 
     go(term)
@@ -289,18 +383,20 @@ def compile_goi(
     p = identity(n_internal)
     log: List[str] = []
 
-    def emit_atom(gate_name: str, wires: List[int], offset: int = 0) -> None:
+    def emit_atom(gate_name: str, wires: List[int], offset: int = 0, params: Tuple[float, ...] = ()) -> None:
         """Emit a gate atom with effective wire indices.
 
         The perm is applied at emit time to capture the routing state.
         This ensures gates appear at the correct physical positions
         when structure and gates are interleaved.
+
+        Phase 4C: params holds gate parameters (angles, phases) for parameterized gates.
         """
         global_wires = [w + offset for w in wires]
         effective_wires = tuple(p.apply_new_to_old(g) for g in global_wires)
-        atoms.append(GateAtom(gate_name, effective_wires))
+        atoms.append(GateAtom(gate_name, effective_wires, params))
         if explain:
-            log.append(f"{gate_name} local {wires} + offset {offset} -> effective {effective_wires}")
+            log.append(f"{gate_name} local {wires} + offset {offset} -> effective {effective_wires} params={params}")
 
     def embed_local_perm(local_perm: WirePerm, offset: int) -> WirePerm:
         """Embed a local permutation into the global n-wire space."""
@@ -408,6 +504,60 @@ def compile_goi(
             emit_atom("CX", [t.i, t.j], offset)
             return
 
+        # Phase 4C: Additional fixed gates
+        if isinstance(t, X):
+            emit_atom("X", [t.i], offset)
+            return
+
+        if isinstance(t, Y):
+            emit_atom("Y", [t.i], offset)
+            return
+
+        if isinstance(t, Z):
+            emit_atom("Z", [t.i], offset)
+            return
+
+        if isinstance(t, T):
+            emit_atom("T", [t.i], offset)
+            return
+
+        if isinstance(t, Tdg):
+            emit_atom("Tdg", [t.i], offset)
+            return
+
+        if isinstance(t, Sdg):
+            emit_atom("Sdg", [t.i], offset)
+            return
+
+        if isinstance(t, CZ):
+            emit_atom("CZ", [t.i, t.j], offset)
+            return
+
+        if isinstance(t, CCX):
+            emit_atom("CCX", [t.i, t.j, t.k], offset)
+            return
+
+        # Phase 4C: Parameterized gates
+        if isinstance(t, Rz):
+            emit_atom("Rz", [t.i], offset, params=(t.theta,))
+            return
+
+        if isinstance(t, Rx):
+            emit_atom("Rx", [t.i], offset, params=(t.theta,))
+            return
+
+        if isinstance(t, Ry):
+            emit_atom("Ry", [t.i], offset, params=(t.theta,))
+            return
+
+        if isinstance(t, Phase):
+            emit_atom("U1", [t.i], offset, params=(t.phi,))
+            return
+
+        if isinstance(t, CRz):
+            emit_atom("CRz", [t.i, t.j], offset, params=(t.theta,))
+            return
+
         raise TypeError(f"Unknown term node: {t!r}")
 
     # If term is a top-level Feedback, we process it specially
@@ -452,16 +602,49 @@ def compile_goi(
 
         # Emit atoms directly - they already have effective wire indices
         for atom in result.atoms:
-            if atom.gate_name == "H":
-                circ.H(atom.wires[0])
-            elif atom.gate_name == "S":
-                circ.S(atom.wires[0])
-            elif atom.gate_name == "CX":
-                circ.CX(atom.wires[0], atom.wires[1])
+            name = atom.gate_name
+            wires = atom.wires
+            params = atom.params
+
+            # Phase 0 gates
+            if name == "H":
+                circ.H(wires[0])
+            elif name == "S":
+                circ.S(wires[0])
+            elif name == "CX":
+                circ.CX(wires[0], wires[1])
+            # Phase 4C fixed gates
+            elif name == "X":
+                circ.X(wires[0])
+            elif name == "Y":
+                circ.Y(wires[0])
+            elif name == "Z":
+                circ.Z(wires[0])
+            elif name == "T":
+                circ.T(wires[0])
+            elif name == "Tdg":
+                circ.Tdg(wires[0])
+            elif name == "Sdg":
+                circ.Sdg(wires[0])
+            elif name == "CZ":
+                circ.CZ(wires[0], wires[1])
+            elif name == "CCX":
+                circ.CCX(wires[0], wires[1], wires[2])
+            # Phase 4C parameterized gates
+            elif name == "Rz":
+                circ.Rz(params[0], wires[0])
+            elif name == "Rx":
+                circ.Rx(params[0], wires[0])
+            elif name == "Ry":
+                circ.Ry(params[0], wires[0])
+            elif name == "U1":
+                circ.U1(params[0], wires[0])
+            elif name == "CRz":
+                circ.CRz(params[0], wires[0], wires[1])
             else:
-                raise ValueError(f"Unknown gate: {atom.gate_name}")
+                raise ValueError(f"Unknown gate: {name}")
             if explain:
-                log.append(f"Emit {atom.gate_name} on wires {atom.wires}")
+                log.append(f"Emit {name} on wires {wires} params={params}")
 
         final_perm = result.perm
 

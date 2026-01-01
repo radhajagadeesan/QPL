@@ -30,16 +30,20 @@ from core.perm import WirePerm, identity, compose
 
 @dataclass(frozen=True, slots=True)
 class GateAtom:
-    """Opaque gate atom with effective wire indices.
+    """Opaque gate atom with effective wire indices and optional parameters.
 
     Gate atoms are opaque - extraction may reason about wire support
     but never inspects or modifies the gate_name or internal parameters.
 
     The wires field contains EFFECTIVE indices - the perm at emit time
     is already applied, capturing the routing state when the gate was emitted.
+
+    Phase 4C: params field holds gate parameters (e.g., rotation angles).
+    Parameters are opaque to extraction and normalization.
     """
     gate_name: str
     wires: Tuple[int, ...]  # effective wire indices (perm applied at emit)
+    params: Tuple[float, ...] = ()  # optional parameters (angles, phases)
 
     def support(self) -> Set[int]:
         """Return the set of wires this gate touches."""
@@ -138,7 +142,7 @@ def normalize_goi(goi: GOIArtifact) -> GOIArtifact:
     for atom in goi.atoms:
         # Rewrite wire indices through the permutation
         new_wires = tuple(perm.apply_new_to_old(w) for w in atom.wires)
-        new_atoms.append(GateAtom(atom.gate_name, new_wires))
+        new_atoms.append(GateAtom(atom.gate_name, new_wires, atom.params))
 
     return GOIArtifact(
         n_in=goi.n_in,

@@ -13,7 +13,12 @@ from lang.terms import (
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR,
     Feedback,
+    # Phase 0 gates
     H, S, CX,
+    # Phase 4C fixed gates
+    X, Y, Z, T, Tdg, Sdg, CZ, CCX,
+    # Phase 4C parameterized gates
+    Rz, Rx, Ry, Phase, CRz,
 )
 
 
@@ -102,18 +107,61 @@ def type_of(t: Term) -> DomCod:
             ext_ty = Ten(ext_ty, Q())
         return (ext_ty, ext_ty)
 
+    # Phase 0 single-wire gates
     if isinstance(t, (H, S)):
         n = width(t.ty_total)
         if t.i < 0 or t.i >= n:
             raise TypeCheckError(f"Gate index out of range: i={t.i}, width={n}")
         return (t.ty_total, t.ty_total)
 
+    # Phase 0 two-wire gate
     if isinstance(t, CX):
         n = width(t.ty_total)
         if t.i < 0 or t.i >= n or t.j < 0 or t.j >= n:
             raise TypeCheckError(f"CX index out of range: (i,j)=({t.i},{t.j}), width={n}")
         if t.i == t.j:
             raise TypeCheckError("CX requires distinct control/target indices (i != j).")
+        return (t.ty_total, t.ty_total)
+
+    # Phase 4C single-wire fixed gates
+    if isinstance(t, (X, Y, Z, T, Tdg, Sdg)):
+        n = width(t.ty_total)
+        if t.i < 0 or t.i >= n:
+            raise TypeCheckError(f"Gate index out of range: i={t.i}, width={n}")
+        return (t.ty_total, t.ty_total)
+
+    # Phase 4C two-wire fixed gate (CZ)
+    if isinstance(t, CZ):
+        n = width(t.ty_total)
+        if t.i < 0 or t.i >= n or t.j < 0 or t.j >= n:
+            raise TypeCheckError(f"CZ index out of range: (i,j)=({t.i},{t.j}), width={n}")
+        if t.i == t.j:
+            raise TypeCheckError("CZ requires distinct indices (i != j).")
+        return (t.ty_total, t.ty_total)
+
+    # Phase 4C three-wire fixed gate (CCX/Toffoli)
+    if isinstance(t, CCX):
+        n = width(t.ty_total)
+        if t.i < 0 or t.i >= n or t.j < 0 or t.j >= n or t.k < 0 or t.k >= n:
+            raise TypeCheckError(f"CCX index out of range: (i,j,k)=({t.i},{t.j},{t.k}), width={n}")
+        if t.i == t.j or t.j == t.k or t.i == t.k:
+            raise TypeCheckError("CCX requires three distinct indices.")
+        return (t.ty_total, t.ty_total)
+
+    # Phase 4C single-wire parameterized gates
+    if isinstance(t, (Rz, Rx, Ry, Phase)):
+        n = width(t.ty_total)
+        if t.i < 0 or t.i >= n:
+            raise TypeCheckError(f"Gate index out of range: i={t.i}, width={n}")
+        return (t.ty_total, t.ty_total)
+
+    # Phase 4C two-wire parameterized gate (CRz)
+    if isinstance(t, CRz):
+        n = width(t.ty_total)
+        if t.i < 0 or t.i >= n or t.j < 0 or t.j >= n:
+            raise TypeCheckError(f"CRz index out of range: (i,j)=({t.i},{t.j}), width={n}")
+        if t.i == t.j:
+            raise TypeCheckError("CRz requires distinct control/target indices (i != j).")
         return (t.ty_total, t.ty_total)
 
     raise TypeCheckError(f"Unknown term node: {t!r}")
