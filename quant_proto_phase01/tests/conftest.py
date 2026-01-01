@@ -23,6 +23,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "regression: marks tests as regression tests for Phase 0-3 lockdown"
     )
+    config.addinivalue_line(
+        "markers", "phase4b: marks tests as Phase 4B ZX-based extraction tests"
+    )
 
 
 DEFAULT_SEED = int(os.environ.get("QPL_SEED", "12345"))

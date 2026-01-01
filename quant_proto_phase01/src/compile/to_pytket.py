@@ -30,6 +30,7 @@ from compile.goi import (
     ExtractResult, physicalize_wires,
 )
 from compile.extract_v2 import try_extract_v2
+from compile.extract_zx import try_extract_zx, is_pyzx_available
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,18 +246,30 @@ def _compute_internal_width(term: Term) -> int:
         return width(dom)
 
 
-def compile_goi(term: Term, *, materialize: bool = False, explain: bool = False) -> GOIResult:
-    """Phase 3 compiler with explicit GOI feedback semantics.
+def compile_goi(
+    term: Term,
+    *,
+    materialize: bool = False,
+    explain: bool = False,
+    enable_zx: bool = False
+) -> GOIResult:
+    """Phase 3+ compiler with explicit GOI feedback semantics.
 
     Returns:
     - CompiledGOI(circuit, perm) if extraction succeeds
     - GOIArtifact (residual) if extraction fails
+
+    Parameters:
+    - materialize: If True, append SWAPs to realize the boundary permutation
+    - explain: If True, include a compilation log
+    - enable_zx: If True, use Phase 4B ZX-based extraction on residuals
 
     Invariants:
     - Phases 0-2 terms compile identically to compile()
     - Feedback terms are handled via GOI extraction
     - No SWAPs unless materialize=True and extraction succeeds
     - Failure to extract is not an error
+    - Phase 4B (enable_zx) only processes residuals from Phase 4A
     """
     # Check for distributivity
     if _contains_dist(term):
@@ -419,6 +432,18 @@ def compile_goi(term: Term, *, materialize: bool = False, explain: bool = False)
 
     # Attempt extraction (Phase 4A: use v2 which delegates to v1 first)
     result = try_extract_v2(goi)
+
+    # Phase 4B: If Phase 4A returned a residual and enable_zx is True,
+    # attempt ZX-based extraction
+    if enable_zx and isinstance(result, GOIArtifact):
+        if explain:
+            log.append("Phase 4A returned residual - attempting Phase 4B ZX extraction")
+        result = try_extract_zx(result)
+        if explain:
+            if isinstance(result, Extracted):
+                log.append("Phase 4B ZX extraction succeeded")
+            else:
+                log.append("Phase 4B ZX extraction returned residual")
 
     if isinstance(result, Extracted):
         # Use the extracted perm's size for circuit

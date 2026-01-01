@@ -313,3 +313,93 @@ def assert_residual(result, msg: str = "") -> GOIArtifact:
     """Assert result is residual."""
     assert isinstance(result, GOIArtifact), f"Expected residual{': ' + msg if msg else ''}"
     return result
+
+
+# -----------------------------------------------------------------
+# Additional corpus builders for Phase 4B
+# -----------------------------------------------------------------
+
+def mk_phase0_acyclic_corpus() -> Dict[str, Term]:
+    """Phase 0 pure structure corpus."""
+    return {
+        "p0_struct_twist": TwistTen(Q(), Q()),
+        "p0_struct_assoc_l": AssocTenL(Q(), Q(), Q()),
+        "p0_struct_assoc_r": AssocTenR(Q(), Q(), Q()),
+        "p0_struct_seq_twists": Seq(TwistTen(Q(), Q()), TwistTen(Q(), Q())),
+    }
+
+
+def mk_phase1_structure_corpus() -> Dict[str, Term]:
+    """Phase 1 structure + gates corpus."""
+    q = Q()
+    qq = Ten(Q(), Q())
+    q3 = qpow(3)
+
+    return {
+        "p1_gate_h": H(0, q),
+        "p1_gate_s": S(0, q),
+        "p1_gate_cx": CX(0, 1, qq),
+        "p1_gate_seq": Seq(H(0, qq), CX(0, 1, qq), S(1, qq)),
+        "p1_mixed_twist_h": Seq(TwistTen(Q(), Q()), H(0, qq)),
+        "p1_mixed_h_twist_h": Seq(H(0, qq), TwistTen(Q(), Q()), H(0, qq)),
+        "p1_mixed_assoc_h": Seq(AssocTenL(Q(), Q(), Q()), H(0, q3)),
+    }
+
+
+def mk_phase2_tenterm_corpus() -> Dict[str, Term]:
+    """Phase 2 TenTerm corpus."""
+    q = Q()
+    qq = Ten(Q(), Q())
+
+    return {
+        "p2_tenterm_basic": TenTerm(H(0, q), S(0, q)),
+        "p2_tenterm_cx": TenTerm(CX(0, 1, qq), H(0, q)),
+        "p2_tenterm_seq": Seq(TenTerm(H(0, q), S(0, q)), TwistTen(Q(), Q())),
+        "p2_tenterm_nested": TenTerm(Seq(H(0, q), S(0, q)), H(0, q)),
+    }
+
+
+def mk_phase4a_residual_corpus() -> Dict[str, Term]:
+    """Phase 4A residual corpus - alias for mk_phase4a_stays_residual_corpus."""
+    return mk_phase4a_stays_residual_corpus()
+
+
+# -----------------------------------------------------------------
+# Additional helpers for Phase 4B
+# -----------------------------------------------------------------
+
+def compile_goi_safe(term: Term, *, materialize: bool = False, enable_zx: bool = False):
+    """Compile with error handling."""
+    try:
+        return compile_goi(term, materialize=materialize, enable_zx=enable_zx)
+    except Exception as e:
+        return e
+
+
+def compile_term(term: Term, *, materialize: bool = False):
+    """Compile with standard compile() function."""
+    return compile(term, materialize=materialize)
+
+
+def is_goi_artifact(result) -> bool:
+    """Check if result is a GOI artifact (residual)."""
+    return isinstance(result, GOIArtifact)
+
+
+@dataclass(frozen=True)
+class CmdSig:
+    """Command signature for comparison."""
+    op: str
+    qubits: Tuple[int, ...]
+
+
+def non_swap_signature(circ: Circuit) -> List[CmdSig]:
+    """Extract non-SWAP command signature for comparison."""
+    result = []
+    for cmd in circ.get_commands():
+        name = cmd.op.type.name
+        if name.upper() == "SWAP":
+            continue
+        wires = tuple(int(q.index[0]) for q in cmd.qubits)
+        result.append(CmdSig(op=name, qubits=wires))
+    return result
