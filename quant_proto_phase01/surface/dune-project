@@ -1,0 +1,8 @@
+(lang dune 3.0)
+(name qpl_surface)
+(version 0.1.0)
+
+(package
+ (name qpl_surface)
+ (synopsis "Surface language for QPL quantum programming")
+ (description "ML-style surface DSL that elaborates to Phase 0-4C core IR"))
