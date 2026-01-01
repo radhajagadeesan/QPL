@@ -59,10 +59,40 @@ let case_2_to_python ~dt_name ~c0_name ~c0_payload ~c1_name ~c1_payload ~branche
       (rep_to_python c1_payload)
 
 (** Emit Python code for a general case expression.
-    For n > 2 constructors, emits a TODO placeholder. *)
-let case_n_to_python ~dt_name ~n =
-  Printf.sprintf "# case for %s (%d constructors) - TODO: general elaboration"
+
+    For n > 2 constructors, we generate a sequence of structural operations
+    that achieve the required permutation of constructor positions.
+
+    branches: list of (ctor_name, branch_body) in the order they appear in case
+    ctor_order: list of constructor names in their canonical order
+*)
+let case_n_to_python ~dt_name ~n ~branches ~ctor_order =
+  (* Compute the permutation: where does each constructor end up? *)
+  let branch_names = List.map fst branches in
+
+  (* Build permutation array: perm[i] = original position of ctor at result position i *)
+  let perm = Array.init n (fun i ->
+    let target_name = List.nth branch_names i in
+    (* Find this name's position in the original order *)
+    let rec find_pos j = function
+      | [] -> failwith (Printf.sprintf "Constructor %s not found" target_name)
+      | name :: rest -> if name = target_name then j else find_pos (j + 1) rest
+    in
+    find_pos 0 ctor_order
+  ) in
+
+  (* Generate the structural term *)
+  let code = Perm_gen.permutation_to_python ~n perm in
+
+  Printf.sprintf
+    "# case elaboration for %s (%d constructors)\n\
+     # Branch order: [%s]\n\
+     # Permutation: [%s]\n\
+     %s"
     dt_name n
+    (String.concat ", " branch_names)
+    (String.concat ", " (Array.to_list (Array.map string_of_int perm)))
+    code
 
 (** Emit Python code for the swap combinator on a 2-constructor datatype. *)
 let swap_to_python ~c0_payload ~c1_payload =

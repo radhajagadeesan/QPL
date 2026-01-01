@@ -138,6 +138,75 @@ let test_either () =
 
   print_endline ""
 
+(* Custom datatype: Triple (3 constructors) *)
+module Triple = Datatype.Make3(struct
+  type ('a, 'b, 'c) t = A of 'a | B of 'b | C of 'c
+  [@@warning "-37"]
+
+  let name = "Triple"
+
+  (* Canonical representation: (A + B) + C (left-associated) *)
+  let rep = Rep.(plus (plus (var 0) (var 1)) (var 2))
+
+  let constructors = [
+    ("A", Rep.var 0);
+    ("B", Rep.var 1);
+    ("C", Rep.var 2);
+  ]
+end)
+
+let test_triple () =
+  print_endline "=== Testing Triple datatype (3 constructors) ===";
+
+  print_endline ("Triple.rep = " ^ Rep.to_string Triple.rep);
+  print_endline ("Triple Python: " ^ Triple.emit_rep ());
+
+  (* Test identity case: A->A, B->B, C->C *)
+  let identity_case = Triple.emit_case [("A", "a"); ("B", "b"); ("C", "c")] in
+  print_endline "\nIdentity case (A->A, B->B, C->C):";
+  print_endline identity_case;
+
+  (* Test rotation: A->B, B->C, C->A *)
+  let rotate_case = Triple.emit_case [("C", "c"); ("A", "a"); ("B", "b")] in
+  print_endline "\nRotation case (C->A, A->B, B->C):";
+  print_endline rotate_case;
+
+  (* Test swap first two: B->A, A->B, C->C *)
+  let swap_case = Triple.emit_case [("B", "b"); ("A", "a"); ("C", "c")] in
+  print_endline "\nSwap first two (B->A, A->B, C->C):";
+  print_endline swap_case;
+
+  print_endline ""
+
+(* Test Perm_gen directly *)
+let test_perm_gen () =
+  print_endline "=== Testing Perm_gen module ===";
+
+  (* Canonical representations *)
+  print_endline "Canonical representations:";
+  print_endline ("  2 constructors: " ^ Perm_gen.canonical_rep_string 2);
+  print_endline ("  3 constructors: " ^ Perm_gen.canonical_rep_string 3);
+  print_endline ("  4 constructors: " ^ Perm_gen.canonical_rep_string 4);
+
+  (* Permutation decomposition *)
+  print_endline "\nPermutation decomposition:";
+  let perm1 = [|1; 0|] in  (* swap *)
+  let swaps1 = Perm_gen.decompose_permutation perm1 in
+  print_endline (Printf.sprintf "  [1,0] -> swaps: [%s]"
+    (String.concat ", " (List.map string_of_int swaps1)));
+
+  let perm2 = [|2; 0; 1|] in  (* rotation *)
+  let swaps2 = Perm_gen.decompose_permutation perm2 in
+  print_endline (Printf.sprintf "  [2,0,1] -> swaps: [%s]"
+    (String.concat ", " (List.map string_of_int swaps2)));
+
+  let perm3 = [|1; 0; 2|] in  (* swap first two *)
+  let swaps3 = Perm_gen.decompose_permutation perm3 in
+  print_endline (Printf.sprintf "  [1,0,2] -> swaps: [%s]"
+    (String.concat ", " (List.map string_of_int swaps3)));
+
+  print_endline ""
+
 (* Run all tests *)
 let () =
   print_endline "QPL Surface Language Tests";
@@ -151,5 +220,7 @@ let () =
   test_exp_i ();
   test_maybe ();
   test_either ();
+  test_perm_gen ();
+  test_triple ();
 
   print_endline "All tests completed!"

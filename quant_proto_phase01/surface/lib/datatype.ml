@@ -113,7 +113,8 @@ module Make1 (S : SPEC1) : REGISTERED = struct
         ~branches
     end
     else
-      Emit.case_n_to_python ~dt_name:S.name ~n
+      let ctor_order = List.map (fun c -> c.name) ctors in
+      Emit.case_n_to_python ~dt_name:S.name ~n ~branches ~ctor_order
 end
 
 (** Functor to register a datatype with arity 2 *)
@@ -156,7 +157,8 @@ module Make2 (S : SPEC2) : REGISTERED = struct
         ~branches
     end
     else
-      Emit.case_n_to_python ~dt_name:S.name ~n
+      let ctor_order = List.map (fun c -> c.name) ctors in
+      Emit.case_n_to_python ~dt_name:S.name ~n ~branches ~ctor_order
 end
 
 (** Functor to register a datatype with arity 3 *)
@@ -199,7 +201,8 @@ module Make3 (S : SPEC3) : REGISTERED = struct
         ~branches
     end
     else
-      Emit.case_n_to_python ~dt_name:S.name ~n
+      let ctor_order = List.map (fun c -> c.name) ctors in
+      Emit.case_n_to_python ~dt_name:S.name ~n ~branches ~ctor_order
 end
 
 (** Validate that a datatype is well-formed:
