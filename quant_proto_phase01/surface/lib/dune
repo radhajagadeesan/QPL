@@ -2,4 +2,4 @@
  (name qpl_surface)
  (public_name qpl_surface)
  (libraries str unix)
- (modules rep perm_gen datatype emit bridge qpl))
+ (modules rep perm_gen datatype emit bridge qpl ast elaborate))

@@ -207,6 +207,124 @@ let test_perm_gen () =
 
   print_endline ""
 
+(* Test AST construction and pretty-printing *)
+let test_ast () =
+  print_endline "=== Testing AST module ===";
+
+  (* Build a simple term: H[0] ; S[0] *)
+  let term1 = Ast.(Seq (GateH 0, GateS 0)) in
+  print_endline ("H[0] ; S[0] = " ^ Ast.term_to_string term1);
+
+  (* Build tensor: H[0] ⊗ H[1] *)
+  let term2 = Ast.(Ten (GateH 0, GateH 1)) in
+  print_endline ("H[0] ⊗ H[1] = " ^ Ast.term_to_string term2);
+
+  (* Build lambda: λx:Q. H[0] *)
+  let term3 = Ast.(Lam ("x", TyQ, GateH 0)) in
+  print_endline ("λx:Q. H[0] = " ^ Ast.term_to_string term3);
+
+  (* Build let: let y = H[0] in y ; S[0] *)
+  let term4 = Ast.(Let ("y", GateH 0, Seq (Var "y", GateS 0))) in
+  print_endline ("let y = H[0] in y ; S[0] = " ^ Ast.term_to_string term4);
+
+  (* Build case: case x of F(a) => T(a) | T(b) => F(b) *)
+  let term5 = Ast.(Case (Var "x", [
+    (PatCtor ("F", "a"), Ctor ("T", Var "a"));
+    (PatCtor ("T", "b"), Ctor ("F", Var "b"));
+  ])) in
+  print_endline ("case = " ^ Ast.term_to_string term5);
+
+  (* Test types *)
+  let ty1 = Ast.(TyTensor (TyQ, TyQ)) in
+  print_endline ("Q ⊗ Q = " ^ Ast.ty_to_string ty1);
+
+  let ty2 = Ast.(TyPlus (TyQ, TyQ)) in
+  print_endline ("Q + Q = " ^ Ast.ty_to_string ty2);
+
+  let ty3 = Ast.(TyNamed ("Bool", [TyQ; TyQ])) in
+  print_endline ("Bool[Q, Q] = " ^ Ast.ty_to_string ty3);
+
+  print_endline ""
+
+(* Test Elaborate module *)
+let test_elaborate () =
+  print_endline "=== Testing Elaborate module ===";
+
+  (* Test substitution *)
+  print_endline "Testing substitution:";
+  let open Ast in
+  let term1 = Var "x" in
+  let subst_result = Elaborate.subst "x" (GateH 0) term1 in
+  print_endline ("  [H[0]/x](x) = " ^ term_to_string subst_result);
+
+  let term2 = Lam ("x", TyQ, Var "x") in
+  let subst_result2 = Elaborate.subst "x" (GateH 0) term2 in
+  print_endline ("  [H[0]/x](λx:Q. x) = " ^ term_to_string subst_result2 ^ " (x shadowed)");
+
+  let term3 = Seq (Var "x", Var "y") in
+  let subst_result3 = Elaborate.subst "x" (GateH 0) term3 in
+  print_endline ("  [H[0]/x](x ; y) = " ^ term_to_string subst_result3);
+
+  (* Test free variables *)
+  print_endline "\nTesting free variables:";
+  let fvs1 = Elaborate.free_vars (Var "x") in
+  print_endline ("  FV(x) = [" ^ String.concat ", " fvs1 ^ "]");
+
+  let fvs2 = Elaborate.free_vars (Lam ("x", TyQ, Var "x")) in
+  print_endline ("  FV(λx:Q. x) = [" ^ String.concat ", " fvs2 ^ "]");
+
+  let fvs3 = Elaborate.free_vars (Lam ("x", TyQ, Seq (Var "x", Var "y"))) in
+  print_endline ("  FV(λx:Q. x ; y) = [" ^ String.concat ", " fvs3 ^ "]");
+
+  (* Test elaboration of let *)
+  print_endline "\nTesting let elaboration:";
+  let let_term = Let ("x", GateH 0, Seq (Var "x", GateS 0)) in
+  print_endline ("  Source: " ^ term_to_string let_term);
+  let tyvar_env = Elaborate.TyVarEnv.empty in
+  let ty_env = Elaborate.TyEnv.empty in
+  let dt_env = Elaborate.DtEnv.empty in
+  let elaborated = Elaborate.elaborate tyvar_env ty_env dt_env let_term in
+  print_endline ("  Elaborated: " ^ Elaborate.Core.term_to_string elaborated);
+
+  (* Test elaboration of application *)
+  print_endline "\nTesting application elaboration:";
+  let app_term = App (Lam ("x", TyQ, Seq (Var "x", GateS 0)), GateH 0) in
+  print_endline ("  Source: " ^ term_to_string app_term);
+  let elaborated2 = Elaborate.elaborate tyvar_env ty_env dt_env app_term in
+  print_endline ("  Elaborated: " ^ Elaborate.Core.term_to_string elaborated2);
+
+  (* Test elaboration of primitives *)
+  print_endline "\nTesting primitive elaboration:";
+  let seq_term = Seq (GateH 0, GateS 0) in
+  print_endline ("  Source: " ^ term_to_string seq_term);
+  let elaborated3 = Elaborate.elaborate tyvar_env ty_env dt_env seq_term in
+  print_endline ("  Elaborated: " ^ Elaborate.Core.term_to_string elaborated3);
+
+  print_endline ""
+
+(* Test error handling *)
+let test_errors () =
+  print_endline "=== Testing error handling ===";
+
+  (* Test unbound variable detection *)
+  print_endline "Testing unbound variable detection:";
+  let open Ast in
+  let tyvar_env = Elaborate.TyVarEnv.empty in
+  let ty_env = Elaborate.TyEnv.empty in
+  let dt_env = Elaborate.DtEnv.empty in
+
+  let unbound_term = Seq (Var "undefined_var", GateH 0) in
+  (try
+    let _ = Elaborate.elaborate tyvar_env ty_env dt_env unbound_term in
+    print_endline "  ERROR: Should have raised UnboundVariable"
+  with
+  | Elaborate.ElaborateError e ->
+    print_endline ("  Caught expected error: " ^ Elaborate.error_to_string e)
+  | _ ->
+    print_endline "  ERROR: Wrong exception type");
+
+  print_endline ""
+
 (* Run all tests *)
 let () =
   print_endline "QPL Surface Language Tests";
@@ -222,5 +340,8 @@ let () =
   test_either ();
   test_perm_gen ();
   test_triple ();
+  test_ast ();
+  test_elaborate ();
+  test_errors ();
 
   print_endline "All tests completed!"
