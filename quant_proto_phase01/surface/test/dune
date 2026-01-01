@@ -1,3 +1,7 @@
 (test
  (name test_surface)
  (libraries qpl_surface))
+
+(test
+ (name test_bridge)
+ (libraries qpl_surface))

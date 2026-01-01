@@ -1,4 +1,5 @@
 (library
  (name qpl_surface)
  (public_name qpl_surface)
- (modules rep datatype emit qpl))
+ (libraries str unix)
+ (modules rep datatype emit bridge qpl))

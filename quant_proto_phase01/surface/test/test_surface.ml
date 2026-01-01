@@ -75,12 +75,17 @@ let test_emit () =
 
   print_endline ""
 
-(* Test exp_i emission *)
+(* Test exp_i emission - without Python bridge for basic tests *)
 let test_exp_i () =
-  print_endline "=== Testing exp_i emission ===";
+  print_endline "=== Testing exp_i emission (static) ===";
 
   let pi = 3.14159265358979 in
-  let exp_code = Qpl.exp_i ~theta:(pi /. 7.0) ~j:"swap" in
+  (* Use the low-level Emit function for basic testing *)
+  let exp_code = Emit.exp_i_to_python
+    ~theta:(pi /. 7.0)
+    ~j_name:"swap"
+    ~j_hash:"perm_2_1_0"
+  in
   print_endline "exp_i(π/7, swap):";
   print_endline exp_code;
 

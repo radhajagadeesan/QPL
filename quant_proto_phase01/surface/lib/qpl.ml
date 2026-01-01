@@ -7,6 +7,7 @@
 module Rep = Rep
 module Datatype = Datatype
 module Emit = Emit
+module Bridge = Bridge
 
 (** Example: Bool datatype registration *)
 module Bool = Datatype.Make2(struct
@@ -24,25 +25,46 @@ module Bool = Datatype.Make2(struct
   ]
 end)
 
+(** Result of involution certification *)
+type involution_check =
+  | Involutive of Bridge.wire_perm
+  | NotInvolutive of Bridge.wire_perm
+  | CheckError of string
+
 (** Check if a structural term is involutive.
 
-    This is done by:
-    1. Emitting Python code for the term
-    2. Compiling with materialize=False to get WirePerm
-    3. Checking p o p = id
-
-    For now, we provide a placeholder that will call the Python compiler.
+    This compiles the term through the Python Phase 0-4C pipeline
+    and checks if the resulting permutation satisfies p ∘ p = id.
 *)
-let check_involution _term =
-  (* TODO: Call Python compiler and check p o p = id *)
-  failwith "check_involution: not yet implemented - requires Python integration"
+let check_involution term =
+  match Bridge.check_involution term with
+  | Bridge.InvolutionOk (true, perm) -> Involutive perm
+  | Bridge.InvolutionOk (false, perm) -> NotInvolutive perm
+  | Bridge.InvolutionError err -> CheckError err
 
-(** Emit exp_i for a certified involution. *)
-let exp_i ~theta ~j =
-  (* First, verify J is involutive *)
-  (* check_involution j; *)
-  let j_hash = "todo_hash" in  (* TODO: compute canonical hash *)
-  Emit.exp_i_to_python ~theta ~j_name:j ~j_hash
+(** Certify and emit exp_i for an involution.
+
+    Returns Error if the term is not involutive.
+*)
+let exp_i ~theta ~j_term ~j_name =
+  match check_involution j_term with
+  | Involutive perm ->
+    (* Compute hash from the permutation *)
+    let j_hash = Printf.sprintf "perm_%d_%s"
+      perm.n
+      (String.concat "_" (List.map string_of_int perm.new_to_old))
+    in
+    Ok (Emit.exp_i_to_python ~theta ~j_name ~j_hash)
+  | NotInvolutive _ ->
+    Error (Printf.sprintf "%s is not involutive (p ∘ p ≠ id)" j_name)
+  | CheckError err ->
+    Error (Printf.sprintf "Failed to check involution: %s" err)
+
+(** Create a swap term for a 2-constructor datatype.
+    For Bool[A,B] = F of A | T of B, swap : Bool[A,B] -> Bool[B,A].
+*)
+let swap_term () =
+  Bridge.TTwistPlus (Rep.var 0, Rep.var 1)
 
 (** Print library info *)
 let info () =
@@ -52,4 +74,5 @@ let info () =
   print_endline "Available modules:";
   print_endline "  Rep      - Type representations (⊗, +)";
   print_endline "  Datatype - Datatype registration functors";
-  print_endline "  Emit     - Python code generation"
+  print_endline "  Emit     - Python code generation";
+  print_endline "  Bridge   - Python compiler integration"
