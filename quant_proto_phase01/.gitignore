@@ -46,3 +46,6 @@ tmp/
 # Private notes/messages
 RadhaMSGtoClaude/
 RadhaMSG/
+
+# Internal developer docs (kept locally, not in repo)
+docs/internal/
