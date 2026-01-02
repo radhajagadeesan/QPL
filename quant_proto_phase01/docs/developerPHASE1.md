@@ -4,8 +4,8 @@ This document is the authoritative guide for developers working on the
 Phase 1 structural quantum compiler prototype.
 
 Phase 1 is **complete in scope** once all tests pass. Further work
-(e.g. `TenTerm`, distributivity compilation, higher-order constructs)
-belongs to later phases.
+(e.g. `TenTerm`, higher-order constructs) belongs to later phases.
+Note: `TenTerm` is now in Phase 2, distributivity in Phase 4C.
 
 ---
 
@@ -53,7 +53,7 @@ Structural terms include:
 - `Seq`
 - tensor twists and associators
 - sum twists and associators
-- distributivity terms (typed but *not compiled*)
+- distributivity terms (now compiled via tagged layout in Phase 4C)
 
 These terms **do not represent computation**.
 They represent *rewiring only*.
@@ -224,7 +224,7 @@ All Phase 1 code must preserve:
 2. Compiler emits **no SWAPs by default**
 3. Gates are reindexed through `WirePerm`
 4. Compilation is deterministic
-5. Distributivity fails loudly at compile time
+5. Distributivity compiles to structural permutations (Phase 4C tagged layout)
 6. Randomized tests pass with fixed seeds
 
 If you violate one of these, add a new test or fix the code.

@@ -167,4 +167,4 @@ Phase 3 passes integration when:
 - residual cases are stable and preserve GOI info
 - SWAP policy holds globally
 - determinism holds globally
-- distributivity remains loudly unsupported
+- distributivity compiles correctly (Phase 4C tagged layout)

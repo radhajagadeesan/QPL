@@ -189,5 +189,5 @@ Phase 3 is locally correct when:
 - extraction failure preserves residual GOI
 - determinism holds for all Phase 3 passes
 - Phase 2 offset/permutation rewrite ordering still holds
-- distributivity stays loudly unsupported
+- distributivity compiles correctly (Phase 4C tagged layout)
 - SWAP policy unchanged
