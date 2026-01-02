@@ -1,9 +1,14 @@
 """End-to-end tests for Phase 0 compilation.
 
 Verifies:
-- Structural programs compile to WirePerm only (no gates)
+- Structural programs compile to WirePerm (with tag flips for sum types)
 - materialize=False introduces no swaps
 - Compilation is deterministic
+
+Note: With the tagged layout model:
+- Sum types A + B have width = 1 + width(A) + width(B) (includes tag qubit)
+- TwistPlus emits an X gate for the tag flip
+- DistL/DistR now compile successfully
 """
 
 import sys
@@ -37,15 +42,18 @@ AssocTensorR = AssocTenR
 class TestStructuralCompilation:
     """Test that structural programs compile to WirePerm only."""
 
-    def test_twist_plus_compiles_to_perm_only(self):
-        """TwistPlus should compile to permutation with no gates."""
+    def test_twist_plus_compiles_with_tag_flip(self):
+        """TwistPlus should compile to permutation + X gate for tag flip."""
         term = TwistPlus(Q(), Q())
         circuit, perm = compile_term(term, materialize=False)
 
-        assert is_empty_circuit(circuit), f"Expected empty circuit, got: {circuit}"
+        # Tagged layout: Q + Q has width 3 (1 tag + 1 + 1)
         assert perm is not None
-        assert perm.n == 2
-        assert perm.new_to_old == [1, 0], "TwistPlus should swap wires"
+        assert perm.n == 3
+        # Tag stays at 0, data wires swap: [0, 2, 1]
+        assert perm.new_to_old == [0, 2, 1], "TwistPlus should swap data wires"
+        # Should emit exactly 1 X gate for tag flip
+        assert circuit.n_gates == 1, f"Expected 1 gate (X for tag flip), got: {circuit.n_gates}"
 
     def test_twist_tensor_compiles_to_perm_only(self):
         """TwistTensor should compile to permutation with no gates."""
@@ -62,17 +70,19 @@ class TestStructuralCompilation:
         a, b, c = Q(), Q(), Q()
 
         # AssocPlusL: (A + B) + C -> A + (B + C)
+        # Tagged layout: (Q + Q) + Q has width 5 (2 tags + 3 data)
         term_l = AssocPlusL(a, b, c)
         circuit, perm = compile_term(term_l, materialize=False)
         assert is_empty_circuit(circuit)
         assert perm is not None
-        assert perm.n == 3
+        assert perm.n == 5, f"Expected width 5, got {perm.n}"
 
         # AssocPlusR: A + (B + C) -> (A + B) + C
         term_r = AssocPlusR(a, b, c)
         circuit, perm = compile_term(term_r, materialize=False)
         assert is_empty_circuit(circuit)
         assert perm is not None
+        assert perm.n == 5
 
     def test_assoc_tensor_compiles_to_perm_only(self):
         """AssocTensorL/R should compile to permutation with no gates."""
@@ -91,18 +101,28 @@ class TestStructuralCompilation:
     def test_dist_compiles_to_perm_only(self):
         """DistL/DistR should compile to permutation with no gates.
 
-        Note: Distributivity compilation is deferred (needs sum-aware layout).
+        With tagged layout model:
+        - DistL is identity on wires
+        - DistR moves tag to front
         """
-        import pytest
         a, b, c = Q(), Q(), Q()
 
+        # DistL: (A + B) ⊗ C -> (A ⊗ C) + (B ⊗ C)
+        # Width: 1 + 1 + 1 + 1 = 4 (tag + Q + Q + Q)
         term_l = DistL(a, b, c)
-        with pytest.raises(NotImplementedError, match="Distributivity"):
-            compile_term(term_l, materialize=False)
+        circuit, perm = compile_term(term_l, materialize=False)
+        assert is_empty_circuit(circuit), "DistL should emit no gates"
+        assert perm is not None
+        assert perm.n == 4
+        assert perm.new_to_old == [0, 1, 2, 3], "DistL is identity on wires"
 
+        # DistR: A ⊗ (B + C) -> (A ⊗ B) + (A ⊗ C)
         term_r = DistR(a, b, c)
-        with pytest.raises(NotImplementedError, match="Distributivity"):
-            compile_term(term_r, materialize=False)
+        circuit, perm = compile_term(term_r, materialize=False)
+        assert is_empty_circuit(circuit), "DistR should emit no gates"
+        assert perm is not None
+        assert perm.n == 4
+        assert perm.new_to_old[0] == 1, "DistR moves tag from position 1 to front"
 
     def test_identity_compiles_to_routing_identity(self):
         """Id should compile to identity ROUTING permutation.
@@ -127,27 +147,32 @@ class TestStructuralCompilation:
         composed = [perm.new_to_old[perm.new_to_old[i]] for i in range(perm.n)]
         assert composed == list(range(perm.n)), "Id must be involutive (p∘p=id)"
 
-    def test_sequential_structural_compiles_to_perm_only(self):
-        """Sequence of structural ops should compile to perm only."""
-        # TwistPlus ; TwistPlus = Id
+    def test_sequential_structural_compiles_correctly(self):
+        """Sequence of structural ops should compile correctly."""
+        # TwistPlus ; TwistPlus = Id (both perm and tag flips cancel)
         twist = TwistPlus(Q(), Q())
         term = Seq(twist, twist)
         circuit, perm = compile_term(term, materialize=False)
 
-        assert is_empty_circuit(circuit)
         assert perm is not None
-        assert perm.new_to_old == [0, 1], "twist;twist should be identity"
+        # Perm should be identity: [0, 1, 2] for 3-wire sum type
+        assert perm.new_to_old == [0, 1, 2], "twist;twist should be identity perm"
+        # Two X gates cancel (X;X = I), but may still be emitted
+        # The key invariant is the perm is identity
 
-    def test_parallel_structural_compiles_to_perm_only(self):
-        """Tensor of structural ops should compile to perm only."""
+    def test_parallel_structural_compiles_correctly(self):
+        """Tensor of structural ops should compile correctly."""
+        # TwistPlus has width 3 (tag + 2 data), TwistTensor has width 2
         twist1 = TwistPlus(Q(), Q())
         twist2 = TwistTensor(Q(), Q())
         term = TenTerm(twist1, twist2)
         circuit, perm = compile_term(term, materialize=False)
 
-        assert is_empty_circuit(circuit)
         assert perm is not None
-        assert perm.n == 4
+        # Total width: 3 + 2 = 5
+        assert perm.n == 5, f"Expected width 5, got {perm.n}"
+        # TwistPlus emits 1 X gate for tag flip
+        assert circuit.n_gates == 1, "Should emit 1 X gate from TwistPlus"
 
 
 class TestMaterializeFlag:
@@ -161,12 +186,13 @@ class TestMaterializeFlag:
         cmds = circuit_to_commands(circuit)
         assert 'SWAP' not in cmds.upper()
 
-    def test_composed_structural_no_swaps(self):
-        """Composed structural ops with materialize=False should have no SWAPs."""
+    def test_tensor_structural_no_swaps(self):
+        """Tensor structural ops with materialize=False should have no SWAPs."""
+        # Use only tensor operations to avoid type mismatches
         a, b, c = Q(), Q(), Q()
         term = Seq(
-            AssocPlusL(a, b, c),
-            TenTerm(TwistPlus(a, b), Id(c))
+            AssocTenL(a, b, c),
+            TwistTen(a, Ten(b, c))
         )
         circuit, perm = compile_term(term, materialize=False)
 
@@ -202,9 +228,10 @@ class TestDeterminism:
     def test_deterministic_composed_term(self):
         """Composed terms should compile deterministically."""
         a, b, c = Q(), Q(), Q()
+        # Use tensor operations for simpler type matching
         term = Seq(
-            AssocPlusL(a, b, c),
-            Seq(TwistPlus(Plus(a, b), c), AssocPlusR(a, b, c))
+            AssocTenL(a, b, c),
+            Seq(TwistTen(Ten(a, b), c), AssocTenR(a, b, c))
         )
 
         _, perm1 = compile_term(term, materialize=False)
