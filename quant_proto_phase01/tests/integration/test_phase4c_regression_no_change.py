@@ -117,18 +117,22 @@ class TestPhase4CRegressionDistFailures:
         return mk_dist_failure_corpus()
 
     @pytest.mark.parametrize("name", list(mk_dist_failure_corpus().keys()))
-    def test_dist_still_fails_compile(self, corpus, name):
-        """Distributivity still fails with compile()."""
+    def test_dist_compiles_with_tagged_layout(self, corpus, name):
+        """Distributivity now compiles with tagged layout model."""
         term = corpus[name]
-        with pytest.raises(NotImplementedError):
-            compile_term(term, materialize=False)
+        # Should compile without error
+        result = compile_term(term, materialize=False)
+        assert result.circuit is not None
+        # Distributivity terms don't emit gates (pure permutation/identity)
+        assert len(result.circuit.get_commands()) == 0
 
     @pytest.mark.parametrize("name", list(mk_dist_failure_corpus().keys()))
-    def test_dist_still_fails_compile_goi(self, corpus, name):
-        """Distributivity still fails with compile_goi()."""
+    def test_dist_compiles_goi_with_tagged_layout(self, corpus, name):
+        """Distributivity compiles with compile_goi() using tagged layout model."""
         term = corpus[name]
         result = compile_goi_safe(term, materialize=False)
-        assert isinstance(result, NotImplementedError)
+        # Should not be an error anymore
+        assert not isinstance(result, Exception)
 
 
 class TestPhase4CRegressionWithZX:

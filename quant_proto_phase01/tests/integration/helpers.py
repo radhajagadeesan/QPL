@@ -292,13 +292,26 @@ def mk_phase4a_stays_residual_corpus() -> Dict[str, Term]:
     }
 
 
-def mk_dist_failure_corpus() -> Dict[str, Term]:
-    """Distributivity cases that must fail loudly."""
+def mk_dist_corpus() -> Dict[str, Term]:
+    """Distributivity cases (now supported with tagged layout model)."""
+    from lang.types import Plus
+
+    # DistL domain: (A ⊕ B) ⊗ C = (Q ⊕ Q) ⊗ Q
+    distl_dom = Ten(Plus(Q(), Q()), Q())
+
+    # DistR domain: A ⊗ (B ⊕ C) = Q ⊗ (Q ⊕ Q)
+    distr_dom = Ten(Q(), Plus(Q(), Q()))
+
     return {
         "dist_distl": DistL(Q(), Q(), Q()),
         "dist_distr": DistR(Q(), Q(), Q()),
-        "dist_seq_distl": Seq(Id(Ten(Q(), Q())), DistL(Q(), Q(), Q())),
+        # Valid Seq: Id with matching type before DistL
+        "dist_seq_distl": Seq(Id(distl_dom), DistL(Q(), Q(), Q())),
     }
+
+
+# Alias for backward compatibility
+mk_dist_failure_corpus = mk_dist_corpus
 
 
 # -----------------------------------------------------------------

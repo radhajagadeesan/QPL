@@ -186,11 +186,17 @@ def test_determinism_compile_and_compile_goi(terms):
         assert perm_equal(out1.perm, out2.perm)
 
 
-@pytest.mark.xfail(reason="Distributivity is deferred by design; compilation must fail loudly.")
-def test_distributivity_still_deferred_under_compile(terms):
-    compile(terms["dist_deferred"], materialize=False)
+def test_distributivity_compiles_with_tagged_layout(terms):
+    """Distributivity now compiles with tagged layout model."""
+    result = compile(terms["dist_deferred"], materialize=False)
+    # DistL is identity on wires under the sharing model
+    assert result.circuit is not None
+    assert len(result.circuit.get_commands()) == 0
 
 
-@pytest.mark.xfail(reason="Distributivity is deferred by design; compilation must fail loudly (also under GOI).")
-def test_distributivity_still_deferred_under_compile_goi(terms):
-    compile_goi(terms["dist_deferred"], materialize=False)
+def test_distributivity_compiles_under_compile_goi(terms):
+    """Distributivity now compiles under compile_goi with tagged layout model."""
+    result = compile_goi(terms["dist_deferred"], materialize=False)
+    # Should return CompiledGOI since it extracts successfully
+    from compile.to_pytket import CompiledGOI
+    assert isinstance(result, CompiledGOI)

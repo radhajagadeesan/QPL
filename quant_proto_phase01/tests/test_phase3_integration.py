@@ -271,23 +271,29 @@ class TestDeterminismEndToEnd:
 
 
 @pytest.mark.integration
-class TestDistributivityDeferred:
-    """B7: Error Discipline - Distributivity Remains Deferred."""
+class TestDistributivitySupported:
+    """B7: Distributivity - Now Supported with Tagged Layout Model."""
 
-    def test_distl_fails_in_compile(self):
-        """B7.1: DistL fails loudly in compile()."""
+    def test_distl_compiles(self):
+        """B7.1: DistL compiles with tagged layout model."""
         from lang.terms import DistL
 
         term = DistL(Q(), Q(), Q())
 
-        with pytest.raises(NotImplementedError):
-            compile(term)
+        # Should compile without error
+        result = compile(term)
+        # DistL is identity on wires under the sharing model
+        assert result.circuit.n_qubits == 4  # (1 + 1 + 1) + 1 = 4
+        assert len(result.circuit.get_commands()) == 0
 
-    def test_distl_fails_in_compile_goi(self):
-        """B7.1: DistL fails loudly in compile_goi()."""
+    def test_distl_compiles_in_compile_goi(self):
+        """B7.1: DistL compiles in compile_goi()."""
         from lang.terms import DistL
 
         term = DistL(Q(), Q(), Q())
 
-        with pytest.raises(NotImplementedError):
-            compile_goi(term)
+        # Should compile without error
+        result = compile_goi(term)
+        # Returns CompiledGOI since it extracts successfully
+        from compile.to_pytket import CompiledGOI
+        assert isinstance(result, CompiledGOI)

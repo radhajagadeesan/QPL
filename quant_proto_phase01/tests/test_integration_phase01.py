@@ -92,8 +92,10 @@ class TestTypeConstruction:
         assert width(Ten(Q(), Q())) == 2
         assert width(Ten(Ten(Q(), Q()), Q())) == 3
 
-    def test_plus_adds_widths(self):
-        assert width(Plus(Q(), Q())) == 2
+    def test_plus_tagged_width(self):
+        # Tagged layout: A ⊕ B has width = 1 + width(A) + width(B)
+        # This includes 1 tag qubit + all data wires from both branches
+        assert width(Plus(Q(), Q())) == 3  # 1 tag + 1 + 1
 
     def test_nested_types(self):
         ty = Ten(Ten(Q(), Q()), Ten(Q(), Q()))
@@ -229,10 +231,14 @@ class TestCompilation:
         # The final perm should be identity after materialization
         assert result.perm == identity(2)
 
-    def test_distributivity_raises(self):
+    def test_distributivity_compiles(self):
+        # Tagged layout model: distributivity is now supported
         prog = DistL(Q(), Q(), Q())
-        with pytest.raises(NotImplementedError):
-            compile(prog)
+        result = compile(prog)
+        # DistL is identity on wires under the sharing model
+        # Width: (1 + 1 + 1) + 1 = 4 for (Q ⊕ Q) ⊗ Q
+        assert result.circuit.n_qubits == 4
+        assert len(result.circuit.get_commands()) == 0  # No gates
 
 
 # ---------------------------------------------------------------------------

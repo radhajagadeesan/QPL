@@ -1,13 +1,13 @@
 # tests/integration/test_e2e_dist_compile_failures.py
-"""Integration Suite 6: DistL/DistR Loud Failures.
+"""Integration Suite 6: DistL/DistR Compilation (Now Supported).
 
-Purpose: Ensure distributivity typechecks but fails at compile-time.
+Purpose: Verify distributivity compiles correctly with tagged layout model.
 
-Key invariants:
-- DistL/DistR terms may typecheck
-- Compile MUST raise NotImplementedError
-- Error message must be clear
-- Failure is deterministic
+Key invariants (updated):
+- DistL/DistR terms typecheck and compile
+- DistL is identity on wires under sharing model
+- DistR moves tag to the front
+- Compilation is deterministic
 """
 from __future__ import annotations
 
@@ -15,8 +15,9 @@ import pytest
 
 from lang.types import Q, Ten
 from lang.terms import Id, Seq, DistL, DistR
-from compile.to_pytket import compile, compile_goi
+from compile.to_pytket import compile, compile_goi, CompiledGOI
 from typing_.check import assert_well_typed
+from core.perm import identity
 
 from .helpers import mk_dist_failure_corpus
 
@@ -31,7 +32,7 @@ def dist_terms():
 
 
 # -----------------------------------------------------------------
-# Distributivity must fail loudly
+# Distributivity now compiles successfully
 # -----------------------------------------------------------------
 
 DIST_NAMES = [
@@ -44,61 +45,79 @@ DIST_NAMES = [
 @pytest.mark.integration
 @pytest.mark.parametrize("name", DIST_NAMES)
 def test_dist_typechecks(dist_terms, name):
-    """Distributivity terms may typecheck."""
+    """Distributivity terms typecheck."""
     term = dist_terms[name]
     # This should not raise
-    try:
-        assert_well_typed(term)
-    except Exception:
-        # If it doesn't typecheck, that's also fine
-        pass
+    assert_well_typed(term)
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("name", DIST_NAMES)
-def test_dist_compile_raises(dist_terms, name):
-    """compile() must raise NotImplementedError for distributivity."""
+def test_dist_compiles(dist_terms, name):
+    """compile() now succeeds for distributivity with tagged layout model."""
     term = dist_terms[name]
 
-    with pytest.raises(NotImplementedError) as exc_info:
-        compile(term, materialize=False)
-
-    # Error message should mention distributivity
-    assert "distributivity" in str(exc_info.value).lower() or "deferred" in str(exc_info.value).lower()
+    # Should compile without error
+    result = compile(term, materialize=False)
+    assert result.circuit is not None
+    # Distributivity terms don't emit gates (pure permutation/identity)
+    assert len(result.circuit.get_commands()) == 0
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("name", DIST_NAMES)
-def test_dist_compile_goi_raises(dist_terms, name):
-    """compile_goi() must raise NotImplementedError for distributivity."""
+def test_dist_compile_goi_succeeds(dist_terms, name):
+    """compile_goi() now succeeds for distributivity."""
     term = dist_terms[name]
 
-    with pytest.raises(NotImplementedError) as exc_info:
-        compile_goi(term, materialize=False)
-
-    # Error message should mention distributivity
-    assert "distributivity" in str(exc_info.value).lower() or "deferred" in str(exc_info.value).lower()
+    # Should compile without error
+    result = compile_goi(term, materialize=False)
+    # Should return CompiledGOI since it extracts successfully
+    assert isinstance(result, CompiledGOI)
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("name", DIST_NAMES)
-def test_dist_failure_deterministic(dist_terms, name):
-    """Distributivity failure is deterministic."""
+def test_dist_compilation_deterministic(dist_terms, name):
+    """Distributivity compilation is deterministic."""
     term = dist_terms[name]
 
-    errors = []
+    results = []
     for _ in range(3):
-        try:
-            compile(term, materialize=False)
-            errors.append(None)
-        except NotImplementedError as e:
-            errors.append(str(e))
+        result = compile(term, materialize=False)
+        results.append((
+            result.circuit.n_qubits,
+            len(result.circuit.get_commands()),
+            result.perm.new_to_old
+        ))
 
-    # All should raise
-    assert all(e is not None for e in errors), "Distributivity should always fail"
+    # All should be identical
+    assert all(r == results[0] for r in results), "Compilation not deterministic"
 
-    # All error messages should be identical
-    assert all(e == errors[0] for e in errors), "Error message not deterministic"
+
+@pytest.mark.integration
+def test_distl_is_identity():
+    """DistL: (A ⊕ B) ⊗ C → (A ⊗ C) ⊕ (B ⊗ C) is identity on wires."""
+    term = DistL(Q(), Q(), Q())
+
+    result = compile(term, materialize=False)
+    # Width: (1 + 1 + 1) + 1 = 4 for (Q ⊕ Q) ⊗ Q
+    assert result.circuit.n_qubits == 4
+    assert result.perm.new_to_old == identity(4).new_to_old
+
+
+@pytest.mark.integration
+def test_distr_moves_tag():
+    """DistR: A ⊗ (B ⊕ C) → (A ⊗ B) ⊕ (A ⊗ C) moves tag to front."""
+    term = DistR(Q(), Q(), Q())
+
+    result = compile(term, materialize=False)
+    # Width: 1 + (1 + 1 + 1) = 4 for Q ⊗ (Q ⊕ Q)
+    assert result.circuit.n_qubits == 4
+    # Tag moves from position 1 to position 0
+    # [A=0, tag=1, B=2, C=3] -> [tag=0, A=1, B=2, C=3]
+    expected_perm = [1, 0, 2, 3]
+    assert result.perm.new_to_old == expected_perm
 
 
 # -----------------------------------------------------------------

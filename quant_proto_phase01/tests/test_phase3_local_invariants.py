@@ -138,19 +138,23 @@ class TestPhase2InteractionLocal:
 
 
 @pytest.mark.phase3
-class TestDistributivityDeferred:
-    """A8: Distributivity remains deferred in Phase 3."""
+class TestDistributivitySupported:
+    """A8: Distributivity now supported with tagged layout model."""
 
-    def test_distl_fails_loudly_in_compile_goi(self):
-        """A8.1: DistL raises error in compile_goi."""
+    def test_distl_compiles_in_compile_goi(self):
+        """A8.1: DistL compiles with tagged layout model."""
         from lang.terms import DistL
 
         term = DistL(Q(), Q(), Q())
 
-        with pytest.raises(NotImplementedError) as exc_info:
-            compile_goi(term)
-
-        assert "Distributivity" in str(exc_info.value)
+        # Should compile without error
+        result = compile_goi(term)
+        # Should return CompiledGOI since it extracts successfully
+        assert isinstance(result, CompiledGOI)
+        # Width: (1 + 1 + 1) + 1 = 4 for (Q ⊕ Q) ⊗ Q
+        assert result.circuit.n_qubits == 4
+        # DistL is identity on wires
+        assert len(result.circuit.get_commands()) == 0
 
 
 @pytest.mark.phase3

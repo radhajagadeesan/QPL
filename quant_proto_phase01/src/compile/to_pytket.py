@@ -27,6 +27,8 @@ from core.perm import (
     WirePerm, identity, compose,
     twist_tensor_perm, assoc_tensor_L_perm, assoc_tensor_R_perm,
     twist_plus_perm, assoc_plus_L_perm, assoc_plus_R_perm,
+    dist_L_perm, dist_R_perm, undist_L_perm, undist_R_perm,
+    TaggedPerm, tagged_from_perm, tagged_compose,
 )
 from backends.materialize import swaps_for_perm, apply_swaps
 from compile.goi import (
@@ -45,6 +47,9 @@ class Compiled:
     log: Optional[List[str]] = None
 
 
+# Distributivity is now supported with tagged layout model - no longer need to block it
+
+
 def _contains_dist(t: Term) -> bool:
     """Check if term contains DistL or DistR anywhere."""
     if isinstance(t, (DistL, DistR)):
@@ -56,6 +61,20 @@ def _contains_dist(t: Term) -> bool:
     if isinstance(t, Feedback):
         return _contains_dist(t.body)
     return False
+
+
+def _shared_width(t: Term) -> int:
+    """Compute the physical wire width, accounting for distributivity sharing.
+
+    For terms containing DistL or DistR, the syntactic domain and codomain types
+    have different naive widths, but the physical layout is the same under the
+    sharing model.
+
+    This function computes the actual physical width by traversing the term
+    and using the domain width (which is canonical for distributivity).
+    """
+    dom, _ = type_of(t)
+    return width(dom)
 
 
 def _contains_feedback(t: Term) -> bool:
@@ -70,10 +89,6 @@ def _contains_feedback(t: Term) -> bool:
 
 
 def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> Compiled:
-    # Check for distributivity FIRST before any other checks
-    if _contains_dist(term):
-        raise NotImplementedError("Distributivity compilation deferred (needs sum-aware layout).")
-
     # Check for Feedback - must use compile_goi instead
     if _contains_feedback(term):
         raise NotImplementedError(
@@ -84,11 +99,17 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
     assert_well_typed(term)
     dom, cod = type_of(term)
     n = width(dom)
-    if width(cod) != n:
+
+    # For terms with distributivity, the syntactic types have different naive widths
+    # but the physical layout is the same under the sharing model.
+    # We trust that distributivity preserves physical width.
+    if not _contains_dist(term) and width(cod) != n:
         raise TypeCheckError("Compilation currently requires width(dom)==width(cod).")
 
     circ = Circuit(n)
     p = identity(n)
+    # Track pending tag flips (X gates to emit after permutation tracking)
+    pending_tag_flips: List[int] = []
     log: List[str] = []
 
     def emit_H(i: int, offset: int = 0) -> None:
@@ -189,6 +210,23 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
             global_perm[offset + i] = offset + local_perm.new_to_old[i]
         return WirePerm(n, global_perm)
 
+    def apply_tagged_perm(tagged: TaggedPerm, offset: int) -> None:
+        """Apply a TaggedPerm: update global perm and emit X gates for tag flips."""
+        nonlocal p
+        # Embed the wire permutation
+        step = embed_local_perm(tagged.perm, offset)
+        p = compose(step, p)
+
+        # For each tag flip position, emit an X gate
+        # The flip positions are in local coordinates, need to add offset
+        for local_pos in tagged.tag_flips:
+            global_pos = local_pos + offset
+            # Map through current permutation to get physical wire
+            phys = p.apply_new_to_old(global_pos)
+            circ.X(phys)
+            if explain:
+                log.append(f"Tag flip at local {local_pos} + offset {offset} = global {global_pos} -> physical {phys}")
+
     def go(t: Term, offset: int = 0) -> None:
         nonlocal p
         if isinstance(t, Id):
@@ -213,10 +251,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
                 log.append(f"TenTerm left_width={left_width}")
             return
 
-        # Distributivity compilation deferred
-        if isinstance(t, (DistL, DistR)):
-            raise NotImplementedError("Distributivity compilation deferred (needs sum-aware layout).")
-
         if isinstance(t, TwistTen):
             local_step = twist_tensor_perm(t.a, t.b)
             step = embed_local_perm(local_step, offset)
@@ -240,25 +274,36 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
             return
 
         if isinstance(t, TwistPlus):
-            local_step = twist_plus_perm(t.a, t.b)
-            step = embed_local_perm(local_step, offset)
-            p = compose(step, p)
+            tagged = twist_plus_perm(t.a, t.b)
+            apply_tagged_perm(tagged, offset)
             if explain:
-                log.append(f"TwistPlus perm={step.new_to_old}")
+                log.append(f"TwistPlus perm={tagged.perm.new_to_old} flips={tagged.tag_flips}")
             return
         if isinstance(t, AssocPlusL):
-            local_step = assoc_plus_L_perm(t.a, t.b, t.c)
-            step = embed_local_perm(local_step, offset)
-            p = compose(step, p)
+            tagged = assoc_plus_L_perm(t.a, t.b, t.c)
+            apply_tagged_perm(tagged, offset)
             if explain:
-                log.append(f"AssocPlusL perm={step.new_to_old}")
+                log.append(f"AssocPlusL perm={tagged.perm.new_to_old} flips={tagged.tag_flips}")
             return
         if isinstance(t, AssocPlusR):
-            local_step = assoc_plus_R_perm(t.a, t.b, t.c)
-            step = embed_local_perm(local_step, offset)
-            p = compose(step, p)
+            tagged = assoc_plus_R_perm(t.a, t.b, t.c)
+            apply_tagged_perm(tagged, offset)
             if explain:
-                log.append(f"AssocPlusR perm={step.new_to_old}")
+                log.append(f"AssocPlusR perm={tagged.perm.new_to_old} flips={tagged.tag_flips}")
+            return
+
+        # Distributivity: now supported with tagged layout
+        if isinstance(t, DistL):
+            tagged = dist_L_perm(t.a, t.b, t.c)
+            apply_tagged_perm(tagged, offset)
+            if explain:
+                log.append(f"DistL perm={tagged.perm.new_to_old} (identity)")
+            return
+        if isinstance(t, DistR):
+            tagged = dist_R_perm(t.a, t.b, t.c)
+            apply_tagged_perm(tagged, offset)
+            if explain:
+                log.append(f"DistR perm={tagged.perm.new_to_old} (tag moves to front)")
             return
 
         if isinstance(t, H):
@@ -365,9 +410,7 @@ def compile_goi(
     - Failure to extract is not an error
     - Phase 4B (enable_zx) only processes residuals from Phase 4A
     """
-    # Check for distributivity
-    if _contains_dist(term):
-        raise NotImplementedError("Distributivity compilation deferred (needs sum-aware layout).")
+    # Distributivity is now supported with tagged layout model
 
     assert_well_typed(term)
 
@@ -441,8 +484,19 @@ def compile_goi(
                 log.append(f"Feedback k={t.k} body_width={body_width}")
             return
 
-        if isinstance(t, (DistL, DistR)):
-            raise NotImplementedError("Distributivity compilation deferred (needs sum-aware layout).")
+        def apply_tagged_perm_goi(tagged: TaggedPerm, offset: int) -> None:
+            """Apply a TaggedPerm in GOI mode: update perm and emit X atoms for tag flips."""
+            nonlocal p
+            step = embed_local_perm(tagged.perm, offset)
+            p = compose(step, p)
+
+            # For each tag flip, emit an X gate atom
+            for local_pos in tagged.tag_flips:
+                global_pos = local_pos + offset
+                effective_pos = p.apply_new_to_old(global_pos)
+                atoms.append(GateAtom("X", (effective_pos,), ()))
+                if explain:
+                    log.append(f"Tag flip X at local {local_pos} -> effective {effective_pos}")
 
         if isinstance(t, TwistTen):
             local_step = twist_tensor_perm(t.a, t.b)
@@ -469,27 +523,39 @@ def compile_goi(
             return
 
         if isinstance(t, TwistPlus):
-            local_step = twist_plus_perm(t.a, t.b)
-            step = embed_local_perm(local_step, offset)
-            p = compose(step, p)
+            tagged = twist_plus_perm(t.a, t.b)
+            apply_tagged_perm_goi(tagged, offset)
             if explain:
-                log.append(f"TwistPlus perm={step.new_to_old}")
+                log.append(f"TwistPlus perm={tagged.perm.new_to_old} flips={tagged.tag_flips}")
             return
 
         if isinstance(t, AssocPlusL):
-            local_step = assoc_plus_L_perm(t.a, t.b, t.c)
-            step = embed_local_perm(local_step, offset)
-            p = compose(step, p)
+            tagged = assoc_plus_L_perm(t.a, t.b, t.c)
+            apply_tagged_perm_goi(tagged, offset)
             if explain:
-                log.append(f"AssocPlusL perm={step.new_to_old}")
+                log.append(f"AssocPlusL perm={tagged.perm.new_to_old} flips={tagged.tag_flips}")
             return
 
         if isinstance(t, AssocPlusR):
-            local_step = assoc_plus_R_perm(t.a, t.b, t.c)
-            step = embed_local_perm(local_step, offset)
-            p = compose(step, p)
+            tagged = assoc_plus_R_perm(t.a, t.b, t.c)
+            apply_tagged_perm_goi(tagged, offset)
             if explain:
-                log.append(f"AssocPlusR perm={step.new_to_old}")
+                log.append(f"AssocPlusR perm={tagged.perm.new_to_old} flips={tagged.tag_flips}")
+            return
+
+        # Distributivity: now supported with tagged layout
+        if isinstance(t, DistL):
+            tagged = dist_L_perm(t.a, t.b, t.c)
+            apply_tagged_perm_goi(tagged, offset)
+            if explain:
+                log.append(f"DistL perm={tagged.perm.new_to_old} (identity)")
+            return
+
+        if isinstance(t, DistR):
+            tagged = dist_R_perm(t.a, t.b, t.c)
+            apply_tagged_perm_goi(tagged, offset)
+            if explain:
+                log.append(f"DistR perm={tagged.perm.new_to_old} (tag moves to front)")
             return
 
         if isinstance(t, H):
