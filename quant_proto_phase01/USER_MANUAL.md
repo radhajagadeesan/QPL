@@ -142,11 +142,11 @@ bell_state = Seq(H(0), CX(0, 1))
 result = compile(bell_state)
 print(f"Gates: {result.circuit.n_gates}")  # Output: 2
 
-# Example 2: Structural swap (no gates)
+# Example 2: Structural swap (with tag flip)
 swap = TwistPlus(Q(), Q())
 result = compile(swap)
-print(f"Permutation: {result.perm.new_to_old}")  # Output: [1, 0]
-print(f"Gates: {result.circuit.n_gates}")         # Output: 0
+print(f"Permutation: {result.perm.new_to_old}")  # Output: [0, 2, 1]
+print(f"Gates: {result.circuit.n_gates}")         # Output: 1 (X gate for tag flip)
 ```
 
 ### 3.2 Your First Program (Surface Language)
@@ -229,14 +229,20 @@ case x of
 |--------|-------------|-------|
 | `H[i]` | Hadamard | 1 |
 | `S[i]` | S gate (π/2 phase) | 1 |
+| `Sdg[i]` | S† gate (inverse of S) | 1 |
 | `T[i]` | T gate (π/4 phase) | 1 |
+| `Tdg[i]` | T† gate (inverse of T) | 1 |
 | `X[i]` | Pauli-X | 1 |
 | `Y[i]` | Pauli-Y | 1 |
 | `Z[i]` | Pauli-Z | 1 |
+| `Rx[θ,i]` | X-rotation by angle θ | 1 |
+| `Ry[θ,i]` | Y-rotation by angle θ | 1 |
+| `Rz[θ,i]` | Z-rotation by angle θ | 1 |
+| `Phase[θ,i]` | Phase gate | 1 |
 | `CX[i,j]` | CNOT (controlled-X) | 2 |
 | `CZ[i,j]` | Controlled-Z | 2 |
+| `CRz[θ,i,j]` | Controlled Rz | 2 |
 | `CCX[i,j,k]` | Toffoli (controlled-controlled-X) | 3 |
-| `Rz[θ,i]` | Z-rotation by angle θ | 1 |
 
 #### Exponential of Involution
 
@@ -362,7 +368,19 @@ echo '{"type": "compile", "term": {"node": "TwistPlus", "a": {"node": "Q"}, "b":
 
 Output:
 ```json
-{"success": true, "perm": {"n": 2, "new_to_old": [1, 0]}, "circuit_size": 0}
+{"success": true, "perm": {"n": 3, "new_to_old": [0, 2, 1]}, "circuit_size": 1}
+```
+
+The bridge supports gates (with automatic width inference) and distributivity:
+
+```bash
+# Bell state: H[0] ; CX[0,1]
+echo '{"type": "compile", "term": {"node": "Seq", "f": {"node": "H", "i": 0}, "g": {"node": "CX", "i": 0, "j": 1}}}' | python surface/bridge.py
+```
+
+Output:
+```json
+{"success": true, "perm": {"n": 2, "new_to_old": [0, 1]}, "circuit_size": 2}
 ```
 
 ### 6.4 Checking Involutions
@@ -373,8 +391,54 @@ echo '{"type": "check_involution", "term": {"node": "TwistPlus", "a": {"node": "
 
 Output:
 ```json
-{"success": true, "is_involution": true, "perm": {"n": 2, "new_to_old": [1, 0]}}
+{"success": true, "is_involution": true, "perm": {"n": 3, "new_to_old": [0, 2, 1]}}
 ```
+
+### 6.5 OCaml Embedded DSL
+
+The OCaml embedded DSL provides full access to the compiler via the bridge:
+
+```ocaml
+open Qpl_surface
+
+(* Set project root for bridge *)
+let () = Bridge.set_project_root "/path/to/quant_proto_phase01"
+
+(* Bell state: H[0] ; CX[0,1] *)
+let bell = Bridge.TSeq (Bridge.TH 0, Bridge.TCX (0, 1))
+
+let () = match Bridge.compile bell with
+  | Bridge.CompileOk (perm, size) ->
+    Printf.printf "Gates: %d\n" size  (* Output: 2 *)
+  | Bridge.CompileError err ->
+    Printf.printf "Error: %s\n" err
+
+(* GHZ state: H[0] ; CX[0,1] ; CX[0,2] *)
+let ghz = Bridge.TSeq (
+  Bridge.TH 0,
+  Bridge.TSeq (Bridge.TCX (0, 1), Bridge.TCX (0, 2))
+)
+
+(* Distributivity *)
+let dist = Bridge.TDistR (Rep.var 0, Rep.var 1, Rep.var 2)
+
+(* Involution check + exp_i *)
+let swap = Bridge.TTwistPlus (Rep.var 0, Rep.var 1)
+let () = match Qpl.check_involution swap with
+  | Qpl.Involutive perm -> print_endline "Swap is involutive"
+  | Qpl.NotInvolutive _ -> print_endline "Not involutive"
+  | Qpl.CheckError err -> print_endline err
+```
+
+**Supported OCaml Bridge Terms:**
+
+| Category | Terms |
+|----------|-------|
+| Structural | `TId`, `TSeq`, `TTenTerm`, `TTwistTen`, `TTwistPlus`, `TAssocTenL/R`, `TAssocPlusL/R` |
+| Distributivity | `TDistL`, `TDistR` |
+| Single-qubit gates | `TH`, `TS`, `TSdg`, `TT`, `TTdg`, `TX`, `TY`, `TZ`, `TRx`, `TRy`, `TRz`, `TPhase` |
+| Two-qubit gates | `TCX`, `TCZ`, `TCRz` |
+| Three-qubit gate | `TCCX` |
 
 ---
 
@@ -404,7 +468,8 @@ term = TwistTen(Q(), Q())
 from lang.terms import TwistPlus
 
 term = TwistPlus(Q(), Q())
-# Compiles to: perm = [1, 0], gates = 0
+# Compiles to: perm = [0, 2, 1], gates = 1 (X gate for tag flip)
+# Tagged layout: Q + Q has width 3 (1 tag + 1 + 1)
 ```
 
 ### 7.2 Quantum Circuits
@@ -592,18 +657,24 @@ Definitions:
 
 ## Appendix B: Supported Gates
 
-| Gate | Syntax | Matrix |
-|------|--------|--------|
+| Gate | Syntax | Description |
+|------|--------|-------------|
 | Hadamard | `H[i]` | `(1/√2)[[1,1],[1,-1]]` |
-| S | `S[i]` | `[[1,0],[0,i]]` |
-| T | `T[i]` | `[[1,0],[0,e^{iπ/4}]]` |
-| X | `X[i]` | `[[0,1],[1,0]]` |
-| Y | `Y[i]` | `[[0,-i],[i,0]]` |
-| Z | `Z[i]` | `[[1,0],[0,-1]]` |
+| S | `S[i]` | `[[1,0],[0,i]]` (π/2 phase) |
+| S† | `Sdg[i]` | `[[1,0],[0,-i]]` (inverse of S) |
+| T | `T[i]` | `[[1,0],[0,e^{iπ/4}]]` (π/4 phase) |
+| T† | `Tdg[i]` | `[[1,0],[0,e^{-iπ/4}]]` (inverse of T) |
+| X | `X[i]` | `[[0,1],[1,0]]` (Pauli-X) |
+| Y | `Y[i]` | `[[0,-i],[i,0]]` (Pauli-Y) |
+| Z | `Z[i]` | `[[1,0],[0,-1]]` (Pauli-Z) |
+| Rx | `Rx[θ,i]` | X-rotation by angle θ |
+| Ry | `Ry[θ,i]` | Y-rotation by angle θ |
+| Rz | `Rz[θ,i]` | Z-rotation by angle θ |
+| Phase | `Phase[θ,i]` | Global phase gate |
 | CNOT | `CX[i,j]` | Controlled-X |
 | CZ | `CZ[i,j]` | Controlled-Z |
+| CRz | `CRz[θ,i,j]` | Controlled Rz |
 | Toffoli | `CCX[i,j,k]` | Controlled-controlled-X |
-| Rz | `Rz[θ,i]` | `[[1,0],[0,e^{iθ}]]` |
 
 ---
 
