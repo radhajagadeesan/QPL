@@ -110,11 +110,11 @@ Invariant:
 
 ### What Phase 1 explicitly does *not* implement
 
-These are **not bugs**:
+These are **not bugs** (some now implemented in later phases):
 
-- `TenTerm` (parallel composition with offsets)
-- compilation of distributivity (`DistL`, `DistR`)
-- any operational meaning of `Plus`
+- `TenTerm` (parallel composition with offsets) — **implemented in Phase 2**
+- ~~compilation of distributivity (`DistL`, `DistR`)~~ — **implemented in Phase 4C**
+- any operational meaning of `Plus` — **implemented via tagged layout in Phase 4C**
 - higher-order execution / feedback / trace
 - alternative IRs (`src/ir/` is reserved)
 
@@ -141,7 +141,7 @@ tests/
   test_11_*.py   Permutation convention lock
   test_20_*.py   Tensor (⊗) structural laws
   test_21_*.py   Sum (⊕) structural laws
-  test_22_*.py   Distributivity deferred
+  test_22_*.py   Distributivity (now implemented)
   test_30_*.py   Gate emission (no structure)
   test_31_*.py   Gate emission under structure
   test_32_*.py   Determinism

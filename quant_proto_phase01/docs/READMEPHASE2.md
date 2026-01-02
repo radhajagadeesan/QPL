@@ -29,8 +29,10 @@ These are treated as *specification* and must remain locked by tests.
 ### Determinism
 - Same AST → identical compiled result (circuit command stream and final permutation), across repeated runs.
 
-### Distributivity deferred
-- `DistL/DistR` may be well-typed, but compilation must fail loudly (e.g. `NotImplementedError`).
+### Distributivity (implemented in Phase 4C)
+- `DistL/DistR` are now fully supported with the tagged layout model.
+- DistL is identity on wires; DistR moves the tag from position 1 to position 0.
+- Both compile to structural permutations (no gates).
 
 ### Flat first-order unitary artifact
 - Compilation always yields a flat first-order pytket `Circuit` plus a final `WirePerm`.
@@ -112,10 +114,10 @@ physical_index = perm.apply_new_to_old(local_index + offset)
 
 ## Deferred in Phase 2 (explicitly out of scope)
 
-- Distributivity compilation (still deferred).
+- ~~Distributivity compilation (still deferred).~~ **Now implemented in Phase 4C.**
 - Any trace/feedback operator (GOI feedback), fixpoint, or runtime iteration.
 - Any change to the Phase 0–1 permutation convention.
-- Any change to “no SWAPs by default.”
+- Any change to "no SWAPs by default."
 
 ---
 

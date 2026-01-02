@@ -127,12 +127,13 @@ For each term in the suite:
 
 ---
 
-## B7. Error Discipline: Distributivity Remains Deferred
-### B7.1 DistL/DistR still fail loudly
-For terms containing distributivity constructors:
-- `compile` must fail loudly (existing behavior)
-- `compile_goi` must fail loudly the same way
-No silent residualization for distributivity (unless explicitly designed later).
+## B7. Distributivity (Now Implemented)
+### B7.1 DistL/DistR compile successfully
+With the tagged layout model (Phase 4C), distributivity is now fully supported:
+- `DistL` compiles to identity permutation [0, 1, 2, 3]
+- `DistR` compiles to permutation that moves tag from position 1 to position 0
+- Both are structural (no gates emitted)
+- Both work with `compile` and `compile_goi`
 
 ---
 

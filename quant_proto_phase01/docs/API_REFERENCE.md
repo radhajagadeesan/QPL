@@ -221,13 +221,13 @@ flatten_plus(ty) -> List      # Flatten plus tree
 
 **Aliases:** `SumTwist`, `SumAssocL`, `SumAssocR`
 
-#### Distributivity (Typed but NOT compiled in Phase 0–1)
-| Term | Type Signature |
-|------|----------------|
-| `DistL(a, b, c)` | `(a ⊕ b) ⊗ c → (a ⊗ c) ⊕ (b ⊗ c)` |
-| `DistR(a, b, c)` | `a ⊗ (b ⊕ c) → (a ⊗ b) ⊕ (a ⊗ c)` |
+#### Distributivity
+| Term | Type Signature | Description |
+|------|----------------|-------------|
+| `DistL(a, b, c)` | `(a ⊕ b) ⊗ c → (a ⊗ c) ⊕ (b ⊗ c)` | Identity on wires (tag already at front) |
+| `DistR(a, b, c)` | `a ⊗ (b ⊕ c) → (a ⊗ b) ⊕ (a ⊗ c)` | Moves tag from position 1 to position 0 |
 
-**Note:** Compilation raises `NotImplementedError` for distributivity.
+**Note:** With tagged layout model, distributivity compiles to structural permutations (no gates).
 
 #### Gates
 | Gate | Signature | Description |
@@ -300,13 +300,13 @@ print(f"With SWAPs: {result_mat.circuit}")
 
 ---
 
-## Invariants (Phase 0–1)
+## Invariants (Phase 0–4C)
 
-1. **Structure = metadata only**: Structural terms emit NO gates
+1. **Structure = metadata only**: Structural terms emit NO gates (except X for sum type tag flips)
 2. **No SWAPs by default**: `compile()` never emits SWAPs unless `materialize=True`
 3. **Gates are reindexed**: Gate wires go through `WirePerm.apply_new_to_old()`
 4. **Deterministic**: Same AST → identical circuit
-5. **Distributivity deferred**: Raises `NotImplementedError`
+5. **Distributivity supported**: DistL/DistR compile to structural permutations with tagged layout
 
 ---
 

@@ -116,7 +116,7 @@ from lang.terms import (
     TwistTen, AssocTenL, AssocTenR,
     # Structural (sum)
     TwistPlus, AssocPlusL, AssocPlusR,
-    # Distributivity (deferred)
+    # Distributivity (structural with tagged layout)
     DistL, DistR,
     # Gates
     H, S, CX,

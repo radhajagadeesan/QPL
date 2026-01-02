@@ -153,9 +153,11 @@ Construct a term where:
 
 ---
 
-## A8. Distributivity remains deferred in Phase 3
-### A8.1 DistL/DistR compile fails loudly (even under compile_goi)
-- **Expected:** compile_goi raises the same “deferred” error as compile, or returns an explicit “unsupported” marker (but not silent success).
+## A8. Distributivity (Now Implemented in Phase 4C)
+### A8.1 DistL/DistR compile successfully
+- **Expected:** Both `compile` and `compile_goi` handle distributivity correctly with tagged layout model.
+- DistL is identity on wires; DistR moves tag to front.
+- Both are structural (no gates).
 
 ---
 
