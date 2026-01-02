@@ -45,6 +45,7 @@ let rec type_to_json = function
 
 (** Term representation for JSON serialization *)
 type term =
+  (* Structural combinators *)
   | TId of Rep.t
   | TSeq of term * term
   | TTenTerm of term * term
@@ -54,9 +55,32 @@ type term =
   | TTwistPlus of Rep.t * Rep.t
   | TAssocPlusL of Rep.t * Rep.t * Rep.t
   | TAssocPlusR of Rep.t * Rep.t * Rep.t
+  (* Distributivity (unitary-level) *)
+  | TDistL of Rep.t * Rep.t * Rep.t
+  | TDistR of Rep.t * Rep.t * Rep.t
+  (* Single-qubit gates *)
+  | TH of int
+  | TS of int
+  | TSdg of int
+  | TT of int
+  | TTdg of int
+  | TX of int
+  | TY of int
+  | TZ of int
+  | TRx of float * int
+  | TRy of float * int
+  | TRz of float * int
+  | TPhase of float * int
+  (* Two-qubit gates *)
+  | TCX of int * int
+  | TCZ of int * int
+  | TCRz of float * int * int
+  (* Three-qubit gate *)
+  | TCCX of int * int * int
 
 (** Convert a term to JSON *)
 let rec term_to_json = function
+  (* Structural combinators *)
   | TId ty ->
     Printf.sprintf {|{"node": "Id", "ty": %s}|} (type_to_json ty)
   | TSeq (f, g) ->
@@ -83,6 +107,32 @@ let rec term_to_json = function
   | TAssocPlusR (a, b, c) ->
     Printf.sprintf {|{"node": "AssocPlusR", "a": %s, "b": %s, "c": %s}|}
       (type_to_json a) (type_to_json b) (type_to_json c)
+  (* Distributivity *)
+  | TDistL (a, b, c) ->
+    Printf.sprintf {|{"node": "DistL", "a": %s, "b": %s, "c": %s}|}
+      (type_to_json a) (type_to_json b) (type_to_json c)
+  | TDistR (a, b, c) ->
+    Printf.sprintf {|{"node": "DistR", "a": %s, "b": %s, "c": %s}|}
+      (type_to_json a) (type_to_json b) (type_to_json c)
+  (* Single-qubit gates *)
+  | TH i -> Printf.sprintf {|{"node": "H", "i": %d}|} i
+  | TS i -> Printf.sprintf {|{"node": "S", "i": %d}|} i
+  | TSdg i -> Printf.sprintf {|{"node": "Sdg", "i": %d}|} i
+  | TT i -> Printf.sprintf {|{"node": "T", "i": %d}|} i
+  | TTdg i -> Printf.sprintf {|{"node": "Tdg", "i": %d}|} i
+  | TX i -> Printf.sprintf {|{"node": "X", "i": %d}|} i
+  | TY i -> Printf.sprintf {|{"node": "Y", "i": %d}|} i
+  | TZ i -> Printf.sprintf {|{"node": "Z", "i": %d}|} i
+  | TRx (theta, i) -> Printf.sprintf {|{"node": "Rx", "theta": %f, "i": %d}|} theta i
+  | TRy (theta, i) -> Printf.sprintf {|{"node": "Ry", "theta": %f, "i": %d}|} theta i
+  | TRz (theta, i) -> Printf.sprintf {|{"node": "Rz", "theta": %f, "i": %d}|} theta i
+  | TPhase (theta, i) -> Printf.sprintf {|{"node": "Phase", "theta": %f, "i": %d}|} theta i
+  (* Two-qubit gates *)
+  | TCX (i, j) -> Printf.sprintf {|{"node": "CX", "i": %d, "j": %d}|} i j
+  | TCZ (i, j) -> Printf.sprintf {|{"node": "CZ", "i": %d, "j": %d}|} i j
+  | TCRz (theta, i, j) -> Printf.sprintf {|{"node": "CRz", "theta": %f, "i": %d, "j": %d}|} theta i j
+  (* Three-qubit gate *)
+  | TCCX (i, j, k) -> Printf.sprintf {|{"node": "CCX", "i": %d, "j": %d, "k": %d}|} i j k
 
 (** Simple JSON parsing helpers *)
 let find_string key json =

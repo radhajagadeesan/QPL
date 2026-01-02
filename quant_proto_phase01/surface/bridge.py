@@ -26,6 +26,10 @@ from lang.terms import (
     Term, Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
+    DistL, DistR,
+    H, S, Sdg, T, Tdg, X, Y, Z,
+    Rx, Ry, Rz, Phase,
+    CX, CZ, CRz, CCX,
 )
 from core.perm import WirePerm, identity, compose
 from compile.to_pytket import compile
@@ -44,18 +48,64 @@ def parse_type(j: dict) -> Ty:
         raise ValueError(f"Unknown type node: {node}")
 
 
-def parse_term(j: dict) -> Term:
-    """Parse a JSON term representation into a Term."""
+def _max_wire_index(j: dict) -> int:
+    """Find the maximum wire index used in a JSON term."""
+    node = j.get("node", "")
+    max_idx = -1
+
+    # Check for wire indices in gates
+    if "i" in j:
+        max_idx = max(max_idx, j["i"])
+    if "j" in j:
+        max_idx = max(max_idx, j["j"])
+    if "k" in j:
+        max_idx = max(max_idx, j["k"])
+
+    # Recurse into subterms
+    if "f" in j:
+        max_idx = max(max_idx, _max_wire_index(j["f"]))
+    if "g" in j:
+        max_idx = max(max_idx, _max_wire_index(j["g"]))
+
+    return max_idx
+
+
+def _build_ty_total(n_qubits: int) -> Ty:
+    """Build a tensor type with n_qubits qubits: Q ⊗ Q ⊗ ... ⊗ Q."""
+    if n_qubits <= 0:
+        return Q()
+    if n_qubits == 1:
+        return Q()
+
+    # Build right-associated: Q ⊗ (Q ⊗ (Q ⊗ ...))
+    result = Q()
+    for _ in range(n_qubits - 1):
+        result = Ten(Q(), result)
+    return result
+
+
+def parse_term(j: dict, ty_total: Ty = None) -> Term:
+    """Parse a JSON term representation into a Term.
+
+    ty_total: The total type context for gates. If None, inferred from max wire index.
+    """
+    # Infer ty_total from max wire index if not provided
+    if ty_total is None:
+        max_idx = _max_wire_index(j)
+        n_qubits = max(2, max_idx + 1)  # At least 2 qubits
+        ty_total = _build_ty_total(n_qubits)
+
     node = j["node"]
 
+    # Structural combinators
     if node == "Id":
         return Id(parse_type(j["ty"]))
 
     elif node == "Seq":
-        return Seq(parse_term(j["f"]), parse_term(j["g"]))
+        return Seq(parse_term(j["f"], ty_total), parse_term(j["g"], ty_total))
 
     elif node == "TenTerm":
-        return TenTerm(parse_term(j["f"]), parse_term(j["g"]))
+        return TenTerm(parse_term(j["f"], ty_total), parse_term(j["g"], ty_total))
 
     elif node == "TwistTen":
         return TwistTen(parse_type(j["a"]), parse_type(j["b"]))
@@ -74,6 +124,64 @@ def parse_term(j: dict) -> Term:
 
     elif node == "AssocPlusR":
         return AssocPlusR(parse_type(j["a"]), parse_type(j["b"]), parse_type(j["c"]))
+
+    # Distributivity
+    elif node == "DistL":
+        return DistL(parse_type(j["a"]), parse_type(j["b"]), parse_type(j["c"]))
+
+    elif node == "DistR":
+        return DistR(parse_type(j["a"]), parse_type(j["b"]), parse_type(j["c"]))
+
+    # Single-qubit gates
+    elif node == "H":
+        return H(j["i"], ty_total)
+
+    elif node == "S":
+        return S(j["i"], ty_total)
+
+    elif node == "Sdg":
+        return Sdg(j["i"], ty_total)
+
+    elif node == "T":
+        return T(j["i"], ty_total)
+
+    elif node == "Tdg":
+        return Tdg(j["i"], ty_total)
+
+    elif node == "X":
+        return X(j["i"], ty_total)
+
+    elif node == "Y":
+        return Y(j["i"], ty_total)
+
+    elif node == "Z":
+        return Z(j["i"], ty_total)
+
+    elif node == "Rx":
+        return Rx(j["theta"], j["i"], ty_total)
+
+    elif node == "Ry":
+        return Ry(j["theta"], j["i"], ty_total)
+
+    elif node == "Rz":
+        return Rz(j["theta"], j["i"], ty_total)
+
+    elif node == "Phase":
+        return Phase(j["theta"], j["i"], ty_total)
+
+    # Two-qubit gates
+    elif node == "CX":
+        return CX(j["i"], j["j"], ty_total)
+
+    elif node == "CZ":
+        return CZ(j["i"], j["j"], ty_total)
+
+    elif node == "CRz":
+        return CRz(j["theta"], j["i"], j["j"], ty_total)
+
+    # Three-qubit gate
+    elif node == "CCX":
+        return CCX(j["i"], j["j"], j["k"], ty_total)
 
     else:
         raise ValueError(f"Unknown term node: {node}")
