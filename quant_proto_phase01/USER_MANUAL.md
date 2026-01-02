@@ -54,7 +54,6 @@ To avoid confusion, these are **explicit non-features**:
 - No classical branching at runtime
 - No implicit copying or projection
 - No user-visible optimization passes
-- No distributivity compilation (DistL/DistR are deferred)
 
 If you need these features, this system is not the right tool.
 
@@ -217,10 +216,12 @@ case x of
 |--------|------|-------------|
 | `id[A]` | `A → A` | Identity |
 | `twist⊗[A, B]` | `A ⊗ B → B ⊗ A` | Tensor swap |
-| `twist+[A, B]` | `A + B → B + A` | Sum swap |
+| `twist+[A, B]` | `A + B → B + A` | Sum swap (emits X gate for tag flip) |
 | `assoc⊗L` | `(A ⊗ B) ⊗ C → A ⊗ (B ⊗ C)` | Tensor reassociation |
+| `DistL[A, B, C]` | `(A + B) ⊗ C → (A ⊗ C) + (B ⊗ C)` | Left distributivity (identity on wires) |
+| `DistR[A, B, C]` | `A ⊗ (B + C) → (A ⊗ B) + (A ⊗ C)` | Right distributivity (moves tag to front) |
 
-**Note:** Distributivity (`DistL`, `DistR`) is defined but **compilation is not yet implemented**. Using these terms will raise `NotImplementedError`.
+**Note:** Sum types use a tagged layout model: `A + B` has width `1 + width(A) + width(B)` where the extra qubit is a tag indicating which branch is active.
 
 #### Gates (Unitary Primitives)
 
@@ -436,7 +437,6 @@ See `surface/examples/algorithmic_snippets.surf` for:
 | Error | Cause | Solution |
 |-------|-------|----------|
 | `TypeCheckError` | Type mismatch in composition | Check that output type of f matches input type of g in `f ; g` |
-| `NotImplementedError: Distributivity` | Used DistL/DistR | Distributivity is deferred; use explicit structural rewiring |
 | `NotImplementedError: Feedback` | Used Feedback | Use `compile_goi()` for terms with feedback |
 | `Term is not structural` | Non-structural term in `exp_i` | Ensure J contains no gates |
 | `not involutive` | J ∘ J ≠ id | Use a proper involution (e.g., swap, not rotation) |
