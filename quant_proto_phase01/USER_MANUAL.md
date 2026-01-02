@@ -54,6 +54,7 @@ To avoid confusion, these are **explicit non-features**:
 - No classical branching at runtime
 - No implicit copying or projection
 - No user-visible optimization passes
+- No distributivity compilation (DistL/DistR are deferred)
 
 If you need these features, this system is not the right tool.
 
@@ -218,6 +219,8 @@ case x of
 | `twist⊗[A, B]` | `A ⊗ B → B ⊗ A` | Tensor swap |
 | `twist+[A, B]` | `A + B → B + A` | Sum swap |
 | `assoc⊗L` | `(A ⊗ B) ⊗ C → A ⊗ (B ⊗ C)` | Tensor reassociation |
+
+**Note:** Distributivity (`DistL`, `DistR`) is defined but **compilation is not yet implemented**. Using these terms will raise `NotImplementedError`.
 
 #### Gates (Unitary Primitives)
 
