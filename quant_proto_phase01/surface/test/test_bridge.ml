@@ -22,8 +22,10 @@ let test_twist_plus_involution () =
     print_endline (Printf.sprintf "  perm.n = %d" perm.n);
     print_endline (Printf.sprintf "  perm.new_to_old = [%s]"
       (String.concat ", " (List.map string_of_int perm.new_to_old)));
-    assert (perm.n = 2);
-    assert (perm.new_to_old = [1; 0])
+    (* Tagged layout: Q + Q has width 3 (1 tag + 1 + 1) *)
+    (* Perm = [0, 2, 1]: tag stays at 0, data wires swap *)
+    assert (perm.n = 3);
+    assert (perm.new_to_old = [0; 2; 1])
   | Qpl.NotInvolutive _ ->
     print_endline "✗ TwistPlus should be involutive!";
     assert false
@@ -42,7 +44,8 @@ let test_identity_involution () =
     print_endline "✓ Identity is involutive";
     print_endline (Printf.sprintf "  perm.new_to_old = [%s]"
       (String.concat ", " (List.map string_of_int perm.new_to_old)));
-    assert (perm.new_to_old = [0; 1])
+    (* Tagged layout: V0 + V1 has width 3 (1 tag + 1 + 1) *)
+    assert (perm.new_to_old = [0; 1; 2])
   | Qpl.NotInvolutive _ ->
     print_endline "✗ Identity should be involutive!";
     assert false

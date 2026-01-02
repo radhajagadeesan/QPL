@@ -113,17 +113,27 @@ def handle_compile(request: dict) -> dict:
 
 
 def handle_check_involution(request: dict) -> dict:
-    """Handle an involution check request."""
+    """Handle an involution check request.
+
+    With tagged layout model, structural sum operations (like TwistPlus)
+    emit X gates for tag flips. These are still considered structural
+    because X·X = I, so the tag flips cancel when composed.
+
+    We check:
+    1. Only X gates allowed (tag flips from sum operations)
+    2. Permutation is involutive (p ∘ p = identity)
+    """
     try:
         term = parse_term(request["term"])
         result = compile(term, materialize=False)
 
-        # Check if circuit is empty (structural term)
-        if result.circuit.n_gates > 0:
-            return {
-                "success": False,
-                "error": "Term is not structural (contains gates)"
-            }
+        # Check that only X gates are present (tag flips are OK)
+        for cmd in result.circuit.get_commands():
+            if cmd.op.type.name != 'X':
+                return {
+                    "success": False,
+                    "error": f"Term is not structural (contains {cmd.op.type.name} gate)"
+                }
 
         # Check involution
         is_invol = is_involution(result.perm)

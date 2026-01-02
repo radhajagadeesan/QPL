@@ -131,13 +131,8 @@ class TestInvolutionRejection:
 
 
 class TestCertificationViaBridge:
-    """Test certification through the Python bridge.
+    """Test certification through the Python bridge."""
 
-    Note: These tests require OCaml/dune to be properly configured.
-    They are marked as skip if dune is not available.
-    """
-
-    @pytest.mark.skip(reason="Requires OCaml bridge update for tagged layout")
     def test_bridge_certifies_twist_plus(self):
         """Bridge should certify TwistPlus as involutive."""
         result = subprocess.run(
@@ -150,7 +145,6 @@ class TestCertificationViaBridge:
         output = result.stdout + result.stderr
         assert "TwistPlus is involutive" in output
 
-    @pytest.mark.skip(reason="Requires OCaml bridge update for tagged layout")
     def test_bridge_certifies_identity(self):
         """Bridge should certify Identity as involutive."""
         result = subprocess.run(
@@ -163,7 +157,6 @@ class TestCertificationViaBridge:
         output = result.stdout + result.stderr
         assert "Identity is involutive" in output
 
-    @pytest.mark.skip(reason="Requires OCaml bridge update for tagged layout")
     def test_exp_i_certified_emission(self):
         """Bridge should emit certified exp_i code."""
         result = subprocess.run(
@@ -193,7 +186,6 @@ class TestNoResidualGOI:
         # TwistPlus emits exactly 1 X gate for tag flip (expected)
         assert circuit.n_gates == 1, f"Expected 1 gate (X for tag flip), got {circuit.n_gates}"
 
-    @pytest.mark.skip(reason="Requires OCaml bridge update for tagged layout")
     def test_certified_exp_i_no_residual(self):
         """Certified exp_i should produce clean output without residual GOI."""
         # This is verified through the OCaml tests
