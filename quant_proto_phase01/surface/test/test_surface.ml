@@ -525,7 +525,91 @@ let test_eta_expanded_structural () =
   else
     print_endline "  ✓ Identity case is structural (X gates cancel to identity)";
 
-  (* Test 3: Case with gate in one branch only - definitely needs controlled gates *)
+  (* Test 3: AssocPlusL eta-expanded: (A + B) + C → A + (B + C) *)
+  print_endline "\n--- AssocPlusL: Eta-expanded associativity ---";
+  (*
+     case outer of
+       | Left(inner) => case inner of
+           | Left(a) => Left(a)           -- (Left, Left) → Left
+           | Right(b) => Right(Left(b))   -- (Left, Right) → Right(Left)
+       | Right(c) => Right(Right(c))      -- Right → Right(Right)
+
+     Input type: (I + I) + I
+     Output type: I + (I + I)
+     This should be purely structural (just tag manipulation).
+  *)
+  let inner_sum = TyPlus (TyUnit, TyUnit) in
+  let outer_sum = TyPlus (inner_sum, TyUnit) in  (* (I + I) + I *)
+  let ty_env_assoc = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "outer" outer_sum in
+  let ty_env_assoc = Elaborate.TyEnv.extend ty_env_assoc "inner" inner_sum in
+
+  let inner_case = Case (Var "inner", [
+    (PatCtor ("Left", "a"), Ctor ("Left", Var "a"));
+    (PatCtor ("Right", "b"), Ctor ("Right", Ctor ("Left", Var "b")));
+  ]) in
+
+  let assoc_case = Case (Var "outer", [
+    (PatCtor ("Left", "inner"), inner_case);
+    (PatCtor ("Right", "c"), Ctor ("Right", Ctor ("Right", Var "c")));
+  ]) in
+
+  print_endline ("  AssocPlusL source: (A+B)+C → A+(B+C)");
+  let assoc_result = Elaborate.elaborate tyvar_env ty_env_assoc dt_env assoc_case in
+  let assoc_str = Elaborate.Core.term_to_string assoc_result in
+  print_endline ("  Elaborated: " ^ assoc_str);
+
+  (* Verify it's structural (only X gates for tag flips, no H/S/T) *)
+  let assoc_has_computational =
+    Str.string_match (Str.regexp ".*[^C]H\\[\\|.*[^C]S\\[\\|.*[^C]T\\[\\|.*CX\\[.*") assoc_str 0 ||
+    Str.string_match (Str.regexp ".*C[0-9]-H\\|.*C[0-9]-S\\|.*C[0-9]-T.*") assoc_str 0
+  in
+  if assoc_has_computational then
+    print_endline "  ✗ AssocPlusL has computational gates (NOT structural!)"
+  else
+    print_endline "  ✓ AssocPlusL is structural (only X/CX gates for tag manipulation)";
+
+  (* Test 4: AssocPlusR eta-expanded: A + (B + C) → (A + B) + C (inverse) *)
+  print_endline "\n--- AssocPlusR: Eta-expanded inverse associativity ---";
+  (*
+     case outer of
+       | Left(a) => Left(Left(a))         -- Left → Left(Left)
+       | Right(inner) => case inner of
+           | Left(b) => Left(Right(b))    -- Right(Left) → Left(Right)
+           | Right(c) => Right(c)         -- Right(Right) → Right
+
+     Input type: I + (I + I)
+     Output type: (I + I) + I
+  *)
+  let inner_sum_r = TyPlus (TyUnit, TyUnit) in
+  let outer_sum_r = TyPlus (TyUnit, inner_sum_r) in  (* I + (I + I) *)
+  let ty_env_assocr = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "outer" outer_sum_r in
+  let ty_env_assocr = Elaborate.TyEnv.extend ty_env_assocr "inner" inner_sum_r in
+
+  let inner_case_r = Case (Var "inner", [
+    (PatCtor ("Left", "b"), Ctor ("Left", Ctor ("Right", Var "b")));
+    (PatCtor ("Right", "c"), Ctor ("Right", Var "c"));
+  ]) in
+
+  let assocr_case = Case (Var "outer", [
+    (PatCtor ("Left", "a"), Ctor ("Left", Ctor ("Left", Var "a")));
+    (PatCtor ("Right", "inner"), inner_case_r);
+  ]) in
+
+  print_endline ("  AssocPlusR source: A+(B+C) → (A+B)+C");
+  let assocr_result = Elaborate.elaborate tyvar_env ty_env_assocr dt_env assocr_case in
+  let assocr_str = Elaborate.Core.term_to_string assocr_result in
+  print_endline ("  Elaborated: " ^ assocr_str);
+
+  let assocr_has_computational =
+    Str.string_match (Str.regexp ".*[^C]H\\[\\|.*[^C]S\\[\\|.*[^C]T\\[\\|.*CX\\[.*") assocr_str 0 ||
+    Str.string_match (Str.regexp ".*C[0-9]-H\\|.*C[0-9]-S\\|.*C[0-9]-T.*") assocr_str 0
+  in
+  if assocr_has_computational then
+    print_endline "  ✗ AssocPlusR has computational gates (NOT structural!)"
+  else
+    print_endline "  ✓ AssocPlusR is structural (only X/CX gates for tag manipulation)";
+
+  (* Test 5: Case with gate in one branch only - definitely needs controlled gates *)
   print_endline "\n--- Non-structural: case with different operations ---";
   let ty_env_2q = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "x" (TyPlus (TyQ, TyQ)) in
   let asymmetric_case = Case (Var "x", [
