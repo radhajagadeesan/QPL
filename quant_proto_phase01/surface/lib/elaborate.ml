@@ -40,15 +40,25 @@ let error_to_string = function
   | UnusedVariable v -> Printf.sprintf "Unused variable: %s" v
   | PatternMismatch msg -> Printf.sprintf "Pattern mismatch: %s" msg
 
-(** Type environment: maps variables to their types *)
+(** Type environment: maps variables to (type, wire_offset) pairs *)
 module TyEnv = struct
-  type t = (Ast.var * Ast.ty) list
+  type entry = {
+    ty : Ast.ty;
+    offset : int;  (* Wire offset for this variable, used by tensor destructuring *)
+  }
+
+  type t = (Ast.var * entry) list
 
   let empty : t = []
 
-  let extend env x ty = (x, ty) :: env
+  let extend ?(offset=0) env x ty = (x, { ty; offset }) :: env
 
   let lookup env x =
+    match List.assoc_opt x env with
+    | Some entry -> Some entry.ty
+    | None -> None
+
+  let lookup_with_offset env x =
     List.assoc_opt x env
 
   let remove env x =
@@ -194,6 +204,15 @@ module Core = struct
     | ExpI (theta, j) -> Printf.sprintf "exp_i(%.4f, %s)" theta (term_to_string j)
 end
 
+(** Calculate the wire count (width) of a type *)
+let rec wire_count = function
+  | Ast.TyQ -> 1
+  | Ast.TyUnit -> 0
+  | Ast.TyVar _ -> 1  (* Assume type variables have width 1 *)
+  | Ast.TyTensor (a, b) -> wire_count a + wire_count b
+  | Ast.TyPlus (a, b) -> 1 + max (wire_count a) (wire_count b)  (* 1 tag + max payload *)
+  | Ast.TyNamed (_, _) -> 1  (* Assume named types have width 1 for now *)
+
 (** Check that a type is well-formed (all type variables bound) *)
 let rec check_ty tyvar_env = function
   | Ast.TyVar v ->
@@ -214,6 +233,8 @@ let rec free_vars = function
   | Ast.App (f, e) -> free_vars f @ free_vars e
   | Ast.Let (x, e1, e2) ->
     free_vars e1 @ List.filter (fun v -> v <> x) (free_vars e2)
+  | Ast.LetTen (x1, x2, _, _, e1, e2) ->
+    free_vars e1 @ List.filter (fun v -> v <> x1 && v <> x2) (free_vars e2)
   | Ast.Case (e, branches) ->
     free_vars e @ List.concat_map (fun (pat, body) ->
       let bound = match pat with
@@ -254,9 +275,12 @@ let check_scope env term =
 let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
   check_scope ty_env term;
   match term with
-  | Ast.Var _ ->
-    (* Variables should have been substituted away *)
-    failwith "elaborate: unexpected variable (should be eliminated by substitution)"
+  | Ast.Var x ->
+    (* Variables from tensor destructuring elaborate to identity on their type.
+       Other variables should have been substituted away. *)
+    (match TyEnv.lookup ty_env x with
+     | Some ty -> Core.Id ty
+     | None -> failwith (Printf.sprintf "elaborate: unbound variable %s" x))
 
   | Ast.Lam _ ->
     failwith "elaborate: standalone λ (should be applied)"
@@ -274,6 +298,33 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
     (* Let is just substitution at the surface level *)
     let e2' = subst x e1 e2 in
     elaborate ~base tyvar_env ty_env dt_env e2'
+
+  | Ast.LetTen (x1, x2, ty1, ty2, e1, e2) ->
+    (* Tensor destructuring: let (x1 ⊗ x2) : A ⊗ B = e1 in e2
+
+       Wire layout for A ⊗ B:
+       - x1 (type A) occupies wires base..base+|A|-1
+       - x2 (type B) occupies wires base+|A|..base+|A|+|B|-1
+
+       We track wire offsets in the type environment so case
+       expressions can use the correct base when casing on x2.
+    *)
+    let e1' = elaborate ~base tyvar_env ty_env dt_env e1 in
+
+    (* Calculate offset for x2: it starts after x1's wires *)
+    let x1_width = wire_count ty1 in
+
+    (* Add both variables to type environment with their offsets *)
+    let ty_env' = TyEnv.extend ~offset:base ty_env x1 ty1 in
+    let ty_env' = TyEnv.extend ~offset:(base + x1_width) ty_env' x2 ty2 in
+
+    (* Elaborate e2 with the tensor components in scope.
+       Variables x1 and x2 will be looked up for case expressions
+       to determine the correct wire offsets. *)
+    let e2'' = elaborate ~base tyvar_env ty_env' dt_env e2 in
+
+    (* Compose: first e1, then e2 *)
+    Core.Seq (e1', e2'')
 
   | Ast.Case (scrutinee, branches) ->
     (* Case elaboration: controlled gates for quantum case expressions *)
@@ -324,6 +375,10 @@ and subst x v = function
     let e1' = subst x v e1 in
     if y = x then Ast.Let (y, e1', e2)  (* x is shadowed *)
     else Ast.Let (y, e1', subst x v e2)
+  | Ast.LetTen (y1, y2, ty1, ty2, e1, e2) ->
+    let e1' = subst x v e1 in
+    if y1 = x || y2 = x then Ast.LetTen (y1, y2, ty1, ty2, e1', e2)  (* x is shadowed *)
+    else Ast.LetTen (y1, y2, ty1, ty2, e1', subst x v e2)
   | Ast.Case (e, branches) ->
     Ast.Case (subst x v e,
               List.map (fun (pat, body) ->
@@ -466,9 +521,20 @@ and elaborate_classical_case ~base tyvar_env ty_env dt_env scrutinee branches =
     correct tag wire, and branch bodies are elaborated at payload_base.
 *)
 and elaborate_quantum_case_2 ~base tyvar_env ty_env dt_env scrutinee branches =
-  (* Tag wire is at base, payload starts at base + 1 *)
-  let tag_wire = base in
-  let payload_base = base + 1 in
+  (* Determine the base offset for this case expression.
+     If the scrutinee is a variable with a stored offset (from tensor destructuring),
+     use that offset. Otherwise, use the passed-in base. *)
+  let effective_base = match scrutinee with
+    | Ast.Var x ->
+      (match TyEnv.lookup_with_offset ty_env x with
+       | Some entry -> entry.offset
+       | None -> base)
+    | _ -> base
+  in
+
+  (* Tag wire is at effective_base, payload starts at effective_base + 1 *)
+  let tag_wire = effective_base in
+  let payload_base = effective_base + 1 in
 
   (* Get the scrutinee type to determine payload types *)
   let (left_payload_ty, right_payload_ty) = match scrutinee with

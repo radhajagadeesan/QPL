@@ -38,6 +38,8 @@ type term =
   | Lam of var * ty * term                  (* λx:A. e *)
   | App of term * term                      (* Application: f e *)
   | Let of var * term * term                (* let x = e1 in e2 *)
+  | LetTen of var * var * ty * ty * term * term
+      (* let (x1 ⊗ x2) : A ⊗ B = e1 in e2 -- tensor destructuring *)
 
   (* Case expressions *)
   | Case of term * (pattern * term) list    (* case e of ... *)
@@ -110,6 +112,9 @@ let rec term_to_string = function
     Printf.sprintf "(%s %s)" (term_to_string f) (term_to_string e)
   | Let (x, e1, e2) ->
     Printf.sprintf "let %s = %s in %s" x (term_to_string e1) (term_to_string e2)
+  | LetTen (x1, x2, ty1, ty2, e1, e2) ->
+    Printf.sprintf "let (%s ⊗ %s) : %s ⊗ %s = %s in %s"
+      x1 x2 (ty_to_string ty1) (ty_to_string ty2) (term_to_string e1) (term_to_string e2)
   | Case (e, branches) ->
     let branch_strs = List.map (fun (p, t) ->
       Printf.sprintf "%s => %s" (pattern_to_string p) (term_to_string t)

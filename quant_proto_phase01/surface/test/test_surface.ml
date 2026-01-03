@@ -643,7 +643,45 @@ let test_eta_expanded_structural () =
   else
     print_endline "  ✓ DistR is structural (pure wire permutation)";
 
-  (* Test 7: Case with gate in one branch only - definitely needs controlled gates *)
+  (* Test 7: Tensor destructuring: let (a ⊗ bc) = ... *)
+  print_endline "\n--- Tensor destructuring ---";
+  (*
+     let (a ⊗ bc) : Q ⊗ (I + I) = id in
+       case bc of
+         | Left(u) => Left(a)
+         | Right(u) => Right(a)
+
+     This is eta-expanded distL for Q ⊗ (I + I) → (Q ⊗ I) + (Q ⊗ I)
+     Wire layout:
+       - a (Q) at wire 0
+       - bc ((I + I)) at wire 1 (tag only, no payload)
+     Output: tag moves from wire 1 to wire 0
+  *)
+  let bc_type = TyPlus (TyUnit, TyUnit) in  (* I + I *)
+  let a_type = TyQ in
+  let tensor_destruct = LetTen ("a", "bc", a_type, bc_type,
+    Id (TyTensor (a_type, bc_type)),
+    Case (Var "bc", [
+      (PatCtor ("Left", "u"), Ctor ("Left", Var "a"));
+      (PatCtor ("Right", "u"), Ctor ("Right", Var "a"));
+    ])
+  ) in
+  print_endline ("  Source: let (a ⊗ bc) : Q ⊗ (I+I) = id in case bc of ...");
+  let td_result = Elaborate.elaborate tyvar_env Elaborate.TyEnv.empty dt_env tensor_destruct in
+  let td_str = Elaborate.Core.term_to_string td_result in
+  print_endline ("  Elaborated: " ^ td_str);
+
+  (* Verify it's structural (should have X gates for tag movement, no H/S/T) *)
+  let td_has_computational =
+    Str.string_match (Str.regexp ".*[^C]H\\[\\|.*[^C]S\\[\\|.*[^C]T\\[\\|.*CX\\[.*") td_str 0 ||
+    Str.string_match (Str.regexp ".*C[0-9]-H\\|.*C[0-9]-S\\|.*C[0-9]-T.*") td_str 0
+  in
+  if td_has_computational then
+    print_endline "  ✗ Tensor destructuring has computational gates (NOT structural!)"
+  else
+    print_endline "  ✓ Tensor destructuring is structural (eta-expanded distL works!)";
+
+  (* Test 8: Case with gate in one branch only - definitely needs controlled gates *)
   print_endline "\n--- Non-structural: case with different operations ---";
   let ty_env_2q = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "x" (TyPlus (TyQ, TyQ)) in
   let asymmetric_case = Case (Var "x", [
