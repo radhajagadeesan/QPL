@@ -1,6 +1,6 @@
-# API Reference (Phase 0–1)
+# Granthi API Reference
 
-This document provides the complete API reference for the Phase 0–1 structural quantum compiler.
+Complete reference for types, terms, and compilation functions.
 
 ---
 

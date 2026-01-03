@@ -1,68 +1,331 @@
-# QPL Compiler API Programming Guide
+# Granthi Programming Guide
 
-Practical reference for building and compiling quantum programs.
+Practical guide for writing and compiling quantum programs.
 
 ---
 
-## 1. Entry Points + Result Shapes
+## Overview
 
-### compile() — Phases 0–2
+Granthi provides two ways to write quantum programs:
 
-```python
-from compile.to_pytket import compile, Compiled
+| Approach | Language | Best For |
+|----------|----------|----------|
+| **Surface Language** | OCaml | Natural syntax, datatypes, case expressions |
+| **Core API** | Python | Programmatic generation, direct AST construction |
 
-result = compile(term, materialize=False)
-# Returns: Compiled(circuit, perm, log=None)
+Both compile to the same core IR and produce identical circuits.
+
+```
+Surface Language (OCaml)
+        │
+        ▼ elaboration
+   Core IR (Python)
+        │
+        ▼ compilation
+  pytket Circuit + WirePerm
 ```
 
-**Result shape:**
+---
+
+## Part I — Surface Language (OCaml)
+
+The surface language provides ML-style syntax that elaborates to the core IR.
+
+### 1.1 Types
+
+```ocaml
+Q                   (* Qubit *)
+A ⊗ B               (* Tensor product *)
+A + B               (* Sum type (monoidal, not coproduct) *)
+I                   (* Unit type *)
+Bool['a, 'b]        (* Named datatype with type parameters *)
+```
+
+**Key insight:** Sum types use a **tagged layout**:
+```
+A + B  ≡  [tag | A_wires | B_wires]
+width(A + B) = 1 + width(A) + width(B)
+```
+
+The tag is an explicit qubit encoding branch choice.
+
+---
+
+### 1.2 Datatypes
+
+Define custom sum types with constructors:
+
+```ocaml
+datatype Bool['a, 'b] = F of 'a | T of 'b
+```
+
+This defines:
+- Type `Bool['a, 'b]` with representation `'a + 'b`
+- Constructors `F` and `T` for each branch
+
+**Common datatypes:**
+```ocaml
+datatype Bit = Zero of I | One of I       (* Classical bit *)
+datatype Maybe['a] = None of I | Some of 'a
+```
+
+---
+
+### 1.3 Terms
+
+#### Lambda Abstraction
+```ocaml
+λx:A. body                (* Lambda - elaborates away (macro) *)
+```
+
+Lambdas are compile-time only. They do not exist at runtime.
+
+#### Let Binding
+```ocaml
+let x = e1 in e2          (* Let - elaborates via substitution *)
+```
+
+#### Case Expression
+```ocaml
+case e of
+  | F(x) => branch1
+  | T(y) => branch2
+```
+
+**Key insight:** Case is **structural rewiring**, not runtime branching. It routes data through the tagged layout.
+
+#### Composition
+```ocaml
+f ; g                     (* Sequential composition *)
+f ⊗ g                     (* Parallel/tensor composition *)
+```
+
+#### Structural Primitives
+```ocaml
+id[A]                     (* Identity: A → A *)
+twist⊗[A, B]              (* Tensor twist: A ⊗ B → B ⊗ A *)
+twist+[A, B]              (* Sum twist: A + B → B + A *)
+assoc⊗L[A, B, C]          (* Tensor associator left *)
+assoc⊗R[A, B, C]          (* Tensor associator right *)
+assoc+L[A, B, C]          (* Sum associator left *)
+assoc+R[A, B, C]          (* Sum associator right *)
+```
+
+#### Gates
+```ocaml
+H[i]                      (* Hadamard on wire i *)
+S[i]                      (* S gate on wire i *)
+X[i], Y[i], Z[i]          (* Pauli gates *)
+T[i]                      (* T gate *)
+CX[i, j]                  (* CNOT: control i, target j *)
+Rz[θ, i]                  (* Rz rotation by θ *)
+```
+
+#### Exponential of Involution
+```ocaml
+exp_i(θ, J)               (* e^{iθJ} where J is involutive *)
+```
+
+---
+
+### 1.4 Definitions
+
+```ocaml
+(* Type definition *)
+datatype Bool['a, 'b] = F of 'a | T of 'b
+
+(* Term definition *)
+def swap : Bool['a, 'b] → Bool['b, 'a] =
+  λx. case x of
+    | F(a) => T(a)
+    | T(b) => F(b)
+```
+
+---
+
+### 1.5 Example: Swap via Case
+
+```ocaml
+datatype Bool['a, 'b] = F of 'a | T of 'b
+
+def swap : Bool[Q, Q] → Bool[Q, Q] =
+  λx. case x of
+    | F(q) => T(q)
+    | T(q) => F(q)
+```
+
+This elaborates to `TwistPlus(Q, Q)` — a structural permutation with a tag flip.
+
+---
+
+### 1.6 Example: Bell State
+
+```ocaml
+def bell : Q ⊗ Q → Q ⊗ Q =
+  H[0] ; CX[0, 1]
+```
+
+---
+
+### 1.7 Example: GHZ State
+
+```ocaml
+def ghz : Q ⊗ Q ⊗ Q → Q ⊗ Q ⊗ Q =
+  H[0] ; CX[0, 1] ; CX[0, 2]
+```
+
+---
+
+### 1.8 Elaboration
+
+The elaboration phase transforms surface syntax to core IR:
+
+| Surface | Core IR |
+|---------|---------|
+| `λx:A. body` | Substitution (macro expansion) |
+| `let x = e1 in e2` | Substitution |
+| `case e of ...` | Structural routing via tagged layout |
+| `F(e)` | Injection into sum type |
+| `f ; g` | `Seq(f, g)` |
+| `f ⊗ g` | `TenTerm(f, g)` |
+
+After elaboration, only these remain:
+- Sequential composition (`;`)
+- Tensor composition (`⊗`)
+- Structural primitives (`Id`, `Twist`, `Assoc`, `Dist`)
+- Gate primitives (`H`, `S`, `CX`, etc.)
+
+---
+
+### 1.9 Running OCaml Programs
+
+```bash
+cd surface
+dune build
+dune exec ./examples/my_program.exe
+```
+
+To compile through the Python backend:
+
+```ocaml
+open Qpl_surface
+
+let term = Bridge.TSeq (Bridge.TH 0, Bridge.TCX (0, 1))
+
+let () =
+  Bridge.set_project_root "/path/to/quant_proto_phase01";
+  match Bridge.compile term with
+  | Bridge.CompileOk (perm, size) ->
+    Printf.printf "Compiled: %d gates, perm = [%s]\n"
+      size
+      (String.concat ", " (List.map string_of_int perm.new_to_old))
+  | Bridge.CompileError msg ->
+    Printf.printf "Error: %s\n" msg
+```
+
+---
+
+## Part II — Core API (Python)
+
+For programmatic AST construction, use the Python API directly.
+
+### 2.1 Types
+
 ```python
-@dataclass(frozen=True)
+from lang.types import Q, Ten, Plus, width
+
+q = Q()                      # Qubit, width 1
+qq = Ten(Q(), Q())           # Q ⊗ Q, width 2
+s = Plus(Q(), Q())           # Q ⊕ Q, width 3 (1 tag + 2 data)
+
+w = width(qq)                # Returns 2
+```
+
+**Helper for Q^n:**
+```python
+def qpow(n: int):
+    """Build Q ⊗ Q ⊗ ... ⊗ Q (n times)."""
+    ty = Q()
+    for _ in range(n - 1):
+        ty = Ten(ty, Q())
+    return ty
+```
+
+---
+
+### 2.2 Terms
+
+```python
+from lang.terms import (
+    Id, Seq, TenTerm,
+    TwistTen, AssocTenL, AssocTenR,
+    TwistPlus, AssocPlusL, AssocPlusR,
+    DistL, DistR,
+    H, S, CX,
+    Feedback,
+)
+```
+
+**Composition:**
+```python
+Id(ty)                       # Identity
+Seq(f, g)                    # Sequential: f ; g
+Seq(f, g, h)                 # Variadic: f ; g ; h
+TenTerm(f, g)                # Parallel: f ⊗ g
+```
+
+**Structural:**
+```python
+TwistTen(a, b)               # Tensor twist: a ⊗ b → b ⊗ a
+TwistPlus(a, b)              # Sum twist: a ⊕ b → b ⊕ a
+AssocTenL(a, b, c)           # (a ⊗ b) ⊗ c → a ⊗ (b ⊗ c)
+DistL(a, b, c)               # (a ⊕ b) ⊗ c → (a ⊗ c) ⊕ (b ⊗ c)
+DistR(a, b, c)               # a ⊗ (b ⊕ c) → (a ⊗ b) ⊕ (a ⊗ c)
+```
+
+**Gates:**
+```python
+H(i, ty_total)               # Hadamard on wire i
+S(i, ty_total)               # S gate on wire i
+CX(i, j, ty_total)           # CNOT: control i, target j
+```
+
+**Feedback (GOI):**
+```python
+Feedback(k, body)            # Loop k wires back
+# body : (A ⊗ X) → (B ⊗ X), width(X) = k
+# result : A → B
+```
+
+---
+
+### 2.3 Compilation
+
+```python
+from compile.to_pytket import compile, compile_goi
+
+# Standard compilation (Phases 0-2)
+result = compile(term, materialize=False)
+circ = result.circuit        # pytket Circuit
+perm = result.perm           # WirePerm
+
+# With feedback (Phase 3)
+result = compile_goi(term, materialize=False)
+if isinstance(result, GOIArtifact):
+    print("Residual:", result.loops)
+else:
+    print("Extracted:", result.circuit)
+```
+
+**Result types:**
+```python
+@dataclass
 class Compiled:
     circuit: pytket.Circuit
     perm: WirePerm
-    log: Optional[List[str]] = None  # if explain=True
-```
+    log: Optional[List[str]]
 
-**Usage:**
-```python
-result = compile(term, materialize=False)
-circ = result.circuit   # pytket Circuit
-perm = result.perm      # WirePerm
-```
-
-### compile_goi() — Phase 3 (with Feedback)
-
-```python
-from compile.to_pytket import compile_goi, CompiledGOI
-from compile.goi import GOIArtifact
-
-result = compile_goi(term, materialize=False)
-# Returns: CompiledGOI | GOIArtifact
-```
-
-**Distinguishing extracted vs residual:**
-```python
-from compile.goi import GOIArtifact
-
-if isinstance(result, GOIArtifact):
-    # Residual — extraction failed, feedback not eliminated
-    print("Residual GOI:", result.loops, result.atoms)
-else:
-    # Extracted — success
-    circ = result.circuit
-    perm = result.perm
-```
-
-**Result shapes:**
-```python
-@dataclass(frozen=True)
-class CompiledGOI:
-    circuit: pytket.Circuit
-    perm: WirePerm
-    log: Optional[List[str]] = None
-
-@dataclass(frozen=True)
+@dataclass
 class GOIArtifact:
     n_in: int
     n_out: int
@@ -73,349 +336,103 @@ class GOIArtifact:
 
 ---
 
-## 2. Term Constructors / AST Nodes
+### 2.4 Inspecting Results
 
-### Type Constructors
-
+**Circuit commands:**
 ```python
-from lang.types import Q, Ten, Plus, width
-
-# Atomic qubit type
-q = Q()                      # width 1
-
-# Tensor (parallel)
-t = Ten(Q(), Q())            # Q ⊗ Q, width 2
-t3 = Ten(Ten(Q(), Q()), Q()) # (Q ⊗ Q) ⊗ Q, width 3
-
-# Sum (coproduct)
-s = Plus(Q(), Q())           # Q ⊕ Q, width 2
-
-# Get width
-w = width(t)                 # returns 2
+for cmd in result.circuit.get_commands():
+    name = cmd.op.type.name          # "H", "CX", etc.
+    wires = [q.index[0] for q in cmd.qubits]
+    print(f"{name}({wires})")
 ```
 
-**Helper for Q^n:**
+**Wire permutation:**
 ```python
-def qpow(n: int):
-    """Build Q ⊗ Q ⊗ ... ⊗ Q (n times, right-associated)."""
-    ty = Q()
-    for _ in range(n - 1):
-        ty = Ten(ty, Q())
-    return ty
-
-ty4 = qpow(4)  # 4-qubit type
-```
-
-### Term Constructors
-
-```python
-from lang.terms import (
-    # Basic
-    Id, Seq, TenTerm,
-    # Structural (tensor)
-    TwistTen, AssocTenL, AssocTenR,
-    # Structural (sum)
-    TwistPlus, AssocPlusL, AssocPlusR,
-    # Distributivity (structural with tagged layout)
-    DistL, DistR,
-    # Gates
-    H, S, CX,
-    # Phase 3 feedback
-    Feedback,
-)
-```
-
-#### Identity
-```python
-Id(ty)                       # id : ty → ty
-```
-
-#### Sequential Composition
-```python
-Seq(f, g)                    # f ; g (binary)
-Seq(f, g, h)                 # f ; (g ; h) (variadic)
-Seq(f, g, h, i)              # f ; (g ; (h ; i))
-```
-
-#### Tensor / Parallel Composition
-```python
-TenTerm(f, g)                # f ⊗ g
-```
-
-#### Structural Isomorphisms (Tensor)
-```python
-TwistTen(a, b)               # twist : a ⊗ b → b ⊗ a
-AssocTenL(a, b, c)           # assocL : (a ⊗ b) ⊗ c → a ⊗ (b ⊗ c)
-AssocTenR(a, b, c)           # assocR : a ⊗ (b ⊗ c) → (a ⊗ b) ⊗ c
-```
-
-#### Structural Isomorphisms (Sum)
-```python
-TwistPlus(a, b)              # twist : a ⊕ b → b ⊕ a
-AssocPlusL(a, b, c)          # assocL : (a ⊕ b) ⊕ c → a ⊕ (b ⊕ c)
-AssocPlusR(a, b, c)          # assocR : a ⊕ (b ⊕ c) → (a ⊕ b) ⊕ c
-```
-
-#### Gate Constructors
-```python
-# Single-qubit gates
-H(i, ty_total)               # Hadamard on wire i
-S(i, ty_total)               # S (phase) on wire i
-
-# Two-qubit gate
-CX(i, j, ty_total)           # CNOT: control i, target j
-
-# Defaults (for 2-qubit context)
-H()                          # H(0, Ten(Q(), Q()))
-H(0)                         # H(0, Ten(Q(), Q()))
-S(1)                         # S(1, Ten(Q(), Q()))
-CX()                         # CX(0, 1, Ten(Q(), Q()))
-```
-
-**Examples:**
-```python
-ty = qpow(3)                 # 3-qubit type
-
-# H on wire 0 of 3-qubit system
-h = H(0, ty)
-
-# CX from wire 1 to wire 2
-cx = CX(1, 2, ty)
-
-# Sequence: H then CX
-prog = Seq(H(0, ty), CX(0, 1, ty))
-```
-
-#### Phase 3: Feedback
-```python
-Feedback(k, body)            # Feedback_k(body)
-```
-
-Where:
-- `body` has type `(A ⊗ X) → (B ⊗ X)` with `width(X) = k`
-- Result has type `A → B`
-
-**Example:**
-```python
-ty = qpow(3)                 # 3 wires
-body = Seq(H(0, ty), S(1, ty))  # gates on wires 0,1 only
-term = Feedback(k=1, body=body) # loop wire 2 back
-# Result type: 2 wires (external)
-```
-
-### Name Aliases
-
-These aliases are also exported for convenience:
-```python
-TensorTwist = TwistTen
-TensorAssocL = AssocTenL
-TensorAssocR = AssocTenR
-SumTwist = TwistPlus
-SumAssocL = AssocPlusL
-SumAssocR = AssocPlusR
-```
-
----
-
-## 3. Circuit Command Stream Extraction
-
-The circuit is a **pytket Circuit**. Extract commands canonically:
-
-```python
-# Get all commands
-commands = circ.get_commands()
-
-# For each command:
-for cmd in commands:
-    op_name = cmd.op.type.name      # "H", "S", "CX", "SWAP", etc.
-    qubits = [q.index[0] for q in cmd.qubits]  # wire indices
-    print(f"{op_name}({qubits})")
-```
-
-**Canonical serialization helper:**
-```python
-def extract_cmd_stream(circ) -> list[str]:
-    """Canonical command stream for determinism checks."""
-    result = []
-    for cmd in circ.get_commands():
-        name = cmd.op.type.name
-        wires = [q.index[0] for q in cmd.qubits]
-        result.append(f"{name}({','.join(map(str, wires))})")
-    return result
-
-# Usage:
-stream = extract_cmd_stream(result.circuit)
-# ['H(0)', 'CX(0,1)', 'S(1)']
-```
-
-**Compare two circuits:**
-```python
-def circuits_equal(c1, c2) -> bool:
-    return extract_cmd_stream(c1) == extract_cmd_stream(c2)
-```
-
----
-
-## 4. WirePerm Inspection
-
-```python
-from core.perm import WirePerm, identity, compose, inverse
-
-# Access permutation data
-perm.n                       # number of wires
-perm.new_to_old              # list: new_position → old_position
-
-# Apply permutation
-old_wire = perm.apply_new_to_old(new_wire)
-
-# Construct permutations
-p = WirePerm([1, 0, 2, 3])           # from list (n inferred)
-p = WirePerm(4, [1, 0, 2, 3])        # explicit n + list
-p = WirePerm(n=4, new_to_old=[1,0,2,3])  # keyword args
-
-# Identity permutation
-p = identity(4)              # [0, 1, 2, 3]
-
-# Compose: (q ∘ p)[i] = p[q[i]]
-p3 = compose(q, p)
-
-# Inverse
-p_inv = inverse(p)
-
-# Restrict to subset of wires
-p_sub = perm.restrict({0, 1, 2})  # new perm on 3 wires
-```
-
-**Inspect permutation:**
-```python
-result = compile(term)
 perm = result.perm
-
 print(f"Width: {perm.n}")
 print(f"Mapping: {perm.new_to_old}")
-
-# Check if identity
-is_identity = (perm.new_to_old == list(range(perm.n)))
-```
-
-**Get width from types:**
-```python
-from lang.types import width
-from typing_.check import type_of
-
-dom, cod = type_of(term)
-n = width(dom)
 ```
 
 ---
 
-## 5. SWAP Detection ("No SWAPs by Default")
+### 2.5 Example: Bell State
 
-SWAPs are pytket SWAP gates. Detect by checking `cmd.op.type.name`:
-
-```python
-def has_swaps(circ) -> bool:
-    """Check if circuit contains any SWAP gates."""
-    for cmd in circ.get_commands():
-        if cmd.op.type.name.upper() == "SWAP":
-            return True
-    return False
-
-def assert_no_swaps(circ):
-    """Assert circuit has no SWAPs."""
-    swaps = [cmd for cmd in circ.get_commands()
-             if cmd.op.type.name.upper() == "SWAP"]
-    assert not swaps, f"Found SWAPs: {swaps}"
-
-def count_swaps(circ) -> int:
-    """Count SWAP gates in circuit."""
-    return sum(1 for cmd in circ.get_commands()
-               if cmd.op.type.name.upper() == "SWAP")
-```
-
-**Invariant:**
-- `compile(term, materialize=False)` → **never has SWAPs**
-- `compile(term, materialize=True)` → may have SWAPs (to realize permutation)
-- `compile_goi(term, materialize=False)` → **no SWAPs if extracted**
-- Residual GOIArtifact has no circuit (no SWAPs possible)
-
----
-
-## 6. Complete Working Examples
-
-### Example 1: Basic Compilation
-```python
-from lang.types import Q, Ten, width
-from lang.terms import Seq, TwistTen, H, S, CX
-from compile.to_pytket import compile
-
-# Build 2-qubit type
-ty = Ten(Q(), Q())
-
-# Build program: twist then H on wire 0
-prog = Seq(TwistTen(Q(), Q()), H(0, ty))
-
-# Compile
-result = compile(prog, materialize=False)
-
-# Inspect
-print(f"Commands: {[c.op.type.name for c in result.circuit.get_commands()]}")
-print(f"Perm: {result.perm.new_to_old}")
-
-# No SWAPs
-assert not any(c.op.type.name == "SWAP" for c in result.circuit.get_commands())
-```
-
-### Example 2: Phase 3 Feedback
 ```python
 from lang.types import Q, Ten
+from lang.terms import Seq, H, CX
+from compile.to_pytket import compile
+
+ty = Ten(Q(), Q())
+bell = Seq(H(0, ty), CX(0, 1, ty))
+
+result = compile(bell, materialize=False)
+# Circuit: H(0), CX(0,1)
+# Perm: [0, 1] (identity)
+```
+
+---
+
+### 2.6 Example: Feedback Extraction
+
+```python
 from lang.terms import Seq, Feedback, H, S
 from compile.to_pytket import compile_goi
 from compile.goi import GOIArtifact
 
-def qpow(n):
-    ty = Q()
-    for _ in range(n - 1):
-        ty = Ten(ty, Q())
-    return ty
-
-# 3-qubit body, loop 1 wire
 ty = qpow(3)
-body = Seq(H(0, ty), S(1, ty))  # gates on wires 0,1 only
-term = Feedback(k=1, body=body)
+body = Seq(H(0, ty), S(1, ty))  # Gates on wires 0, 1 only
+term = Feedback(k=1, body=body)  # Loop wire 2
 
 result = compile_goi(term)
-
-if isinstance(result, GOIArtifact):
-    print("Residual - gates touch loop wires")
-    print(f"Atoms: {result.atoms}")
-    print(f"Loops: {result.loops}")
-else:
-    print("Extracted!")
-    print(f"Circuit width: {result.perm.n}")  # 2 (external)
-    print(f"Commands: {[c.op.type.name for c in result.circuit.get_commands()]}")
-```
-
-### Example 3: Determinism Check
-```python
-from compile.to_pytket import compile
-
-# Same term compiled twice should be identical
-r1 = compile(prog)
-r2 = compile(prog)
-
-# Compare command streams
-def cmd_stream(circ):
-    return [(c.op.type.name, [q.index[0] for q in c.qubits])
-            for c in circ.get_commands()]
-
-assert cmd_stream(r1.circuit) == cmd_stream(r2.circuit)
-assert r1.perm.new_to_old == r2.perm.new_to_old
+# Extracts because gates don't touch loop wire
+# Result: 2-wire circuit with H, S
 ```
 
 ---
 
-## 7. Quick Import Reference
+## Part III — Compilation Pipeline
+
+### 3.1 Pipeline Stages
+
+```
+Source (OCaml)
+    │
+    ▼ elaboration
+Core IR (Python AST)
+    │
+    ▼ type checking
+Typed IR
+    │
+    ▼ compilation (Phases 0-2)
+Flat Circuit + WirePerm
+    │
+    ▼ [optional] GOI (Phase 3)
+Extracted Circuit | Residual GOIArtifact
+    │
+    ▼ [optional] materialization
+Circuit with SWAPs
+```
+
+### 3.2 Key Invariants
+
+1. **Structural = metadata only** — no gates emitted
+2. **No SWAPs by default** — only with `materialize=True`
+3. **Deterministic** — same input → identical output
+4. **Gates reindexed through WirePerm** — logical → physical mapping
+
+### 3.3 SWAP Policy
+
+```python
+compile(term, materialize=False)    # Never has SWAPs
+compile(term, materialize=True)     # May have SWAPs
+compile_goi(term, materialize=False) # No SWAPs if extracted
+```
+
+---
+
+## Part IV — Quick Reference
+
+### Import Summary
 
 ```python
 # Types
@@ -426,40 +443,28 @@ from lang.terms import (
     Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
-    H, S, CX,
-    Feedback,  # Phase 3
+    DistL, DistR,
+    H, S, CX, Feedback,
 )
 
-# Type checking
-from typing_.check import type_of, assert_well_typed
-
 # Compilation
-from compile.to_pytket import compile, compile_goi, Compiled, CompiledGOI
+from compile.to_pytket import compile, compile_goi
+from compile.goi import GOIArtifact
 
 # Permutations
 from core.perm import WirePerm, identity, compose, inverse
-
-# GOI (Phase 3)
-from compile.goi import GOIArtifact, GateAtom, LoopSpec
-
-# Materialization
-from backends.materialize import swaps_for_perm, apply_swaps
 ```
 
----
+### Cheat Sheet
 
-## 8. Summary Table
-
-| What | How |
-|------|-----|
-| Compile (Phases 0-2) | `compile(term) → Compiled(circuit, perm)` |
-| Compile (Phase 3) | `compile_goi(term) → CompiledGOI \| GOIArtifact` |
+| Task | Code |
+|------|------|
+| Compile term | `compile(term)` |
+| Compile with feedback | `compile_goi(term)` |
 | Check if residual | `isinstance(result, GOIArtifact)` |
 | Get commands | `circ.get_commands()` |
-| Get op name | `cmd.op.type.name` |
+| Get gate name | `cmd.op.type.name` |
 | Get wire indices | `[q.index[0] for q in cmd.qubits]` |
 | Get perm mapping | `perm.new_to_old` |
-| Apply perm | `perm.apply_new_to_old(i)` |
-| Check for SWAP | `cmd.op.type.name.upper() == "SWAP"` |
+| Check for SWAPs | `any(c.op.type.name == "SWAP" for c in circ.get_commands())` |
 | Get type width | `width(ty)` |
-| Get term type | `type_of(term) → (dom, cod)` |

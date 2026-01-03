@@ -1,4 +1,4 @@
-# Two-Level IR Architecture
+# Granthi Two-Level IR Architecture
 
 **Design Document: IR1 (Flat) and IR2 (GOI) Intermediate Representations**
 
