@@ -275,6 +275,48 @@ class CZ:
 
 
 @dataclass(frozen=True, slots=True)
+class CH:
+    """Controlled-Hadamard gate with control i and target j.
+
+    Used for quantum control in case expressions on sum types.
+    """
+    i: int = 0
+    j: int = 1
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class CS:
+    """Controlled-S gate with control i and target j.
+
+    Used for quantum control in case expressions on sum types.
+    """
+    i: int = 0
+    j: int = 1
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class CSdg:
+    """Controlled-S-dagger gate with control i and target j."""
+    i: int = 0
+    j: int = 1
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
 class CCX:
     """Toffoli (CCX) gate with controls i, j and target k."""
     i: int = 0
@@ -377,6 +419,8 @@ Term = Union[
     X, Y, Z, T, Tdg, Sdg, CZ, CCX,
     # Phase 4C parameterized gates
     Rz, Rx, Ry, Phase, CRz,
+    # Controlled single-qubit gates (for quantum case expressions)
+    CH, CS, CSdg,
 ]
 
 

@@ -21,7 +21,7 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
-from lang.types import Q, Ten, Plus, Ty
+from lang.types import Q, Ten, Plus, Unit, Ty
 from lang.terms import (
     Term, Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
@@ -30,6 +30,8 @@ from lang.terms import (
     H, S, Sdg, T, Tdg, X, Y, Z,
     Rx, Ry, Rz, Phase,
     CX, CZ, CRz, CCX,
+    # Controlled single-qubit gates
+    CH, CS, CSdg,
 )
 from core.perm import WirePerm, identity, compose
 from compile.to_pytket import compile
@@ -40,6 +42,8 @@ def parse_type(j: dict) -> Ty:
     node = j["node"]
     if node == "Q":
         return Q()
+    elif node == "Unit" or node == "I":
+        return Unit()
     elif node == "Ten":
         return Ten(parse_type(j["left"]), parse_type(j["right"]))
     elif node == "Plus":
@@ -182,6 +186,16 @@ def parse_term(j: dict, ty_total: Ty = None) -> Term:
     # Three-qubit gate
     elif node == "CCX":
         return CCX(j["i"], j["j"], j["k"], ty_total)
+
+    # Controlled single-qubit gates (for quantum case expressions)
+    elif node == "CH":
+        return CH(j["i"], j["j"], ty_total)
+
+    elif node == "CS":
+        return CS(j["i"], j["j"], ty_total)
+
+    elif node == "CSdg":
+        return CSdg(j["i"], j["j"], ty_total)
 
     else:
         raise ValueError(f"Unknown term node: {node}")

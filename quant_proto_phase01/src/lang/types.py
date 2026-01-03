@@ -35,6 +35,17 @@ from typing import List, Union
 
 
 @dataclass(frozen=True, slots=True)
+class Unit:
+    """Unit type I, with width 0 (no wires).
+
+    Used to represent trivial payloads in sum types.
+    Example: Bit = Unit + Unit has width 1 (just the tag qubit).
+    """
+    def __str__(self) -> str:
+        return "I"
+
+
+@dataclass(frozen=True, slots=True)
 class Q:
     """Atomic wire type (a single qubit wire)."""
     def __str__(self) -> str:
@@ -61,7 +72,7 @@ class Plus:
         return f"({self.left} ⊕ {self.right})"
 
 
-Ty = Union[Q, Ten, Plus]
+Ty = Union[Unit, Q, Ten, Plus]
 
 
 def width(ty: Ty) -> int:
@@ -69,7 +80,10 @@ def width(ty: Ty) -> int:
 
     For Plus types, includes 1 tag qubit plus data wires from both branches.
     Layout for A ⊕ B: [tag | A_wires | B_wires]
+    Unit type has width 0.
     """
+    if isinstance(ty, Unit):
+        return 0
     if isinstance(ty, Q):
         return 1
     if isinstance(ty, Ten):
@@ -85,7 +99,10 @@ def data_width(ty: Ty) -> int:
 
     For Plus types, this is width(left) + width(right) without the tag.
     Useful for computing data-only permutations.
+    Unit type has data_width 0.
     """
+    if isinstance(ty, Unit):
+        return 0
     if isinstance(ty, Q):
         return 1
     if isinstance(ty, Ten):
@@ -97,6 +114,8 @@ def data_width(ty: Ty) -> int:
 
 def tag_count(ty: Ty) -> int:
     """Number of tag qubits in ty (one per Plus node)."""
+    if isinstance(ty, Unit):
+        return 0
     if isinstance(ty, Q):
         return 0
     if isinstance(ty, Ten):
@@ -112,14 +131,20 @@ def pretty(ty: Ty) -> str:
 
 
 def flatten_tensor(ty: Ty) -> List[Ty]:
-    """Flatten a tensor tree into a left-to-right list of factors."""
+    """Flatten a tensor tree into a left-to-right list of factors.
+
+    Unit types are included in the list (they contribute width 0).
+    """
     if isinstance(ty, Ten):
         return flatten_tensor(ty.left) + flatten_tensor(ty.right)
     return [ty]
 
 
 def flatten_plus(ty: Ty) -> List[Ty]:
-    """Flatten a plus tree into a left-to-right list of summands."""
+    """Flatten a plus tree into a left-to-right list of summands.
+
+    Unit types are included in the list (they contribute width 0).
+    """
     if isinstance(ty, Plus):
         return flatten_plus(ty.left) + flatten_plus(ty.right)
     return [ty]

@@ -126,6 +126,10 @@ module Core = struct
     | GateT of int
     | GateRz of float * int
     | ExpI of float * term
+    (* Controlled single-qubit gates for quantum case expressions *)
+    | GateCH of int * int   (* control, target *)
+    | GateCS of int * int
+    | GateCSdg of int * int
 
   let rec term_to_string = function
     | Seq (f, g) -> Printf.sprintf "%s ; %s" (term_to_string f) (term_to_string g)
@@ -146,6 +150,10 @@ module Core = struct
     | GateT i -> Printf.sprintf "T[%d]" i
     | GateRz (theta, i) -> Printf.sprintf "Rz[%.4f,%d]" theta i
     | ExpI (theta, j) -> Printf.sprintf "exp_i(%.4f, %s)" theta (term_to_string j)
+    (* Controlled single-qubit gates for quantum case expressions *)
+    | GateCH (i, j) -> Printf.sprintf "CH[%d,%d]" i j
+    | GateCS (i, j) -> Printf.sprintf "CS[%d,%d]" i j
+    | GateCSdg (i, j) -> Printf.sprintf "CSdg[%d,%d]" i j
 end
 
 (** Check that a type is well-formed (all type variables bound) *)
@@ -293,49 +301,319 @@ and subst x v = function
     | Ast.GateRz _) as t -> t
   | Ast.ExpI (theta, j) -> Ast.ExpI (theta, subst x v j)
 
-(** Elaborate case expression to structural rewiring.
+(** Lift a Core.term to use controlled gates, with control on wire ctrl.
+
+    For quantum case expressions, we need to transform gates in a branch
+    to their controlled versions. The control wire is the tag qubit.
+
+    If anti=true, we wrap with X gates: X[ctrl] ; controlled-term ; X[ctrl]
+    This implements anti-control (control on |0⟩ rather than |1⟩).
+*)
+and lift_to_controlled ~anti ctrl term =
+  if anti then
+    (* Anti-control: X[ctrl] ; controlled-term ; X[ctrl] *)
+    Core.Seq (Core.GateX ctrl,
+              Core.Seq (lift_to_controlled ~anti:false ctrl term,
+                        Core.GateX ctrl))
+  else
+    match term with
+    (* Single-qubit gates -> controlled versions *)
+    | Core.GateH i -> Core.GateCH (ctrl, i)
+    | Core.GateS i -> Core.GateCS (ctrl, i)
+    (* Note: For gates without controlled versions, we'd need to decompose.
+       For now, we only support H and S in case branches. *)
+
+    (* Composition: lift each part *)
+    | Core.Seq (f, g) ->
+        Core.Seq (lift_to_controlled ~anti:false ctrl f,
+                  lift_to_controlled ~anti:false ctrl g)
+    | Core.Ten (f, g) ->
+        Core.Ten (lift_to_controlled ~anti:false ctrl f,
+                  lift_to_controlled ~anti:false ctrl g)
+
+    (* Identity doesn't need control *)
+    | Core.Id ty -> Core.Id ty
+
+    (* Structural ops are permutations - they don't emit gates,
+       so they pass through unchanged *)
+    | Core.TwistT (a, b) -> Core.TwistT (a, b)
+    | Core.TwistP (a, b) -> Core.TwistP (a, b)
+    | Core.AssocTL (a, b, c) -> Core.AssocTL (a, b, c)
+    | Core.AssocTR (a, b, c) -> Core.AssocTR (a, b, c)
+    | Core.AssocPL (a, b, c) -> Core.AssocPL (a, b, c)
+    | Core.AssocPR (a, b, c) -> Core.AssocPR (a, b, c)
+
+    (* Other gates: for now, pass through (TODO: add more controlled gates) *)
+    | t -> t
+
+(** Elaborate case expression.
 
     For a case like:
-      case e of F(a) => T(a) | T(b) => F(b)
+      case e of Left(a) => f | Right(b) => g
 
-    We generate TwistPlus to permute constructors.
+    There are two modes:
+    1. Classical case: scrutinee is a known constructor -> compile-time selection
+    2. Quantum case: scrutinee is a superposition -> controlled gates
+
+    For quantum case with 2 constructors:
+      Elaborates to: Anti-controlled-g ; f ; Controlled-g
+
+    Where:
+    - Tag qubit is wire 0 (first wire of the Plus type)
+    - Anti-controlled means control on |0⟩ (for Left branch)
+    - Controlled means control on |1⟩ (for Right branch)
 *)
-and elaborate_case _tyvar_env _ty_env _dt_env scrutinee branches =
-  (* For now, a simplified elaboration:
-     - The scrutinee should be a variable (structural position)
-     - The branches define a permutation of constructors
-
-     This will be connected to the existing Perm_gen module. *)
+and elaborate_case tyvar_env ty_env dt_env scrutinee branches =
   let n = List.length branches in
 
-  (* Extract constructor names from patterns *)
-  let branch_ctors = List.map (fun (pat, _) ->
-    match pat with
-    | Ast.PatCtor (name, _) -> name
-    | Ast.PatWild -> "_"
-  ) branches in
+  (* Check if this is a classical case (known constructor) *)
+  let is_classical = match scrutinee with
+    | Ast.Ctor _ -> true
+    | _ -> false
+  in
 
-  if n = 2 then begin
-    (* Two-constructor case: use TwistPlus if swapped *)
-    match scrutinee with
-    | Ast.Var _ ->
-      (* Check if this is a swap *)
-      let c0 = List.nth branch_ctors 0 in
-      let c1 = List.nth branch_ctors 1 in
-      if c0 = "T" && c1 = "F" then
-        (* This is swap: F,T -> T,F *)
-        Core.TwistP (Ast.TyQ, Ast.TyQ)  (* Placeholder types *)
-      else
-        Core.Id Ast.TyUnit  (* Identity permutation *)
-    | _ ->
-      (* Complex scrutinee: elaborate it first *)
-      Core.Id Ast.TyUnit  (* Placeholder *)
-  end
-  else begin
-    (* n > 2: need general permutation *)
-    (* For now, just return identity as placeholder *)
-    Core.Id Ast.TyUnit
-  end
+  if is_classical then
+    (* Classical case: compile-time selection *)
+    elaborate_classical_case tyvar_env ty_env dt_env scrutinee branches
+  else if n = 2 then
+    (* Quantum case with 2 constructors *)
+    elaborate_quantum_case_2 tyvar_env ty_env dt_env scrutinee branches
+  else
+    (* n > 2: general quantum case (TODO) *)
+    failwith (Printf.sprintf "elaborate_case: %d-constructor quantum case not yet implemented" n)
+
+(** Classical case: scrutinee is a known constructor.
+    Select the matching branch at compile time. *)
+and elaborate_classical_case tyvar_env ty_env dt_env scrutinee branches =
+  match scrutinee with
+  | Ast.Ctor (ctor_name, payload) ->
+    (* Find matching branch *)
+    let matching_branch = List.find_opt (fun (pat, _) ->
+      match pat with
+      | Ast.PatCtor (name, _) -> name = ctor_name
+      | Ast.PatWild -> true
+    ) branches in
+    (match matching_branch with
+     | Some (Ast.PatCtor (_, var), body) ->
+       (* Substitute payload for pattern variable and elaborate *)
+       let body' = subst var payload body in
+       elaborate tyvar_env ty_env dt_env body'
+     | Some (Ast.PatWild, body) ->
+       elaborate tyvar_env ty_env dt_env body
+     | None ->
+       failwith (Printf.sprintf "No matching branch for constructor %s" ctor_name))
+  | _ ->
+    failwith "elaborate_classical_case: expected constructor scrutinee"
+
+(** Quantum case with 2 constructors.
+
+    case x of Left(a) => f | Right(b) => g
+
+    Elaborates to: Anti-controlled-g ; f ; Controlled-g
+
+    The tag qubit (wire 0) controls which branch is active.
+    - Left branch (tag=0): f is applied, g is anti-controlled (control on |0⟩)
+    - Right branch (tag=1): g is applied, f needs to "undo" via anti-controlled-g
+*)
+and elaborate_quantum_case_2 tyvar_env ty_env dt_env _scrutinee branches =
+  (* For 2-constructor case, tag qubit is wire 0 *)
+  let tag_wire = 0 in
+
+  (* Get the two branches *)
+  let (left_pat, left_body), (right_pat, right_body) = match branches with
+    | [b0; b1] -> (b0, b1)
+    | _ -> failwith "elaborate_quantum_case_2: expected exactly 2 branches"
+  in
+
+  (* Extract pattern variables (for now, we assume they bind to Id) *)
+  let _left_var = match left_pat with
+    | Ast.PatCtor (_, v) -> v
+    | Ast.PatWild -> "_"
+  in
+  let _right_var = match right_pat with
+    | Ast.PatCtor (_, v) -> v
+    | Ast.PatWild -> "_"
+  in
+
+  (* Elaborate the branch bodies.
+     Note: In a real implementation, we'd substitute the pattern variable
+     with the appropriate projection. For QBool (Unit + Unit), the payload
+     is trivial (Unit), so we just elaborate the body directly. *)
+  let left_elaborated = elaborate tyvar_env ty_env dt_env left_body in
+  let right_elaborated = elaborate tyvar_env ty_env dt_env right_body in
+
+  (* Quantum case decomposition:
+     Anti-controlled-right ; left ; Controlled-right
+
+     This works because:
+     - On |0⟩ (Left): anti-controlled-right fires, then left fires, then controlled-right does nothing
+       = right⁻¹ ; left (but since right ; right⁻¹ = id, this gives left)
+     - On |1⟩ (Right): anti-controlled-right does nothing, left fires, then controlled-right fires
+       = left ; right
+
+     Wait, this isn't quite right for the quantum switch. Let me reconsider.
+
+     For QSwitch(f, g):
+     - On |0⟩ (Zero): apply g then f
+     - On |1⟩ (One): apply f then g
+
+     The correct decomposition is:
+     - Anti-C[right] ; left ; C[right]
+
+     But we need to be careful about what "left" and "right" mean here.
+     For QSwitch, if left = (g;f) and right = (f;g), then:
+     - The difference is the ORDER of f and g.
+
+     Actually, for the quantum switch, the correct decomposition uses the
+     commutator structure. Let me use a simpler approach:
+
+     For case q of Left => f | Right => g:
+     - Apply f unconditionally (it's the "default" path)
+     - Apply controlled-g†-then-g = controlled-(f†;g;f) to get the difference
+
+     This is getting complicated. Let me use the direct approach from the plan:
+     Anti-controlled-right ; left ; Controlled-right
+
+     For this to work, we need f and g to be the DIFFERENCES from identity,
+     not the full branch bodies. But in QSwitch, the branches ARE the operations.
+
+     Let me simplify: for now, just emit the controlled gates directly.
+     The QSwitch(H,S) example has:
+     - Left branch: S ; H
+     - Right branch: H ; S
+
+     The correct circuit is: X[0] ; CS[0,1] ; X[0] ; H[1] ; CS[0,1]
+
+     Wait, that's for control qubit at 0 and target at 1. But the branches
+     operate on the PAYLOAD, which is at wire 1 (wire 0 is the tag).
+
+     Let me think again:
+     - Wire 0: tag qubit (control)
+     - Wire 1: payload qubit (target for gates in branches)
+
+     Left branch (S;H on wire 1 when tag=0):
+     - Anti-controlled-S ; Anti-controlled-H
+     - = X[0] ; CS[0,1] ; X[0] ; X[0] ; CH[0,1] ; X[0]
+     - = X[0] ; CS[0,1] ; CH[0,1] ; X[0]  (X;X cancels)
+
+     Right branch (H;S on wire 1 when tag=1):
+     - Controlled-H ; Controlled-S
+     - = CH[0,1] ; CS[0,1]
+
+     Combined for superposition:
+     - (Anti-controlled-left) ; (Controlled-right)
+     - But this gives BOTH branches running, not one OR the other.
+
+     Actually, the quantum switch is SUPPOSED to have both branches running
+     in superposition! That's the whole point. So:
+
+     - Controlled-right runs on the |1⟩ component
+     - Anti-controlled-left runs on the |0⟩ component
+
+     So the circuit is:
+     - Anti-controlled-(S;H) ; Controlled-(H;S)
+     - = X[0] ; CS[0,1] ; CH[0,1] ; X[0] ; CH[0,1] ; CS[0,1]
+
+     Hmm, but this can be simplified. Let me think...
+
+     Actually, the simpler decomposition is:
+     - X[0] ; (controlled-difference) ; X[0] ; (common-part) ; (controlled-difference)
+
+     For QSwitch(H,S):
+     - Left = S;H = S·H
+     - Right = H;S = H·S
+     - difference = S (since H·S·S = H, and S·H·H = S)
+
+     Wait no, that's for commuting gates. H and S don't commute.
+
+     The correct approach: Since this is a CONTROLLED swap of order, we use:
+     - For |0⟩: apply S then H
+     - For |1⟩: apply H then S
+
+     A controlled-SWAP-order can be done with controlled gates:
+     1. Controlled-S (only fires on |1⟩, giving H·S → H after we apply S)
+     2. Apply H unconditionally
+     3. Anti-controlled-S (only fires on |0⟩, giving H·S on |1⟩ and S·H on |0⟩)
+
+     Wait, I'm overcomplicating this. Let me just use the direct decomposition
+     that we already know works:
+
+     X[0] ; CS[0,1] ; X[0] ; H[1] ; CS[0,1]
+
+     This is: anti-controlled-S ; H ; controlled-S
+
+     So the pattern is:
+     - If left = S;H and right = H;S
+     - Decomposition = anti-C[S] ; H ; C[S]
+     - = X[0];CS;X[0] ; H ; CS
+
+     This works because:
+     - On |0⟩: CS doesn't fire (control=0), H fires, anti-CS fires = S;H ✓
+     - On |1⟩: CS doesn't fire in anti mode, H fires, CS fires = H;S ✓
+
+     But how do we COMPUTE this decomposition from the branch bodies?
+
+     The answer: we look for common operations and factor them out.
+     - left = S ; H = S·H
+     - right = H ; S = H·S
+     - Common: H (but in different positions)
+
+     Actually, for the general case, we'd need symbolic manipulation.
+     For now, let me just emit the direct controlled version of each branch:
+
+     Full circuit = anti-controlled-left ; controlled-right
+
+     This gives:
+     - On |0⟩: left fires, right is blocked = left ✓
+     - On |1⟩: left is blocked, right fires = right ✓
+
+     So the correct decomposition is:
+     anti-controlled-left + controlled-right (in parallel, not sequential!)
+
+     But wait, we can't do parallel in the term language. They need to be sequential
+     because they operate on the SAME wire. Let me reconsider...
+
+     Actually, for the SAME target wire, we can use:
+     anti-controlled-left ; controlled-right
+
+     On |0⟩:
+     - anti-controlled-left fires (applies left)
+     - controlled-right doesn't fire
+     - Result: left ✓
+
+     On |1⟩:
+     - anti-controlled-left doesn't fire
+     - controlled-right fires (applies right)
+     - Result: right ✓
+
+     OK so the decomposition is simply:
+     anti-controlled-left ; controlled-right
+
+     For QSwitch(H,S):
+     - left = S;H
+     - right = H;S
+     - anti-C[left] = X[0];CS;CH;X[0]
+     - C[right] = CH;CS
+     - Full = X[0];CS;CH;X[0];CH;CS
+
+     Hmm, that's 6 gates. But the known circuit is 5 gates:
+     X[0] ; CS[0,1] ; X[0] ; H[1] ; CS[0,1]
+
+     The 5-gate version uses the fact that CH;X[0];CH = X[0] (up to global phase).
+     Actually wait, that's not right either.
+
+     Let me just implement the straightforward version for now:
+     anti-controlled-left ; controlled-right
+  *)
+
+  (* Lift left branch to anti-controlled (control on |0⟩) *)
+  let anti_controlled_left = lift_to_controlled ~anti:true tag_wire left_elaborated in
+
+  (* Lift right branch to controlled (control on |1⟩) *)
+  let controlled_right = lift_to_controlled ~anti:false tag_wire right_elaborated in
+
+  (* Compose: anti-controlled-left ; controlled-right *)
+  Core.Seq (anti_controlled_left, controlled_right)
 
 (** Elaborate a definition *)
 let elaborate_def tyvar_env ty_env dt_env = function

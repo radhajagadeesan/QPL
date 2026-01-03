@@ -19,6 +19,8 @@ from lang.terms import (
     X, Y, Z, T, Tdg, Sdg, CZ, CCX,
     # Phase 4C parameterized gates
     Rz, Rx, Ry, Phase, CRz,
+    # Controlled single-qubit gates
+    CH, CS, CSdg,
 )
 
 
@@ -162,6 +164,15 @@ def type_of(t: Term) -> DomCod:
             raise TypeCheckError(f"CRz index out of range: (i,j)=({t.i},{t.j}), width={n}")
         if t.i == t.j:
             raise TypeCheckError("CRz requires distinct control/target indices (i != j).")
+        return (t.ty_total, t.ty_total)
+
+    # Controlled single-qubit gates (for quantum case expressions)
+    if isinstance(t, (CH, CS, CSdg)):
+        n = width(t.ty_total)
+        if t.i < 0 or t.i >= n or t.j < 0 or t.j >= n:
+            raise TypeCheckError(f"Controlled gate index out of range: (i,j)=({t.i},{t.j}), width={n}")
+        if t.i == t.j:
+            raise TypeCheckError("Controlled gate requires distinct control/target indices (i != j).")
         return (t.ty_total, t.ty_total)
 
     raise TypeCheckError(f"Unknown term node: {t!r}")

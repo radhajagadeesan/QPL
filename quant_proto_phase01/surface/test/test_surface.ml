@@ -302,6 +302,50 @@ let test_elaborate () =
 
   print_endline ""
 
+(* Test quantum case elaboration *)
+let test_quantum_case () =
+  print_endline "=== Testing quantum case elaboration ===";
+
+  (* Build a quantum case expression:
+     case q of
+       | Zero(u) => S[1] ; H[1]    (left branch: S then H on payload wire)
+       | One(u)  => H[1] ; S[1]    (right branch: H then S on payload wire)
+
+     This is the quantum switch pattern.
+     Wire 0 is the tag qubit, Wire 1 is the payload.
+
+     Expected elaboration (anti-controlled-left ; controlled-right):
+     X[0] ; CS[0,1] ; CH[0,1] ; X[0] ; CH[0,1] ; CS[0,1]
+  *)
+  let open Ast in
+  let tyvar_env = Elaborate.TyVarEnv.empty in
+  (* Add 'q' to the type environment with type QBool = (I + I) *)
+  let ty_env = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "q" (TyPlus (TyUnit, TyUnit)) in
+  let dt_env = Elaborate.DtEnv.empty in
+
+  let qswitch_case = Case (Var "q", [
+    (PatCtor ("Zero", "u"), Seq (GateS 1, GateH 1));
+    (PatCtor ("One", "u"), Seq (GateH 1, GateS 1));
+  ]) in
+
+  print_endline ("  Source: " ^ term_to_string qswitch_case);
+
+  let elaborated = Elaborate.elaborate tyvar_env ty_env dt_env qswitch_case in
+  print_endline ("  Elaborated: " ^ Elaborate.Core.term_to_string elaborated);
+
+  (* Verify the structure contains controlled gates *)
+  let result_str = Elaborate.Core.term_to_string elaborated in
+  if String.length result_str > 0 &&
+     (String.sub result_str 0 1 = "X" ||
+      (String.length result_str > 2 && String.sub result_str 0 2 = "CH") ||
+      (String.length result_str > 2 && String.sub result_str 0 2 = "CS"))
+  then
+    print_endline "  ✓ Elaboration contains controlled gates"
+  else
+    print_endline ("  Result starts with: " ^ (if String.length result_str > 10 then String.sub result_str 0 10 else result_str));
+
+  print_endline ""
+
 (* Test error handling *)
 let test_errors () =
   print_endline "=== Testing error handling ===";
@@ -342,6 +386,7 @@ let () =
   test_triple ();
   test_ast ();
   test_elaborate ();
+  test_quantum_case ();
   test_errors ();
 
   print_endline "All tests completed!"

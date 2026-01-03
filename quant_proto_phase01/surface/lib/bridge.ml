@@ -77,6 +77,10 @@ type term =
   | TCRz of float * int * int
   (* Three-qubit gate *)
   | TCCX of int * int * int
+  (* Controlled single-qubit gates for quantum case expressions *)
+  | TCH of int * int
+  | TCS of int * int
+  | TCSdg of int * int
 
 (** Convert a term to JSON *)
 let rec term_to_json = function
@@ -133,6 +137,10 @@ let rec term_to_json = function
   | TCRz (theta, i, j) -> Printf.sprintf {|{"node": "CRz", "theta": %f, "i": %d, "j": %d}|} theta i j
   (* Three-qubit gate *)
   | TCCX (i, j, k) -> Printf.sprintf {|{"node": "CCX", "i": %d, "j": %d, "k": %d}|} i j k
+  (* Controlled single-qubit gates for quantum case expressions *)
+  | TCH (i, j) -> Printf.sprintf {|{"node": "CH", "i": %d, "j": %d}|} i j
+  | TCS (i, j) -> Printf.sprintf {|{"node": "CS", "i": %d, "j": %d}|} i j
+  | TCSdg (i, j) -> Printf.sprintf {|{"node": "CSdg", "i": %d, "j": %d}|} i j
 
 (** Simple JSON parsing helpers *)
 let find_string key json =

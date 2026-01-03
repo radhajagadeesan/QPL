@@ -20,6 +20,8 @@ from lang.terms import (
     X, Y, Z, T, Tdg, Sdg, CZ, CCX,
     # Phase 4C parameterized gates
     Rz, Rx, Ry, Phase, CRz,
+    # Controlled single-qubit gates
+    CH, CS, CSdg,
 )
 from lang.types import width
 from typing_.check import type_of, assert_well_typed, TypeCheckError
@@ -194,6 +196,22 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
         phys_j = p.apply_new_to_old(j + offset)
         circ.CRz(theta, phys_i, phys_j)
 
+    # Controlled single-qubit gate emitters (for quantum case expressions)
+    def emit_CH(i: int, j: int, offset: int = 0) -> None:
+        phys_i = p.apply_new_to_old(i + offset)
+        phys_j = p.apply_new_to_old(j + offset)
+        circ.CH(phys_i, phys_j)
+
+    def emit_CS(i: int, j: int, offset: int = 0) -> None:
+        phys_i = p.apply_new_to_old(i + offset)
+        phys_j = p.apply_new_to_old(j + offset)
+        circ.CS(phys_i, phys_j)
+
+    def emit_CSdg(i: int, j: int, offset: int = 0) -> None:
+        phys_i = p.apply_new_to_old(i + offset)
+        phys_j = p.apply_new_to_old(j + offset)
+        circ.CSdg(phys_i, phys_j)
+
     def embed_local_perm(local_perm: WirePerm, offset: int) -> WirePerm:
         """Embed a local permutation into the global n-wire space.
 
@@ -342,6 +360,14 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
             emit_Phase(t.phi, t.i, offset); return
         if isinstance(t, CRz):
             emit_CRz(t.theta, t.i, t.j, offset); return
+
+        # Controlled single-qubit gates
+        if isinstance(t, CH):
+            emit_CH(t.i, t.j, offset); return
+        if isinstance(t, CS):
+            emit_CS(t.i, t.j, offset); return
+        if isinstance(t, CSdg):
+            emit_CSdg(t.i, t.j, offset); return
 
         raise TypeError(f"Unknown term node: {t!r}")
 
@@ -624,6 +650,17 @@ def compile_goi(
             emit_atom("CRz", [t.i, t.j], offset, params=(t.theta,))
             return
 
+        # Controlled single-qubit gates
+        if isinstance(t, CH):
+            emit_atom("CH", [t.i, t.j], offset)
+            return
+        if isinstance(t, CS):
+            emit_atom("CS", [t.i, t.j], offset)
+            return
+        if isinstance(t, CSdg):
+            emit_atom("CSdg", [t.i, t.j], offset)
+            return
+
         raise TypeError(f"Unknown term node: {t!r}")
 
     # If term is a top-level Feedback, we process it specially
@@ -707,6 +744,13 @@ def compile_goi(
                 circ.U1(params[0], wires[0])
             elif name == "CRz":
                 circ.CRz(params[0], wires[0], wires[1])
+            # Controlled single-qubit gates
+            elif name == "CH":
+                circ.CH(wires[0], wires[1])
+            elif name == "CS":
+                circ.CS(wires[0], wires[1])
+            elif name == "CSdg":
+                circ.CSdg(wires[0], wires[1])
             else:
                 raise ValueError(f"Unknown gate: {name}")
             if explain:

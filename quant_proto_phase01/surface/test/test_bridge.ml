@@ -205,6 +205,72 @@ let test_rotation_gate () =
     print_endline ("✗ Rz compilation failed: " ^ err);
     assert false
 
+(* Test: Controlled-H gate via OCaml bridge *)
+let test_controlled_h () =
+  print_endline "=== Testing CH[0,1] via OCaml bridge ===";
+
+  let ch = Bridge.TCH (0, 1) in
+
+  match Bridge.compile ch with
+  | Bridge.CompileOk (_perm, size) ->
+    print_endline "✓ CH compiled successfully";
+    print_endline (Printf.sprintf "  circuit_size = %d" size);
+    assert (size = 1);
+    print_endline "✓ CH emits 1 gate"
+  | Bridge.CompileError err ->
+    print_endline ("✗ CH compilation failed: " ^ err);
+    assert false
+
+(* Test: Controlled-S gate via OCaml bridge *)
+let test_controlled_s () =
+  print_endline "=== Testing CS[0,1] via OCaml bridge ===";
+
+  let cs = Bridge.TCS (0, 1) in
+
+  match Bridge.compile cs with
+  | Bridge.CompileOk (_perm, size) ->
+    print_endline "✓ CS compiled successfully";
+    print_endline (Printf.sprintf "  circuit_size = %d" size);
+    assert (size = 1);
+    print_endline "✓ CS emits 1 gate"
+  | Bridge.CompileError err ->
+    print_endline ("✗ CS compilation failed: " ^ err);
+    assert false
+
+(* Test: QSwitch(H,S) circuit pattern via OCaml bridge *)
+let test_qswitch_circuit () =
+  print_endline "=== Testing QSwitch(H,S) circuit: X[0] ; CS[0,1] ; X[0] ; H[1] ; CS[0,1] ===";
+
+  (* The quantum switch for gates H and S on a 2-qubit system:
+     - Wire 0 is the control (tag qubit)
+     - Wire 1 is the target
+     The decomposition is: X[0] ; CS[0,1] ; X[0] ; H[1] ; CS[0,1] *)
+  let qswitch = Bridge.TSeq (
+    Bridge.TX 0,
+    Bridge.TSeq (
+      Bridge.TCS (0, 1),
+      Bridge.TSeq (
+        Bridge.TX 0,
+        Bridge.TSeq (
+          Bridge.TH 1,
+          Bridge.TCS (0, 1)
+        )
+      )
+    )
+  ) in
+
+  match Bridge.compile qswitch with
+  | Bridge.CompileOk (perm, size) ->
+    print_endline "✓ QSwitch(H,S) compiled successfully";
+    print_endline (Printf.sprintf "  perm.n = %d" perm.n);
+    print_endline (Printf.sprintf "  circuit_size = %d" size);
+    (* QSwitch: X + CS + X + H + CS = 5 gates *)
+    assert (size = 5);
+    print_endline "✓ QSwitch circuit has 5 gates"
+  | Bridge.CompileError err ->
+    print_endline ("✗ QSwitch(H,S) compilation failed: " ^ err);
+    assert false
+
 (* Run all tests *)
 let () =
   print_endline "QPL Bridge Integration Tests";
@@ -235,6 +301,15 @@ let () =
   print_endline "";
 
   test_rotation_gate ();
+  print_endline "";
+
+  test_controlled_h ();
+  print_endline "";
+
+  test_controlled_s ();
+  print_endline "";
+
+  test_qswitch_circuit ();
   print_endline "";
 
   print_endline "All bridge tests passed!"
