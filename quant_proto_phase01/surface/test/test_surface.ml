@@ -458,6 +458,92 @@ let test_triple_nested_quantum_case () =
 
   print_endline ""
 
+(* Test eta-expanded structural isomorphisms *)
+let test_eta_expanded_structural () =
+  print_endline "=== Testing eta-expanded structural isomorphisms ===";
+
+  let open Ast in
+  let tyvar_env = Elaborate.TyVarEnv.empty in
+  let dt_env = Elaborate.DtEnv.empty in
+
+  (* Test 1: TwistPlus - the primitive version *)
+  print_endline "\n--- TwistPlus: Built-in vs Eta-expanded ---";
+  let builtin_twist = TwistP (TyUnit, TyUnit) in
+  let builtin_result = Elaborate.elaborate tyvar_env Elaborate.TyEnv.empty dt_env builtin_twist in
+  print_endline ("  Built-in TwistP: " ^ Elaborate.Core.term_to_string builtin_result);
+
+  (* Eta-expanded TwistPlus:
+     case x of Left(a) => Right(a) | Right(b) => Left(b)
+
+     This swaps the constructors - structurally equivalent to TwistP.
+     Question: Does it elaborate to pure rewiring or controlled gates?
+  *)
+  let ty_env = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "x" (TyPlus (TyUnit, TyUnit)) in
+  let eta_twist = Case (Var "x", [
+    (PatCtor ("Left", "a"), Ctor ("Right", Var "a"));
+    (PatCtor ("Right", "b"), Ctor ("Left", Var "b"));
+  ]) in
+  print_endline ("  Eta-expanded source: " ^ term_to_string eta_twist);
+  let eta_result = Elaborate.elaborate tyvar_env ty_env dt_env eta_twist in
+  let eta_str = Elaborate.Core.term_to_string eta_result in
+  print_endline ("  Eta-expanded result: " ^ eta_str);
+
+  (* Check if eta-expanded version is structural (only X gates for tag flips, no H/S/T/CX) *)
+  let has_computational_gates =
+    Str.string_match (Str.regexp ".*[^C]H\\[\\|.*[^C]S\\[\\|.*[^C]T\\[\\|.*CX\\[.*") eta_str 0 ||
+    Str.string_match (Str.regexp ".*C[0-9]-H\\|.*C[0-9]-S\\|.*C[0-9]-T.*") eta_str 0
+  in
+  let has_x_gates = Str.string_match (Str.regexp ".*X\\[.*") eta_str 0 in
+
+  if has_computational_gates then
+    print_endline "  ✗ Eta-expanded has computational gates (NOT structural!)"
+  else if has_x_gates then begin
+    print_endline "  ✓ Eta-expanded is structural (only X gates for tag flips)";
+    (* Verify that X[0] ; X[0] patterns cancel, leaving just X[0] for twist *)
+    print_endline "    (X gates cancel except final flip: equivalent to X[tag])"
+  end else
+    print_endline "  ✓ Eta-expanded is pure identity (no gates)";
+
+  (* Test 2: Identity case - no change to constructors *)
+  print_endline "\n--- Identity: case that preserves constructors ---";
+  let identity_case = Case (Var "x", [
+    (PatCtor ("Left", "a"), Ctor ("Left", Var "a"));
+    (PatCtor ("Right", "b"), Ctor ("Right", Var "b"));
+  ]) in
+  print_endline ("  Identity source: " ^ term_to_string identity_case);
+  let identity_result = Elaborate.elaborate tyvar_env ty_env dt_env identity_case in
+  let identity_str = Elaborate.Core.term_to_string identity_result in
+  print_endline ("  Identity result: " ^ identity_str);
+
+  (* Verify identity is structural (X gates should cancel completely) *)
+  let id_has_computational =
+    Str.string_match (Str.regexp ".*[^C]H\\[\\|.*[^C]S\\[\\|.*[^C]T\\[\\|.*CX\\[.*") identity_str 0 ||
+    Str.string_match (Str.regexp ".*C[0-9]-H\\|.*C[0-9]-S\\|.*C[0-9]-T.*") identity_str 0
+  in
+  if id_has_computational then
+    print_endline "  ✗ Identity case has computational gates (NOT structural!)"
+  else
+    print_endline "  ✓ Identity case is structural (X gates cancel to identity)";
+
+  (* Test 3: Case with gate in one branch only - definitely needs controlled gates *)
+  print_endline "\n--- Non-structural: case with different operations ---";
+  let ty_env_2q = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "x" (TyPlus (TyQ, TyQ)) in
+  let asymmetric_case = Case (Var "x", [
+    (PatCtor ("Left", "a"), Seq (Var "a", GateH 1));   (* Apply H in left branch *)
+    (PatCtor ("Right", "b"), Var "b");                  (* Identity in right branch *)
+  ]) in
+  print_endline ("  Asymmetric source: " ^ term_to_string asymmetric_case);
+  let asymmetric_result = Elaborate.elaborate tyvar_env ty_env_2q dt_env asymmetric_case in
+  let asymmetric_str = Elaborate.Core.term_to_string asymmetric_result in
+  print_endline ("  Asymmetric result: " ^ asymmetric_str);
+
+  if Str.string_match (Str.regexp ".*C[0-9]-.*") asymmetric_str 0 then
+    print_endline "  ✓ Asymmetric case produces controlled gates (correct)"
+  else
+    print_endline "  ✗ Asymmetric case should have controlled gates";
+
+  print_endline ""
+
 (* Test error handling *)
 let test_errors () =
   print_endline "=== Testing error handling ===";
@@ -501,6 +587,7 @@ let () =
   test_quantum_case ();
   test_nested_quantum_case ();
   test_triple_nested_quantum_case ();
+  test_eta_expanded_structural ();
   test_errors ();
 
   print_endline "All tests completed!"

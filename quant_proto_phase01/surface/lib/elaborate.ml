@@ -455,10 +455,20 @@ and elaborate_classical_case ~base tyvar_env ty_env dt_env scrutinee branches =
     For nested cases, the base parameter ensures each level uses the
     correct tag wire, and branch bodies are elaborated at payload_base.
 *)
-and elaborate_quantum_case_2 ~base tyvar_env ty_env dt_env _scrutinee branches =
+and elaborate_quantum_case_2 ~base tyvar_env ty_env dt_env scrutinee branches =
   (* Tag wire is at base, payload starts at base + 1 *)
   let tag_wire = base in
   let payload_base = base + 1 in
+
+  (* Get the scrutinee type to determine payload types *)
+  let (left_payload_ty, right_payload_ty) = match scrutinee with
+    | Ast.Var x ->
+      (match TyEnv.lookup ty_env x with
+       | Some (Ast.TyPlus (a, b)) -> (a, b)
+       | Some ty -> failwith (Printf.sprintf "elaborate_quantum_case_2: scrutinee %s has non-sum type %s" x (Ast.ty_to_string ty))
+       | None -> (Ast.TyUnit, Ast.TyUnit))  (* Default if type unknown *)
+    | _ -> (Ast.TyUnit, Ast.TyUnit)  (* Default for complex scrutinees *)
+  in
 
   (* Get the two branches *)
   let (left_pat, left_body), (right_pat, right_body) = match branches with
@@ -466,20 +476,52 @@ and elaborate_quantum_case_2 ~base tyvar_env ty_env dt_env _scrutinee branches =
     | _ -> failwith "elaborate_quantum_case_2: expected exactly 2 branches"
   in
 
-  (* Extract pattern variables (for now, we assume they bind to Id) *)
-  let _left_var = match left_pat with
+  (* Extract pattern variables and substitute with Id(payload_type).
+     In a quantum case, the pattern variable represents "the payload that's there",
+     which elaborates to identity on the payload wires. *)
+  let left_var = match left_pat with
     | Ast.PatCtor (_, v) -> v
     | Ast.PatWild -> "_"
   in
-  let _right_var = match right_pat with
+  let right_var = match right_pat with
     | Ast.PatCtor (_, v) -> v
     | Ast.PatWild -> "_"
   in
 
+  (* Detect if a branch body is a constructor wrapping the pattern variable.
+     Returns (output_ctor_name option, inner_body) *)
+  let unwrap_ctor body var =
+    match body with
+    | Ast.Ctor (name, Ast.Var v) when v = var -> (Some name, Ast.Id Ast.TyUnit)
+    | Ast.Ctor (name, inner) -> (Some name, inner)
+    | _ -> (None, body)
+  in
+
+  (* Detect constructor changes for tag handling *)
+  let left_ctor_name = match left_pat with Ast.PatCtor (n, _) -> n | _ -> "Left" in
+  let right_ctor_name = match right_pat with Ast.PatCtor (n, _) -> n | _ -> "Right" in
+
+  let (left_output_ctor, left_inner) = unwrap_ctor left_body left_var in
+  let (right_output_ctor, right_inner) = unwrap_ctor right_body right_var in
+
+  (* Determine if each branch flips the tag *)
+  let left_flips = match left_output_ctor with
+    | Some name -> name <> left_ctor_name
+    | None -> false
+  in
+  let right_flips = match right_output_ctor with
+    | Some name -> name <> right_ctor_name
+    | None -> false
+  in
+
+  (* Substitute pattern vars with Id before elaborating *)
+  let left_body' = subst left_var (Ast.Id left_payload_ty) left_inner in
+  let right_body' = subst right_var (Ast.Id right_payload_ty) right_inner in
+
   (* Elaborate the branch bodies at payload_base.
      For nested sums, this ensures inner cases use the correct wire offsets. *)
-  let left_elaborated = elaborate ~base:payload_base tyvar_env ty_env dt_env left_body in
-  let right_elaborated = elaborate ~base:payload_base tyvar_env ty_env dt_env right_body in
+  let left_elaborated = elaborate ~base:payload_base tyvar_env ty_env dt_env left_body' in
+  let right_elaborated = elaborate ~base:payload_base tyvar_env ty_env dt_env right_body' in
 
   (* Quantum case decomposition:
      Anti-controlled-right ; left ; Controlled-right
@@ -652,7 +694,31 @@ and elaborate_quantum_case_2 ~base tyvar_env ty_env dt_env _scrutinee branches =
   let controlled_right = lift_to_controlled ~anti:false tag_wire right_elaborated in
 
   (* Compose: anti-controlled-left ; controlled-right *)
-  Core.Seq (anti_controlled_left, controlled_right)
+  let base_circuit = Core.Seq (anti_controlled_left, controlled_right) in
+
+  (* Handle tag flips from constructor changes.
+     The tag flip is SEPARATE from the controlled ops because it affects
+     the tag wire itself, not the payload.
+
+     - Both flip → unconditional X[tag] (like eta-expanded twist)
+     - Neither flips → no tag change (like identity)
+     - Partial flips are NOT unitary and should be rejected
+
+     Note: partial flips (only one branch changes constructor) would map
+     both |0⟩ and |1⟩ to the same output, breaking unitarity.
+  *)
+  match (left_flips, right_flips) with
+  | (true, true) ->
+      (* Both branches flip: unconditional X[tag] (structural swap) *)
+      Core.Seq (base_circuit, Core.gate_x tag_wire)
+  | (false, false) ->
+      (* Neither flips: no tag change *)
+      base_circuit
+  | (true, false) | (false, true) ->
+      (* Partial flip: not unitary!
+         This would mean both |0⟩ and |1⟩ map to the same constructor,
+         which is measurement/collapse, not a unitary operation. *)
+      failwith "elaborate_quantum_case_2: partial constructor flip is not unitary"
 
 (** Elaborate a definition *)
 let elaborate_def tyvar_env ty_env dt_env = function
