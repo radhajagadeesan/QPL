@@ -131,6 +131,8 @@ module Core = struct
     | AssocTR of ty * ty * ty
     | AssocPL of ty * ty * ty
     | AssocPR of ty * ty * ty
+    | DistL of ty * ty * ty   (* A ⊗ (B + C) → (A ⊗ B) + (A ⊗ C) *)
+    | DistR of ty * ty * ty   (* (A + B) ⊗ C → (A ⊗ C) + (B ⊗ C) *)
     | Gate of gate
     | ExpI of float * term
 
@@ -186,6 +188,8 @@ module Core = struct
     | AssocTR _ -> "assoc⊗R"
     | AssocPL _ -> "assoc+L"
     | AssocPR _ -> "assoc+R"
+    | DistL _ -> "distL"
+    | DistR _ -> "distR"
     | Gate g -> gate_to_string g
     | ExpI (theta, j) -> Printf.sprintf "exp_i(%.4f, %s)" theta (term_to_string j)
 end
@@ -222,6 +226,7 @@ let rec free_vars = function
   | Ast.Seq (f, g) | Ast.Ten (f, g) -> free_vars f @ free_vars g
   | Ast.Id _ | Ast.TwistT _ | Ast.TwistP _
   | Ast.AssocTL _ | Ast.AssocTR _ | Ast.AssocPL _ | Ast.AssocPR _
+  | Ast.DistL _ | Ast.DistR _
   | Ast.GateH _ | Ast.GateS _ | Ast.GateCX _
   | Ast.GateX _ | Ast.GateY _ | Ast.GateZ _ | Ast.GateT _
   | Ast.GateRz _ -> []
@@ -295,6 +300,8 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
   | Ast.AssocTR (a, b, c) -> Core.AssocTR (a, b, c)
   | Ast.AssocPL (a, b, c) -> Core.AssocPL (a, b, c)
   | Ast.AssocPR (a, b, c) -> Core.AssocPR (a, b, c)
+  | Ast.DistL (a, b, c) -> Core.DistL (a, b, c)
+  | Ast.DistR (a, b, c) -> Core.DistR (a, b, c)
   | Ast.GateH i -> Core.gate_h i
   | Ast.GateS i -> Core.gate_s i
   | Ast.GateCX (i, j) -> Core.gate_cx i j
@@ -332,6 +339,7 @@ and subst x v = function
   | Ast.Ten (f, g) -> Ast.Ten (subst x v f, subst x v g)
   | (Ast.Id _ | Ast.TwistT _ | Ast.TwistP _
     | Ast.AssocTL _ | Ast.AssocTR _ | Ast.AssocPL _ | Ast.AssocPR _
+    | Ast.DistL _ | Ast.DistR _
     | Ast.GateH _ | Ast.GateS _ | Ast.GateCX _
     | Ast.GateX _ | Ast.GateY _ | Ast.GateZ _ | Ast.GateT _
     | Ast.GateRz _) as t -> t
@@ -378,6 +386,8 @@ and lift_to_controlled ~anti ctrl term =
     | Core.AssocTR (a, b, c) -> Core.AssocTR (a, b, c)
     | Core.AssocPL (a, b, c) -> Core.AssocPL (a, b, c)
     | Core.AssocPR (a, b, c) -> Core.AssocPR (a, b, c)
+    | Core.DistL (a, b, c) -> Core.DistL (a, b, c)
+    | Core.DistR (a, b, c) -> Core.DistR (a, b, c)
 
     (* ExpI: lift the body *)
     | Core.ExpI (theta, j) -> Core.ExpI (theta, lift_to_controlled ~anti:false ctrl j)

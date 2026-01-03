@@ -57,6 +57,8 @@ type term =
   | AssocTR of ty * ty * ty                 (* Tensor assoc right *)
   | AssocPL of ty * ty * ty                 (* Plus assoc left *)
   | AssocPR of ty * ty * ty                 (* Plus assoc right *)
+  | DistL of ty * ty * ty                   (* Left distributivity: A ⊗ (B + C) → (A ⊗ B) + (A ⊗ C) *)
+  | DistR of ty * ty * ty                   (* Right distributivity: (A + B) ⊗ C → (A ⊗ C) + (B ⊗ C) *)
 
   (* Gates (unitary primitives) *)
   | GateH of int                            (* Hadamard on wire i *)
@@ -126,6 +128,8 @@ let rec term_to_string = function
   | AssocTR _ -> "assoc⊗R"
   | AssocPL _ -> "assoc+L"
   | AssocPR _ -> "assoc+R"
+  | DistL _ -> "distL"
+  | DistR _ -> "distR"
   | GateH i -> Printf.sprintf "H[%d]" i
   | GateS i -> Printf.sprintf "S[%d]" i
   | GateCX (i, j) -> Printf.sprintf "CX[%d,%d]" i j

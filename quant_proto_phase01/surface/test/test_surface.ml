@@ -609,7 +609,41 @@ let test_eta_expanded_structural () =
   else
     print_endline "  ✓ AssocPlusR is structural (only X/CX gates for tag manipulation)";
 
-  (* Test 5: Case with gate in one branch only - definitely needs controlled gates *)
+  (* Test 5: DistL primitive: A ⊗ (B + C) → (A ⊗ B) + (A ⊗ C) *)
+  print_endline "\n--- DistL: Left distributivity primitive ---";
+  let distL_term = DistL (TyQ, TyUnit, TyUnit) in  (* Q ⊗ (I + I) → (Q ⊗ I) + (Q ⊗ I) *)
+  print_endline ("  DistL source: Q ⊗ (I + I) → (Q ⊗ I) + (Q ⊗ I)");
+  let distL_result = Elaborate.elaborate tyvar_env Elaborate.TyEnv.empty dt_env distL_term in
+  let distL_str = Elaborate.Core.term_to_string distL_result in
+  print_endline ("  Elaborated: " ^ distL_str);
+
+  let distL_has_computational =
+    Str.string_match (Str.regexp ".*[^C]H\\[\\|.*[^C]S\\[\\|.*[^C]T\\[\\|.*CX\\[.*") distL_str 0 ||
+    Str.string_match (Str.regexp ".*C[0-9]-H\\|.*C[0-9]-S\\|.*C[0-9]-T.*") distL_str 0
+  in
+  if distL_has_computational then
+    print_endline "  ✗ DistL has computational gates (NOT structural!)"
+  else
+    print_endline "  ✓ DistL is structural (pure wire permutation)";
+
+  (* Test 6: DistR primitive: (A + B) ⊗ C → (A ⊗ C) + (B ⊗ C) *)
+  print_endline "\n--- DistR: Right distributivity primitive ---";
+  let distR_term = DistR (TyUnit, TyUnit, TyQ) in  (* (I + I) ⊗ Q → (I ⊗ Q) + (I ⊗ Q) *)
+  print_endline ("  DistR source: (I + I) ⊗ Q → (I ⊗ Q) + (I ⊗ Q)");
+  let distR_result = Elaborate.elaborate tyvar_env Elaborate.TyEnv.empty dt_env distR_term in
+  let distR_str = Elaborate.Core.term_to_string distR_result in
+  print_endline ("  Elaborated: " ^ distR_str);
+
+  let distR_has_computational =
+    Str.string_match (Str.regexp ".*[^C]H\\[\\|.*[^C]S\\[\\|.*[^C]T\\[\\|.*CX\\[.*") distR_str 0 ||
+    Str.string_match (Str.regexp ".*C[0-9]-H\\|.*C[0-9]-S\\|.*C[0-9]-T.*") distR_str 0
+  in
+  if distR_has_computational then
+    print_endline "  ✗ DistR has computational gates (NOT structural!)"
+  else
+    print_endline "  ✓ DistR is structural (pure wire permutation)";
+
+  (* Test 7: Case with gate in one branch only - definitely needs controlled gates *)
   print_endline "\n--- Non-structural: case with different operations ---";
   let ty_env_2q = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "x" (TyPlus (TyQ, TyQ)) in
   let asymmetric_case = Case (Var "x", [
