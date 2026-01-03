@@ -154,105 +154,188 @@ print(f"Gates: {result.circuit.n_gates}")         # Output: 1 (X gate for tag fl
 Create a file `myprogram.surf`:
 
 ```ml
-(* Define a boolean datatype *)
-datatype Bool['a, 'b] = F of 'a | T of 'b
-
-(* Swap function - structural, no gates *)
-def swap : Bool['a, 'b] → Bool['b, 'a] =
+(* Sum symmetry - swap Left and Right *)
+def swap : (A + B) → (B + A) =
   λx. case x of
-    | F(a) => T(a)
-    | T(b) => F(b)
+    | Left(a)  => Right(a)
+    | Right(b) => Left(b)
+(* Compiles to: X[0] (tag flip only, no computational gates) *)
+
+(* Tensor symmetry - swap components *)
+def twist : (A ⊗ B) → (B ⊗ A) =
+  λe. let (x ⊗ y) : A ⊗ B = e in (y ⊗ x)
+(* Compiles to: wire permutation [1, 0] *)
 
 (* Bell state preparation *)
 def bellState : (Q ⊗ Q) → (Q ⊗ Q) =
   H[0] ; CX[0,1]
+(* Compiles to: 2-gate circuit *)
 ```
 
 ---
 
 ## 4. Surface Language Reference
 
+The surface language is a **linear lambda calculus** with tensor products and sums.
+All higher-order constructs (λ, let, case) elaborate away at compile time—the
+core IR contains only sequential/parallel composition of gates and structural isomorphisms.
+
 ### 4.1 Types
 
 | Syntax | Meaning | Example |
 |--------|---------|---------|
 | `Q` | Single qubit | `Q` |
-| `I` | Unit type | `I` |
+| `I` | Unit type (0 wires) | `I` |
 | `A ⊗ B` | Tensor product | `Q ⊗ Q` |
-| `A + B` | Sum type (monoidal) | `Q + Q` |
-| `Name['a, 'b]` | Named type with parameters | `Bool[Q, Q]` |
+| `A + B` | Sum type (tagged) | `Q + Q` |
+| `Name['a, 'b]` | Named type | `Bool[Q, Q]` |
 
-### 4.2 Terms
+**Wire layout for sums:** `A + B` uses `1 + max(width(A), width(B))` wires—one tag qubit followed by the payload.
 
-#### Variables and Binding
+### 4.2 Core Constructs
 
-| Syntax | Meaning |
-|--------|---------|
-| `x` | Variable reference |
-| `λx:A. e` | Lambda abstraction (elaborates away) |
-| `let x = e1 in e2` | Let binding (elaborates away) |
-| `f e` | Application |
+#### Variables and Lambda
 
-#### Composition
+```ml
+x                     (* variable reference *)
+λx:A. e               (* lambda abstraction *)
+f e                   (* application *)
+```
 
-| Syntax | Meaning | Example |
-|--------|---------|---------|
-| `f ; g` | Sequential composition | `H[0] ; S[0]` |
-| `f ⊗ g` | Parallel (tensor) composition | `H[0] ⊗ H[1]` |
+Lambdas are **macros**—they elaborate away via substitution. No closures exist at runtime.
+
+#### Let Bindings
+
+```ml
+let x = e1 in e2      (* simple let *)
+let (x ⊗ y) : A ⊗ B = e1 in e2   (* tensor destructuring *)
+```
+
+Tensor destructuring binds `x` to the first component and `y` to the second.
+Both variables must be used linearly in `e2`.
 
 #### Case Expressions
 
 ```ml
-case x of
-  | F(a) => T(a)
-  | T(b) => F(b)
+case e of
+  | Left(a)  => f(a)
+  | Right(b) => g(b)
 ```
 
-**Important:** `case` is a compile-time macro, NOT runtime branching.
+Case is **structural routing**, not runtime branching. For quantum superpositions,
+case expressions elaborate to controlled gates. For pure structural operations
+(e.g., swapping constructors), they elaborate to tag flips (X gates) only.
 
-#### Structural Primitives
+### 4.3 Composition
 
-| Syntax | Type | Description |
-|--------|------|-------------|
+| Syntax | Type | Meaning |
+|--------|------|---------|
+| `f ; g` | `A → C` when `f : A → B`, `g : B → C` | Sequential composition |
+| `f ⊗ g` | `A ⊗ C → B ⊗ D` when `f : A → B`, `g : C → D` | Parallel composition |
 | `id[A]` | `A → A` | Identity |
-| `twist⊗[A, B]` | `A ⊗ B → B ⊗ A` | Tensor swap |
-| `twist+[A, B]` | `A + B → B + A` | Sum swap (emits X gate for tag flip) |
-| `assoc⊗L` | `(A ⊗ B) ⊗ C → A ⊗ (B ⊗ C)` | Tensor reassociation |
-| `DistL[A, B, C]` | `(A + B) ⊗ C → (A ⊗ C) + (B ⊗ C)` | Left distributivity (identity on wires) |
-| `DistR[A, B, C]` | `A ⊗ (B + C) → (A ⊗ B) + (A ⊗ C)` | Right distributivity (moves tag to front) |
 
-**Note:** Sum types use a tagged layout model: `A + B` has width `1 + width(A) + width(B)` where the extra qubit is a tag indicating which branch is active.
+### 4.4 Gates
 
-#### Gates (Unitary Primitives)
+**Single-qubit gates:**
 
-| Syntax | Description | Wires |
-|--------|-------------|-------|
-| `H[i]` | Hadamard | 1 |
-| `S[i]` | S gate (π/2 phase) | 1 |
-| `Sdg[i]` | S† gate (inverse of S) | 1 |
-| `T[i]` | T gate (π/4 phase) | 1 |
-| `Tdg[i]` | T† gate (inverse of T) | 1 |
-| `X[i]` | Pauli-X | 1 |
-| `Y[i]` | Pauli-Y | 1 |
-| `Z[i]` | Pauli-Z | 1 |
-| `Rx[θ,i]` | X-rotation by angle θ | 1 |
-| `Ry[θ,i]` | Y-rotation by angle θ | 1 |
-| `Rz[θ,i]` | Z-rotation by angle θ | 1 |
-| `Phase[θ,i]` | Phase gate | 1 |
-| `CX[i,j]` | CNOT (controlled-X) | 2 |
-| `CZ[i,j]` | Controlled-Z | 2 |
-| `CRz[θ,i,j]` | Controlled Rz | 2 |
-| `CCX[i,j,k]` | Toffoli (controlled-controlled-X) | 3 |
+| Syntax | Description |
+|--------|-------------|
+| `H[i]` | Hadamard |
+| `X[i]`, `Y[i]`, `Z[i]` | Pauli gates |
+| `S[i]`, `Sdg[i]` | S gate and its inverse |
+| `T[i]`, `Tdg[i]` | T gate and its inverse |
+| `Rx[θ,i]`, `Ry[θ,i]`, `Rz[θ,i]` | Rotation gates |
 
-#### Exponential of Involution
+**Multi-qubit gates:**
+
+| Syntax | Description |
+|--------|-------------|
+| `CX[i,j]` | CNOT (controlled-X) |
+| `CZ[i,j]` | Controlled-Z |
+| `CCX[i,j,k]` | Toffoli |
+
+### 4.5 Structural Isomorphisms (Derivable)
+
+The following isomorphisms are **structural**—they compile to wire permutations
+and tag flips only (no computational gates). They can be written explicitly
+using case and let, or invoked as primitives.
+
+#### Tensor Symmetry: `A ⊗ B → B ⊗ A`
+
+```ml
+(* As primitive *)
+twist⊗[A, B]
+
+(* Eta-expanded (equivalent) *)
+let (x ⊗ y) : A ⊗ B = e in (y ⊗ x)
+```
+
+#### Sum Symmetry: `A + B → B + A`
+
+```ml
+(* As primitive *)
+twist+[A, B]
+
+(* Eta-expanded *)
+λx. case x of
+  | Left(a)  => Right(a)
+  | Right(b) => Left(b)
+```
+
+This emits an X gate to flip the tag qubit.
+
+#### Tensor Associativity: `(A ⊗ B) ⊗ C → A ⊗ (B ⊗ C)`
+
+```ml
+(* As primitive *)
+assoc⊗L[A, B, C]
+
+(* Eta-expanded *)
+let (ab ⊗ c) : (A ⊗ B) ⊗ C = e in
+let (a ⊗ b) : A ⊗ B = ab in
+  (a ⊗ (b ⊗ c))
+```
+
+#### Sum Associativity: `(A + B) + C → A + (B + C)`
+
+```ml
+(* As primitive *)
+assoc+L[A, B, C]
+
+(* Eta-expanded *)
+λx. case x of
+  | Left(inner) => case inner of
+      | Left(a)  => Left(a)
+      | Right(b) => Right(Left(b))
+  | Right(c) => Right(Right(c))
+```
+
+#### Distributivity: `A ⊗ (B + C) → (A ⊗ B) + (A ⊗ C)`
+
+```ml
+(* As primitive *)
+distL[A, B, C]
+
+(* Eta-expanded *)
+let (a ⊗ bc) : A ⊗ (B + C) = e in
+case bc of
+  | Left(b)  => Left(a ⊗ b)
+  | Right(c) => Right(a ⊗ c)
+```
+
+All these eta-expanded forms compile to the **same circuits** as their primitive
+counterparts—pure structural rewiring with no computational gates.
+
+### 4.6 Exponential of Involution
 
 ```ml
 exp_i(θ, J)
 ```
 
 Where `J` must be a **certified involution** (structural term where `J ; J = id`).
+This implements `exp(iθJ)` as a quantum operation.
 
-### 4.3 Datatypes
+### 4.7 Datatypes
 
 Datatypes are finite, non-recursive sum types:
 
@@ -278,45 +361,76 @@ datatype Unit = U of I
 
 ### 5.1 Structural Programs
 
-Structural programs compile to **permutations only** (no gates):
+Structural programs compile to **wire permutations and tag flips only** (no computational gates).
+All the monoidal isomorphisms (symmetry, associativity, distributivity) are structural:
 
 ```ml
-(* Swap two summands *)
-def swap : Bool['a, 'b] → Bool['b, 'a] =
+(* Sum symmetry via case *)
+def swap : (A + B) → (B + A) =
   λx. case x of
-    | F(a) => T(a)
-    | T(b) => F(b)
+    | Left(a)  => Right(a)
+    | Right(b) => Left(b)
+(* Compiles to: X[0] (tag flip) *)
 
-(* This compiles to permutation [1, 0] with 0 gates *)
+(* Tensor symmetry via let *)
+def twist : (A ⊗ B) → (B ⊗ A) =
+  λe. let (x ⊗ y) : A ⊗ B = e in (y ⊗ x)
+(* Compiles to: wire permutation [1, 0] *)
+
+(* Distributivity *)
+def distL : A ⊗ (B + C) → (A ⊗ B) + (A ⊗ C) =
+  λe. let (a ⊗ bc) : A ⊗ (B + C) = e in
+    case bc of
+      | Left(b)  => Left(a ⊗ b)
+      | Right(c) => Right(a ⊗ c)
+(* Compiles to: wire permutation (moves tag to front) *)
 ```
 
-### 5.2 Unitary Programs
+### 5.2 Quantum Programs
 
-Unitary programs contain gates:
+Quantum programs apply gates to wires:
 
 ```ml
 (* Bell state preparation *)
 def bellState : (Q ⊗ Q) → (Q ⊗ Q) =
   H[0] ; CX[0,1]
+(* Compiles to: 2-gate circuit *)
 
-(* This compiles to a 2-gate circuit *)
+(* GHZ state *)
+def ghz3 : (Q ⊗ Q ⊗ Q) → (Q ⊗ Q ⊗ Q) =
+  H[0] ; CX[0,1] ; CX[0,2]
 ```
 
-### 5.3 Using Exponentials
+### 5.3 Quantum Control (Case on Superpositions)
+
+When the scrutinee of a case is in superposition, the branches elaborate to
+**controlled gates**:
+
+```ml
+(* Quantum switch: apply f;g or g;f depending on control qubit *)
+def qswitch : (I + I) ⊗ Q → (I + I) ⊗ Q =
+  λx. let (ctrl ⊗ target) : (I + I) ⊗ Q = x in
+    case ctrl of
+      | Left(u)  => Left(u)  ⊗ (S[1] ; H[1])   (* control=0: S then H *)
+      | Right(u) => Right(u) ⊗ (H[1] ; S[1])   (* control=1: H then S *)
+(* Compiles to: controlled gates based on tag qubit *)
+```
+
+### 5.4 Using Exponentials
 
 To use `exp_i(θ, J)`, the term `J` must be:
-1. **Structural** (compiles to permutation only, no gates)
-2. **Involutive** (`J ; J = id`, i.e., `p ∘ p = identity` for the permutation)
+1. **Structural** (compiles to permutation + tag flips only)
+2. **Involutive** (`J ; J = id`)
 
 ```ml
 (* Valid: swap is an involution *)
-def phaseSwap : Bool['a, 'b] → Bool['a, 'b] =
+def phaseSwap : (A + B) → (A + B) =
   exp_i(π/7, swap)
 
-(* Invalid: rotation is NOT an involution (order 3, not 2) *)
+(* Invalid: 3-cycle rotation is NOT an involution *)
 (* This will be rejected by the compiler *)
-def badExp : Triple['a, 'b, 'c] → Triple['a, 'b, 'c] =
-  exp_i(π/4, rotate)  (* ERROR: rotate is not involutive *)
+def badExp : (A + B + C) → (A + B + C) =
+  exp_i(π/4, rotate)  (* ERROR: rotate has order 3, not 2 *)
 ```
 
 ---
@@ -634,19 +748,22 @@ Types:
        | Name[ty, ...]           (* named type *)
 
 Terms:
-  term ::= x                     (* variable *)
-         | λx:ty. term           (* abstraction *)
-         | term term             (* application *)
-         | let x = term in term  (* let binding *)
-         | case term of branches (* case *)
-         | Ctor(term)            (* constructor *)
-         | term ; term           (* sequence *)
-         | term ⊗ term           (* tensor *)
-         | id[ty]                (* identity *)
-         | twist⊗[ty, ty]        (* tensor swap *)
-         | twist+[ty, ty]        (* sum swap *)
-         | Gate[args]            (* gate *)
-         | exp_i(θ, term)        (* exponential *)
+  term ::= x                              (* variable *)
+         | λx:ty. term                    (* abstraction *)
+         | term term                      (* application *)
+         | let x = term in term           (* let binding *)
+         | let (x ⊗ y) : ty ⊗ ty = term in term
+                                          (* tensor destructuring *)
+         | case term of branches          (* case expression *)
+         | Ctor(term)                     (* constructor *)
+         | term ; term                    (* sequential composition *)
+         | term ⊗ term                    (* parallel composition *)
+         | id[ty]                         (* identity *)
+         | Gate[args]                     (* gate *)
+         | exp_i(θ, term)                 (* exponential of involution *)
+
+Branches:
+  branches ::= | Ctor(x) => term | ...
 
 Definitions:
   def ::= datatype Name[vars] = ctors
