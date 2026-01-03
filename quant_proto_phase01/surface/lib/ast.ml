@@ -21,6 +21,7 @@ type ty =
   | TyTensor of ty * ty           (* Tensor: A ⊗ B *)
   | TyPlus of ty * ty             (* Sum: A + B *)
   | TyUnit                        (* Unit type *)
+  | TyArrow of ty * ty            (* Function: A → B *)
   | TyNamed of string * ty list   (* Named type: Bool['a, 'b] *)
 
 (** Variable names *)
@@ -96,6 +97,7 @@ let rec ty_to_string = function
   | TyTensor (a, b) -> Printf.sprintf "(%s ⊗ %s)" (ty_to_string a) (ty_to_string b)
   | TyPlus (a, b) -> Printf.sprintf "(%s + %s)" (ty_to_string a) (ty_to_string b)
   | TyUnit -> "I"
+  | TyArrow (a, b) -> Printf.sprintf "(%s → %s)" (ty_to_string a) (ty_to_string b)
   | TyNamed (name, args) ->
     if args = [] then name
     else Printf.sprintf "%s[%s]" name (String.concat ", " (List.map ty_to_string args))

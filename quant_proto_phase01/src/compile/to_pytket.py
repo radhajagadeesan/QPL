@@ -22,6 +22,8 @@ from lang.terms import (
     Rz, Rx, Ry, Phase, CRz,
     # Controlled single-qubit gates
     CH, CS, CSdg,
+    # Higher-order constructs (GOI apply)
+    FunVar, Lam, Apply,
 )
 from lang.types import width
 from typing_.check import type_of, assert_well_typed, TypeCheckError
@@ -368,6 +370,25 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
             emit_CS(t.i, t.j, offset); return
         if isinstance(t, CSdg):
             emit_CSdg(t.i, t.j, offset); return
+
+        # Higher-order constructs (GOI apply)
+        # These require special handling via GOI infrastructure
+        if isinstance(t, FunVar):
+            raise NotImplementedError(
+                f"FunVar '{t.name}' encountered in first-order compilation. "
+                "Higher-order terms require GOI compilation path."
+            )
+        if isinstance(t, Lam):
+            raise NotImplementedError(
+                f"Lam '{t.name}' encountered in first-order compilation. "
+                "Higher-order terms require GOI compilation path."
+            )
+        if isinstance(t, Apply):
+            raise NotImplementedError(
+                "Apply encountered in first-order compilation. "
+                "Higher-order terms require GOI compilation path. "
+                "Use compile_higher_order() for terms with FunVar/Lam/Apply."
+            )
 
         raise TypeError(f"Unknown term node: {t!r}")
 
@@ -771,3 +792,168 @@ def compile_goi(
         if explain:
             log.append("Extraction failed - returning residual GOI")
         return result
+
+
+# -----------------------------------------------------------------------------
+# Higher-Order Compilation via GOI
+# -----------------------------------------------------------------------------
+
+def compile_higher_order(
+    term: Term,
+    *,
+    materialize: bool = False,
+    explain: bool = False
+) -> CompiledGOI:
+    """Compile higher-order terms (with Apply) using GOI infrastructure.
+
+    This handles terms like:
+    - Apply(H, S) for composition H ; S
+    - Lam(..., Apply(f, g)) for function definitions
+
+    The compilation uses:
+    - make_unitary_value: Encode gates as (U† ⊗ U) on A* ⊗ A
+    - goi_seq: Compose via tensor + feedback
+    - execute_trace: Collapse internal wires to get final circuit
+    """
+    from compile.goi import (
+        make_unitary_value, goi_seq, execute_trace,
+        GateAtom, GOIArtifact
+    )
+    from core.perm import identity
+
+    log: List[str] = []
+
+    def gate_inverse_name(name: str) -> str:
+        """Get the inverse gate name for conjugation."""
+        inverses = {
+            'H': 'H',       # H is self-adjoint
+            'X': 'X',       # X is self-adjoint
+            'Y': 'Y',       # Y is self-adjoint
+            'Z': 'Z',       # Z is self-adjoint
+            'S': 'Sdg',
+            'Sdg': 'S',
+            'T': 'Tdg',
+            'Tdg': 'T',
+            'CX': 'CX',     # CX is self-adjoint
+            'CZ': 'CZ',     # CZ is self-adjoint
+        }
+        return inverses.get(name, name + '†')
+
+    def term_to_goi(t: Term) -> GOIArtifact:
+        """Convert a term to a GOI artifact (conjugation form).
+
+        For a gate U : Q → Q, produces (U† ⊗ U) on Q* ⊗ Q.
+        For Apply(f, g), produces the composition f ; g.
+        """
+        # Single-qubit gates
+        if isinstance(t, H):
+            if explain:
+                log.append(f"H → (H ⊗ H) on 2 wires")
+            return make_unitary_value('H', (0,), n_a=1, inverse_gate_name='H')
+
+        if isinstance(t, S):
+            if explain:
+                log.append(f"S → (Sdg ⊗ S) on 2 wires")
+            return make_unitary_value('S', (0,), n_a=1, inverse_gate_name='Sdg')
+
+        if isinstance(t, Sdg):
+            if explain:
+                log.append(f"Sdg → (S ⊗ Sdg) on 2 wires")
+            return make_unitary_value('Sdg', (0,), n_a=1, inverse_gate_name='S')
+
+        if isinstance(t, T):
+            if explain:
+                log.append(f"T → (Tdg ⊗ T) on 2 wires")
+            return make_unitary_value('T', (0,), n_a=1, inverse_gate_name='Tdg')
+
+        if isinstance(t, Tdg):
+            if explain:
+                log.append(f"Tdg → (T ⊗ Tdg) on 2 wires")
+            return make_unitary_value('Tdg', (0,), n_a=1, inverse_gate_name='T')
+
+        if isinstance(t, X):
+            if explain:
+                log.append(f"X → (X ⊗ X) on 2 wires")
+            return make_unitary_value('X', (0,), n_a=1, inverse_gate_name='X')
+
+        if isinstance(t, Y):
+            if explain:
+                log.append(f"Y → (Y ⊗ Y) on 2 wires")
+            return make_unitary_value('Y', (0,), n_a=1, inverse_gate_name='Y')
+
+        if isinstance(t, Z):
+            if explain:
+                log.append(f"Z → (Z ⊗ Z) on 2 wires")
+            return make_unitary_value('Z', (0,), n_a=1, inverse_gate_name='Z')
+
+        # Sequential composition via GOI
+        if isinstance(t, Seq):
+            f_goi = term_to_goi(t.f)
+            g_goi = term_to_goi(t.g)
+            # For Q→Q gates, n_shared = 1
+            composed = goi_seq(f_goi, g_goi, n_shared=1)
+            traced = execute_trace(composed)
+            if explain:
+                log.append(f"Seq: composed and traced to {traced.n_out} wires")
+            return traced
+
+        # Apply is GOI composition
+        if isinstance(t, Apply):
+            f_goi = term_to_goi(t.f)
+            g_goi = term_to_goi(t.arg)
+            # For Q→Q gates, n_shared = 1
+            composed = goi_seq(f_goi, g_goi, n_shared=1)
+            traced = execute_trace(composed)
+            if explain:
+                log.append(f"Apply: composed and traced to {traced.n_out} wires")
+            return traced
+
+        raise TypeError(f"Cannot convert term to GOI: {t!r}")
+
+    # Convert term to GOI artifact
+    goi = term_to_goi(term)
+
+    # Build circuit from GOI artifact
+    n = goi.n_out
+    circ = Circuit(n)
+
+    for atom in goi.atoms:
+        name = atom.gate_name
+        wires = atom.wires
+
+        if name == "H":
+            circ.H(wires[0])
+        elif name == "S":
+            circ.S(wires[0])
+        elif name == "Sdg":
+            circ.Sdg(wires[0])
+        elif name == "T":
+            circ.T(wires[0])
+        elif name == "Tdg":
+            circ.Tdg(wires[0])
+        elif name == "X":
+            circ.X(wires[0])
+        elif name == "Y":
+            circ.Y(wires[0])
+        elif name == "Z":
+            circ.Z(wires[0])
+        elif name == "CX":
+            circ.CX(wires[0], wires[1])
+        elif name == "CZ":
+            circ.CZ(wires[0], wires[1])
+        else:
+            raise ValueError(f"Unknown gate in higher-order compilation: {name}")
+
+        if explain:
+            log.append(f"Emit {name} on wires {wires}")
+
+    final_perm = goi.perm
+
+    if materialize:
+        swaps = swaps_for_perm(final_perm)
+        apply_swaps(circ, swaps)
+        if explain:
+            log.append(f"Materialize swaps={swaps}")
+        final_perm = identity(n)
+
+    return CompiledGOI(circuit=circ, perm=final_perm, log=(log if explain else None))

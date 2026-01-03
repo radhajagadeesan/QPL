@@ -21,7 +21,7 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
-from lang.types import Q, Ten, Plus, Unit, Ty
+from lang.types import Q, Ten, Plus, Unit, Ty, width
 from lang.terms import (
     Term, Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
@@ -32,9 +32,15 @@ from lang.terms import (
     CX, CZ, CRz, CCX,
     # Controlled single-qubit gates
     CH, CS, CSdg,
+    # Higher-order constructs (GOI apply)
+    FunVar, Lam, Apply,
 )
 from core.perm import WirePerm, identity, compose
 from compile.to_pytket import compile
+from compile.goi import (
+    GOIArtifact, GateAtom, LoopSpec,
+    apply_perm, goi_seq, make_unitary_value, conjugate_unitary,
+)
 
 
 def parse_type(j: dict) -> Ty:
@@ -274,6 +280,17 @@ def parse_term(j: dict, ty_total: Ty = None) -> Term:
     # General multi-controlled gate (for nested cases)
     elif node == "Gate":
         return parse_general_gate(j, ty_total)
+
+    # Higher-order constructs (GOI apply)
+    elif node == "FunVar":
+        return FunVar(j["name"], parse_type(j["dom"]), parse_type(j["cod"]))
+
+    elif node == "Lam":
+        body = parse_term(j["body"], ty_total)
+        return Lam(j["name"], parse_type(j["dom"]), parse_type(j["cod"]), body)
+
+    elif node == "Apply":
+        return Apply(parse_term(j["f"], ty_total), parse_term(j["arg"], ty_total))
 
     else:
         raise ValueError(f"Unknown term node: {node}")

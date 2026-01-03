@@ -83,6 +83,10 @@ type term =
   | TCSdg of int * int
   (* General multi-controlled gate (for nested cases) *)
   | TGate of string * int list * int list  (* gate_name, targets, controls *)
+  (* Higher-order constructs (GOI apply) *)
+  | TFunVar of string * Rep.t * Rep.t  (* function variable: x : A → B *)
+  | TLam of string * Rep.t * Rep.t * term  (* lambda: λx:A→B. body *)
+  | TApply of term * term  (* application: f arg, compiled via GOI *)
 
 (** Convert a term to JSON *)
 let rec term_to_json = function
@@ -149,6 +153,16 @@ let rec term_to_json = function
     let controls_json = Printf.sprintf "[%s]" (String.concat ", " (List.map string_of_int controls)) in
     Printf.sprintf {|{"node": "Gate", "name": "%s", "targets": %s, "controls": %s}|}
       name targets_json controls_json
+  (* Higher-order constructs (GOI apply) *)
+  | TFunVar (name, dom, cod) ->
+    Printf.sprintf {|{"node": "FunVar", "name": "%s", "dom": %s, "cod": %s}|}
+      name (type_to_json dom) (type_to_json cod)
+  | TLam (name, dom, cod, body) ->
+    Printf.sprintf {|{"node": "Lam", "name": "%s", "dom": %s, "cod": %s, "body": %s}|}
+      name (type_to_json dom) (type_to_json cod) (term_to_json body)
+  | TApply (f, arg) ->
+    Printf.sprintf {|{"node": "Apply", "f": %s, "arg": %s}|}
+      (term_to_json f) (term_to_json arg)
 
 (** Simple JSON parsing helpers *)
 let find_string key json =

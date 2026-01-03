@@ -130,7 +130,19 @@ module Core = struct
     controls : int list;     (* control wires - can be empty or multiple *)
   }
 
-  (** Core terms: no λ, let, or case *)
+  (** Core terms.
+
+      In the Int construction:
+      - Function types A → B are represented as A ⊗ B
+      - Function variables become endomorphisms on this doubled space
+      - Application is compiled via the GOI trace
+
+      FunVar(x, a, b) represents a function variable x : A → B.
+      In circuits, it's an endomorphism on width(A) + width(B) wires.
+
+      Apply(f, arg) applies function f to argument arg.
+      The arg must have function type; it's converted to Int form and composed.
+  *)
   type term =
     | Seq of term * term
     | Ten of term * term
@@ -145,6 +157,10 @@ module Core = struct
     | DistR of ty * ty * ty   (* (A + B) ⊗ C → (A ⊗ C) + (B ⊗ C) *)
     | Gate of gate
     | ExpI of float * term
+    (* Higher-order constructs (Int construction) *)
+    | FunVar of string * ty * ty  (* Function variable: x : A → B *)
+    | Lam of string * ty * ty * term  (* Lambda: λx:A→B. body, where body : C *)
+    | Apply of term * term  (* Application: f arg, compiled via GOI trace *)
 
   (** Smart constructors for gates (backward compatibility) *)
   let gate_h i = Gate { name = GH; targets = [i]; controls = [] }
@@ -202,16 +218,34 @@ module Core = struct
     | DistR _ -> "distR"
     | Gate g -> gate_to_string g
     | ExpI (theta, j) -> Printf.sprintf "exp_i(%.4f, %s)" theta (term_to_string j)
+    (* Higher-order constructs *)
+    | FunVar (x, a, b) ->
+        Printf.sprintf "%s[%s→%s]" x (Ast.ty_to_string a) (Ast.ty_to_string b)
+    | Lam (x, a, b, body) ->
+        Printf.sprintf "λ%s:%s→%s. %s" x (Ast.ty_to_string a) (Ast.ty_to_string b) (term_to_string body)
+    | Apply (f, arg) ->
+        Printf.sprintf "(%s @ %s)" (term_to_string f) (term_to_string arg)
 end
 
-(** Calculate the wire count (width) of a type *)
+(** Calculate the wire count (width) of a type.
+
+    In the Int construction, function types A → B are represented
+    as objects with width = width(A) + width(B). The "input interface"
+    A† is tensored with the "output interface" B.
+*)
 let rec wire_count = function
   | Ast.TyQ -> 1
   | Ast.TyUnit -> 0
   | Ast.TyVar _ -> 1  (* Assume type variables have width 1 *)
   | Ast.TyTensor (a, b) -> wire_count a + wire_count b
   | Ast.TyPlus (a, b) -> 1 + max (wire_count a) (wire_count b)  (* 1 tag + max payload *)
+  | Ast.TyArrow (a, b) -> wire_count a + wire_count b  (* Int: A → B ↦ A ⊗ B *)
   | Ast.TyNamed (_, _) -> 1  (* Assume named types have width 1 for now *)
+
+(** Convert a function type to its Int representation.
+    A → B becomes A ⊗ B (for self-dual types like qubits, A† = A).
+*)
+let arrow_to_int_type a b = Ast.TyTensor (a, b)
 
 (** Check that a type is well-formed (all type variables bound) *)
 let rec check_ty tyvar_env = function
@@ -219,11 +253,44 @@ let rec check_ty tyvar_env = function
     if not (TyVarEnv.mem tyvar_env v) then
       raise (ElaborateError (UnboundTypeVariable v))
   | Ast.TyQ | Ast.TyUnit -> ()
-  | Ast.TyTensor (a, b) | Ast.TyPlus (a, b) ->
+  | Ast.TyTensor (a, b) | Ast.TyPlus (a, b) | Ast.TyArrow (a, b) ->
     check_ty tyvar_env a;
     check_ty tyvar_env b
   | Ast.TyNamed (_, args) ->
     List.iter (check_ty tyvar_env) args
+
+(** Check if a type is a function type *)
+let is_arrow_type = function
+  | Ast.TyArrow (_, _) -> true
+  | _ -> false
+
+(** Extract domain and codomain of a function type *)
+let get_arrow_parts = function
+  | Ast.TyArrow (a, b) -> Some (a, b)
+  | _ -> None
+
+(** Simple type inference for terms (used to detect function arguments).
+    Returns None if type cannot be inferred. *)
+let rec infer_type ty_env = function
+  | Ast.Var x -> TyEnv.lookup ty_env x
+  | Ast.Lam (_, ty, _) ->
+    (* λx:A. e has type A → ? (we'd need to infer body type) *)
+    (* For now, just check if argument is arrow type *)
+    if is_arrow_type ty then Some ty else None
+  | Ast.Id ty -> Some (Ast.TyArrow (ty, ty))
+  | Ast.GateH _ | Ast.GateS _ | Ast.GateX _ | Ast.GateY _ | Ast.GateZ _
+  | Ast.GateT _ | Ast.GateRz _ ->
+    Some (Ast.TyArrow (Ast.TyQ, Ast.TyQ))
+  | Ast.GateCX _ ->
+    let qq = Ast.TyTensor (Ast.TyQ, Ast.TyQ) in
+    Some (Ast.TyArrow (qq, qq))
+  | Ast.Seq (f, g) ->
+    (* f ; g : if f : A → B and g : B → C, then A → C *)
+    (match infer_type ty_env f, infer_type ty_env g with
+     | Some (Ast.TyArrow (a, _)), Some (Ast.TyArrow (_, c)) ->
+       Some (Ast.TyArrow (a, c))
+     | _ -> None)
+  | _ -> None
 
 (** Collect free variables in a term *)
 let rec free_vars = function
@@ -264,8 +331,10 @@ let check_scope env term =
 (** Elaborate a surface term to core IR.
 
     Key transformations:
-    - λx:A. e  =>  error (should be applied, not standalone)
-    - App(λx:A. e, v)  =>  [v/x]e (substitution, then elaborate)
+    - λx:A→B. e  =>  Core.Lam (keep the lambda, don't substitute)
+    - λx:A. e for non-arrow A  =>  error (should be applied)
+    - App(f, arg) where arg:A→B  =>  Core.Apply (compile via GOI)
+    - App(λx:A. e, v) for non-arrow A  =>  [v/x]e (β-reduction)
     - let x = e1 in e2  =>  elaborate to sequential composition
     - case e of ...  =>  controlled gates for quantum case expressions
 
@@ -276,23 +345,49 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
   check_scope ty_env term;
   match term with
   | Ast.Var x ->
-    (* Variables from tensor destructuring elaborate to identity on their type.
-       Other variables should have been substituted away. *)
+    (* Variables elaborate based on their type:
+       - Function type: FunVar (kept as higher-order)
+       - Other types: Id (identity on the wires) *)
     (match TyEnv.lookup ty_env x with
+     | Some (Ast.TyArrow (a, b)) -> Core.FunVar (x, a, b)
      | Some ty -> Core.Id ty
      | None -> failwith (Printf.sprintf "elaborate: unbound variable %s" x))
 
-  | Ast.Lam _ ->
-    failwith "elaborate: standalone λ (should be applied)"
-
-  | Ast.App (Ast.Lam (x, ty, body), arg) ->
-    (* β-reduction: substitute and elaborate *)
+  | Ast.Lam (x, ty, body) ->
+    (* Lambda elaboration depends on argument type:
+       - Function type: Keep as Core.Lam (Int construction)
+       - Other types: Standalone lambda is an error (should be applied) *)
     check_ty tyvar_env ty;
-    let body' = subst x arg body in
-    elaborate ~base tyvar_env ty_env dt_env body'
+    (match get_arrow_parts ty with
+     | Some (a, b) ->
+       (* Argument has function type: keep the lambda *)
+       let _int_ty = arrow_to_int_type a b in
+       let ty_env' = TyEnv.extend ty_env x ty in
+       let body' = elaborate ~base tyvar_env ty_env' dt_env body in
+       Core.Lam (x, a, b, body')
+     | None ->
+       failwith "elaborate: standalone λ with non-function argument (should be applied)")
 
-  | Ast.App (f, _) ->
-    failwith (Printf.sprintf "elaborate: non-λ application: %s" (Ast.term_to_string f))
+  | Ast.App (f, arg) ->
+    (* Application elaboration:
+       - If arg has function type, use GOI application (don't β-reduce)
+       - If f is a λ with non-function arg type, β-reduce *)
+    let arg_ty = infer_type ty_env arg in
+    (match arg_ty with
+     | Some (Ast.TyArrow (_, _)) ->
+       (* Argument has function type: use Int/GOI application *)
+       let f' = elaborate ~base tyvar_env ty_env dt_env f in
+       let arg' = elaborate ~base tyvar_env ty_env dt_env arg in
+       Core.Apply (f', arg')
+     | _ ->
+       (* Non-function argument: β-reduce if f is a lambda *)
+       match f with
+       | Ast.Lam (x, ty, body) ->
+         check_ty tyvar_env ty;
+         let body' = subst x arg body in
+         elaborate ~base tyvar_env ty_env dt_env body'
+       | _ ->
+         failwith (Printf.sprintf "elaborate: non-λ application: %s" (Ast.term_to_string f)))
 
   | Ast.Let (x, e1, e2) ->
     (* Let is just substitution at the surface level *)
@@ -446,6 +541,14 @@ and lift_to_controlled ~anti ctrl term =
 
     (* ExpI: lift the body *)
     | Core.ExpI (theta, j) -> Core.ExpI (theta, lift_to_controlled ~anti:false ctrl j)
+
+    (* Higher-order constructs: lift recursively *)
+    | Core.FunVar (x, a, b) -> Core.FunVar (x, a, b)  (* Function variables pass through *)
+    | Core.Lam (x, a, b, body) ->
+        Core.Lam (x, a, b, lift_to_controlled ~anti:false ctrl body)
+    | Core.Apply (f, arg) ->
+        Core.Apply (lift_to_controlled ~anti:false ctrl f,
+                    lift_to_controlled ~anti:false ctrl arg)
 
 (** Elaborate case expression.
 

@@ -407,6 +407,41 @@ class CRz:
             object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
 
 
+# -- Higher-order constructs (GOI apply)
+
+@dataclass(frozen=True, slots=True)
+class FunVar:
+    """Function variable: x : A → B.
+
+    In GOI, represented as an endomorphism on A* ⊗ B.
+    """
+    name: str
+    dom: Ty  # A
+    cod: Ty  # B
+
+
+@dataclass(frozen=True, slots=True)
+class Lam:
+    """Lambda abstraction: λx:A→B. body.
+
+    The argument x has function type A → B.
+    """
+    name: str
+    dom: Ty  # A (domain of x)
+    cod: Ty  # B (codomain of x)
+    body: "Term"
+
+
+@dataclass(frozen=True, slots=True)
+class Apply:
+    """Function application: f arg.
+
+    Compiled via GOI: tensor the endomorphisms, then feedback.
+    """
+    f: "Term"
+    arg: "Term"
+
+
 Term = Union[
     Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
@@ -421,6 +456,8 @@ Term = Union[
     Rz, Rx, Ry, Phase, CRz,
     # Controlled single-qubit gates (for quantum case expressions)
     CH, CS, CSdg,
+    # Higher-order constructs (GOI apply)
+    FunVar, Lam, Apply,
 ]
 
 
