@@ -1,0 +1,3 @@
+(executable
+ (name qswitch_demo)
+ (libraries qpl_surface str))
