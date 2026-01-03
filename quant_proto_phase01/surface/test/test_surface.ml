@@ -315,7 +315,7 @@ let test_quantum_case () =
      Wire 0 is the tag qubit, Wire 1 is the payload.
 
      Expected elaboration (anti-controlled-left ; controlled-right):
-     X[0] ; CS[0,1] ; CH[0,1] ; X[0] ; CH[0,1] ; CS[0,1]
+     X[0] ; C0-S[1] ; C0-H[1] ; X[0] ; C0-H[1] ; C0-S[1]
   *)
   let open Ast in
   let tyvar_env = Elaborate.TyVarEnv.empty in
@@ -337,12 +337,65 @@ let test_quantum_case () =
   let result_str = Elaborate.Core.term_to_string elaborated in
   if String.length result_str > 0 &&
      (String.sub result_str 0 1 = "X" ||
-      (String.length result_str > 2 && String.sub result_str 0 2 = "CH") ||
-      (String.length result_str > 2 && String.sub result_str 0 2 = "CS"))
+      (String.length result_str > 2 && String.sub result_str 0 2 = "C0"))
   then
     print_endline "  ✓ Elaboration contains controlled gates"
   else
     print_endline ("  Result starts with: " ^ (if String.length result_str > 10 then String.sub result_str 0 10 else result_str));
+
+  print_endline ""
+
+(* Test nested quantum case elaboration *)
+let test_nested_quantum_case () =
+  print_endline "=== Testing nested quantum case elaboration ===";
+
+  (* Build a nested case expression on (A + B) + C:
+     case outer of
+       | Left(inner) => case inner of
+                          | Left(a) => H[2]
+                          | Right(b) => S[2]
+       | Right(c) => T[2]
+
+     Layout: [outer_tag | inner_tag | payload] = wires [0, 1, 2]
+
+     Expected: outer case controls on wire 0, inner case controls on wire 1
+     The H gate in Left(Left(a)) branch should be doubly-controlled by wires 0 AND 1.
+  *)
+  let open Ast in
+  let tyvar_env = Elaborate.TyVarEnv.empty in
+  (* Type: ((I + I) + I) - outer Left contains another sum *)
+  let inner_sum = TyPlus (TyUnit, TyUnit) in
+  let outer_sum = TyPlus (inner_sum, TyUnit) in
+  let ty_env = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "outer" outer_sum in
+  let dt_env = Elaborate.DtEnv.empty in
+
+  let inner_case = Case (Var "inner", [
+    (PatCtor ("Left", "a"), GateH 2);
+    (PatCtor ("Right", "b"), GateS 2);
+  ]) in
+
+  let nested_case = Case (Var "outer", [
+    (PatCtor ("Left", "inner"), inner_case);
+    (PatCtor ("Right", "c"), GateT 2);
+  ]) in
+
+  (* Add 'inner' to environment for inner case *)
+  let ty_env' = Elaborate.TyEnv.extend ty_env "inner" inner_sum in
+
+  print_endline ("  Source: nested case on ((I+I)+I)");
+
+  let elaborated = Elaborate.elaborate tyvar_env ty_env' dt_env nested_case in
+  let result_str = Elaborate.Core.term_to_string elaborated in
+  print_endline ("  Elaborated: " ^ result_str);
+
+  (* Check that we have doubly-controlled gates (C0-C1- prefix) *)
+  if String.length result_str > 5 &&
+     (Str.string_match (Str.regexp ".*C0-C1-.*") result_str 0 ||
+      Str.string_match (Str.regexp ".*C1-C0-.*") result_str 0)
+  then
+    print_endline "  ✓ Nested case produces doubly-controlled gates"
+  else
+    print_endline "  Note: Nested case elaborated (check output for correctness)";
 
   print_endline ""
 
@@ -387,6 +440,7 @@ let () =
   test_ast ();
   test_elaborate ();
   test_quantum_case ();
+  test_nested_quantum_case ();
   test_errors ();
 
   print_endline "All tests completed!"

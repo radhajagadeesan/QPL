@@ -74,6 +74,80 @@ def _max_wire_index(j: dict) -> int:
     return max_idx
 
 
+def parse_general_gate(j: dict, ty_total: Ty) -> Term:
+    """Parse a general gate with arbitrary controls.
+
+    JSON format: {"node": "Gate", "name": "H", "targets": [1], "controls": [0, 2]}
+
+    For nested quantum case expressions, gates can have multiple controls
+    (one for each nesting level).
+    """
+    from lang.terms import (
+        Id, Seq,
+        H, S, Sdg, T, Tdg, X, Y, Z,
+        CH, CS, CSdg,
+    )
+
+    name = j["name"]
+    targets = j["targets"]
+    controls = j.get("controls", [])
+
+    if len(targets) != 1:
+        raise ValueError(f"General gate currently only supports single-target gates, got {targets}")
+
+    target = targets[0]
+
+    # No controls: just the basic gate
+    if len(controls) == 0:
+        if name == "H":
+            return H(target, ty_total)
+        elif name == "S":
+            return S(target, ty_total)
+        elif name == "Sdg":
+            return Sdg(target, ty_total)
+        elif name == "T":
+            return T(target, ty_total)
+        elif name == "Tdg":
+            return Tdg(target, ty_total)
+        elif name == "X":
+            return X(target, ty_total)
+        elif name == "Y":
+            return Y(target, ty_total)
+        elif name == "Z":
+            return Z(target, ty_total)
+        else:
+            raise ValueError(f"Unknown gate name: {name}")
+
+    # Single control: use existing controlled gates
+    elif len(controls) == 1:
+        ctrl = controls[0]
+        if name == "H":
+            return CH(ctrl, target, ty_total)
+        elif name == "S":
+            return CS(ctrl, target, ty_total)
+        elif name == "Sdg":
+            return CSdg(ctrl, target, ty_total)
+        else:
+            raise ValueError(f"No single-controlled version of gate: {name}")
+
+    # Multiple controls: decompose using the first control + recursion
+    # C^n[G] = C[C^{n-1}[G]] implemented as nested controlled gates
+    else:
+        # For multi-controlled gates, we decompose:
+        # CC...C[G] with controls [c0, c1, ..., cn] on target t
+        # becomes a sequence that uses ancilla or direct decomposition
+        #
+        # For now, use the simple (but gate-expensive) decomposition:
+        # Apply controlled version with first control, where the "base gate"
+        # is itself controlled by the remaining controls
+        #
+        # This is handled by the to_pytket compiler which supports multi-controlled ops
+        raise ValueError(
+            f"Multi-controlled gate ({len(controls)} controls) not yet supported in bridge. "
+            f"Gate: {name}, controls: {controls}, target: {target}"
+        )
+
+
 def _build_ty_total(n_qubits: int) -> Ty:
     """Build a tensor type with n_qubits qubits: Q ⊗ Q ⊗ ... ⊗ Q."""
     if n_qubits <= 0:
@@ -196,6 +270,10 @@ def parse_term(j: dict, ty_total: Ty = None) -> Term:
 
     elif node == "CSdg":
         return CSdg(j["i"], j["j"], ty_total)
+
+    # General multi-controlled gate (for nested cases)
+    elif node == "Gate":
+        return parse_general_gate(j, ty_total)
 
     else:
         raise ValueError(f"Unknown term node: {node}")

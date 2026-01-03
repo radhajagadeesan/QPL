@@ -106,6 +106,20 @@ module Core = struct
   (** Core types (same structure, but validated) *)
   type ty = Ast.ty
 
+  (** Gate names for the universal gate representation *)
+  type gate_name =
+    | GH | GS | GSdg | GX | GY | GZ | GT | GTdg
+    | GRz of float | GRx of float | GRy of float
+    | GCX  (* CNOT - has 2 targets, no separate control *)
+
+  (** Universal gate representation with stackable controls.
+      This avoids an infinite family of CCH, CCCH, ... constructors. *)
+  type gate = {
+    name : gate_name;
+    targets : int list;      (* target wire(s) *)
+    controls : int list;     (* control wires - can be empty or multiple *)
+  }
+
   (** Core terms: no λ, let, or case *)
   type term =
     | Seq of term * term
@@ -117,19 +131,50 @@ module Core = struct
     | AssocTR of ty * ty * ty
     | AssocPL of ty * ty * ty
     | AssocPR of ty * ty * ty
-    | GateH of int
-    | GateS of int
-    | GateCX of int * int
-    | GateX of int
-    | GateY of int
-    | GateZ of int
-    | GateT of int
-    | GateRz of float * int
+    | Gate of gate
     | ExpI of float * term
-    (* Controlled single-qubit gates for quantum case expressions *)
-    | GateCH of int * int   (* control, target *)
-    | GateCS of int * int
-    | GateCSdg of int * int
+
+  (** Smart constructors for gates (backward compatibility) *)
+  let gate_h i = Gate { name = GH; targets = [i]; controls = [] }
+  let gate_s i = Gate { name = GS; targets = [i]; controls = [] }
+  let gate_sdg i = Gate { name = GSdg; targets = [i]; controls = [] }
+  let gate_x i = Gate { name = GX; targets = [i]; controls = [] }
+  let gate_y i = Gate { name = GY; targets = [i]; controls = [] }
+  let gate_z i = Gate { name = GZ; targets = [i]; controls = [] }
+  let gate_t i = Gate { name = GT; targets = [i]; controls = [] }
+  let gate_tdg i = Gate { name = GTdg; targets = [i]; controls = [] }
+  let gate_rz theta i = Gate { name = GRz theta; targets = [i]; controls = [] }
+  let gate_rx theta i = Gate { name = GRx theta; targets = [i]; controls = [] }
+  let gate_ry theta i = Gate { name = GRy theta; targets = [i]; controls = [] }
+  let gate_cx i j = Gate { name = GCX; targets = [i; j]; controls = [] }
+
+  (** Controlled gate constructors *)
+  let gate_ch ctrl tgt = Gate { name = GH; targets = [tgt]; controls = [ctrl] }
+  let gate_cs ctrl tgt = Gate { name = GS; targets = [tgt]; controls = [ctrl] }
+  let gate_csdg ctrl tgt = Gate { name = GSdg; targets = [tgt]; controls = [ctrl] }
+
+  (** Add a control to a gate (stacking for nested cases) *)
+  let add_control ctrl g =
+    { g with controls = ctrl :: g.controls }
+
+  (** Pretty-print gate name *)
+  let gate_name_to_string = function
+    | GH -> "H" | GS -> "S" | GSdg -> "Sdg"
+    | GX -> "X" | GY -> "Y" | GZ -> "Z"
+    | GT -> "T" | GTdg -> "Tdg"
+    | GRz theta -> Printf.sprintf "Rz(%.4f)" theta
+    | GRx theta -> Printf.sprintf "Rx(%.4f)" theta
+    | GRy theta -> Printf.sprintf "Ry(%.4f)" theta
+    | GCX -> "CX"
+
+  (** Pretty-print a gate *)
+  let gate_to_string g =
+    let ctrl_prefix = match g.controls with
+      | [] -> ""
+      | ctrls -> String.concat "" (List.map (fun c -> Printf.sprintf "C%d-" c) ctrls)
+    in
+    let targets_str = String.concat "," (List.map string_of_int g.targets) in
+    Printf.sprintf "%s%s[%s]" ctrl_prefix (gate_name_to_string g.name) targets_str
 
   let rec term_to_string = function
     | Seq (f, g) -> Printf.sprintf "%s ; %s" (term_to_string f) (term_to_string g)
@@ -141,19 +186,8 @@ module Core = struct
     | AssocTR _ -> "assoc⊗R"
     | AssocPL _ -> "assoc+L"
     | AssocPR _ -> "assoc+R"
-    | GateH i -> Printf.sprintf "H[%d]" i
-    | GateS i -> Printf.sprintf "S[%d]" i
-    | GateCX (i, j) -> Printf.sprintf "CX[%d,%d]" i j
-    | GateX i -> Printf.sprintf "X[%d]" i
-    | GateY i -> Printf.sprintf "Y[%d]" i
-    | GateZ i -> Printf.sprintf "Z[%d]" i
-    | GateT i -> Printf.sprintf "T[%d]" i
-    | GateRz (theta, i) -> Printf.sprintf "Rz[%.4f,%d]" theta i
+    | Gate g -> gate_to_string g
     | ExpI (theta, j) -> Printf.sprintf "exp_i(%.4f, %s)" theta (term_to_string j)
-    (* Controlled single-qubit gates for quantum case expressions *)
-    | GateCH (i, j) -> Printf.sprintf "CH[%d,%d]" i j
-    | GateCS (i, j) -> Printf.sprintf "CS[%d,%d]" i j
-    | GateCSdg (i, j) -> Printf.sprintf "CSdg[%d,%d]" i j
 end
 
 (** Check that a type is well-formed (all type variables bound) *)
@@ -207,9 +241,12 @@ let check_scope env term =
     - λx:A. e  =>  error (should be applied, not standalone)
     - App(λx:A. e, v)  =>  [v/x]e (substitution, then elaborate)
     - let x = e1 in e2  =>  elaborate to sequential composition
-    - case e of ...  =>  structural rewiring via TwistPlus/Assoc
+    - case e of ...  =>  controlled gates for quantum case expressions
+
+    The ~base parameter is the wire offset for the current term's layout.
+    For nested sums, the tag wire is at base+0, payload starts at base+1.
 *)
-let rec elaborate tyvar_env ty_env dt_env term : Core.term =
+let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
   check_scope ty_env term;
   match term with
   | Ast.Var _ ->
@@ -223,7 +260,7 @@ let rec elaborate tyvar_env ty_env dt_env term : Core.term =
     (* β-reduction: substitute and elaborate *)
     check_ty tyvar_env ty;
     let body' = subst x arg body in
-    elaborate tyvar_env ty_env dt_env body'
+    elaborate ~base tyvar_env ty_env dt_env body'
 
   | Ast.App (f, _) ->
     failwith (Printf.sprintf "elaborate: non-λ application: %s" (Ast.term_to_string f))
@@ -231,26 +268,25 @@ let rec elaborate tyvar_env ty_env dt_env term : Core.term =
   | Ast.Let (x, e1, e2) ->
     (* Let is just substitution at the surface level *)
     let e2' = subst x e1 e2 in
-    elaborate tyvar_env ty_env dt_env e2'
+    elaborate ~base tyvar_env ty_env dt_env e2'
 
   | Ast.Case (scrutinee, branches) ->
-    (* Case elaboration: scrutinee must elaborate to identity,
-       branches become structural permutation *)
-    elaborate_case tyvar_env ty_env dt_env scrutinee branches
+    (* Case elaboration: controlled gates for quantum case expressions *)
+    elaborate_case ~base tyvar_env ty_env dt_env scrutinee branches
 
   | Ast.Ctor (_name, payload) ->
     (* Constructor application: elaborate payload, compose with injection *)
-    let payload' = elaborate tyvar_env ty_env dt_env payload in
+    let payload' = elaborate ~base tyvar_env ty_env dt_env payload in
     (* For now, constructors are identity (payload already in position) *)
     payload'
 
   | Ast.Seq (f, g) ->
-    Core.Seq (elaborate tyvar_env ty_env dt_env f,
-              elaborate tyvar_env ty_env dt_env g)
+    Core.Seq (elaborate ~base tyvar_env ty_env dt_env f,
+              elaborate ~base tyvar_env ty_env dt_env g)
 
   | Ast.Ten (f, g) ->
-    Core.Ten (elaborate tyvar_env ty_env dt_env f,
-              elaborate tyvar_env ty_env dt_env g)
+    Core.Ten (elaborate ~base tyvar_env ty_env dt_env f,
+              elaborate ~base tyvar_env ty_env dt_env g)
 
   | Ast.Id ty -> Core.Id ty
   | Ast.TwistT (a, b) -> Core.TwistT (a, b)
@@ -259,16 +295,16 @@ let rec elaborate tyvar_env ty_env dt_env term : Core.term =
   | Ast.AssocTR (a, b, c) -> Core.AssocTR (a, b, c)
   | Ast.AssocPL (a, b, c) -> Core.AssocPL (a, b, c)
   | Ast.AssocPR (a, b, c) -> Core.AssocPR (a, b, c)
-  | Ast.GateH i -> Core.GateH i
-  | Ast.GateS i -> Core.GateS i
-  | Ast.GateCX (i, j) -> Core.GateCX (i, j)
-  | Ast.GateX i -> Core.GateX i
-  | Ast.GateY i -> Core.GateY i
-  | Ast.GateZ i -> Core.GateZ i
-  | Ast.GateT i -> Core.GateT i
-  | Ast.GateRz (theta, i) -> Core.GateRz (theta, i)
+  | Ast.GateH i -> Core.gate_h i
+  | Ast.GateS i -> Core.gate_s i
+  | Ast.GateCX (i, j) -> Core.gate_cx i j
+  | Ast.GateX i -> Core.gate_x i
+  | Ast.GateY i -> Core.gate_y i
+  | Ast.GateZ i -> Core.gate_z i
+  | Ast.GateT i -> Core.gate_t i
+  | Ast.GateRz (theta, i) -> Core.gate_rz theta i
   | Ast.ExpI (theta, j) ->
-    Core.ExpI (theta, elaborate tyvar_env ty_env dt_env j)
+    Core.ExpI (theta, elaborate ~base tyvar_env ty_env dt_env j)
 
 (** Substitute v for x in term *)
 and subst x v = function
@@ -308,20 +344,20 @@ and subst x v = function
 
     If anti=true, we wrap with X gates: X[ctrl] ; controlled-term ; X[ctrl]
     This implements anti-control (control on |0⟩ rather than |1⟩).
+
+    With the universal gate representation, this simply adds ctrl to the
+    controls list - allowing arbitrary nesting of cases to stack controls.
 *)
 and lift_to_controlled ~anti ctrl term =
   if anti then
     (* Anti-control: X[ctrl] ; controlled-term ; X[ctrl] *)
-    Core.Seq (Core.GateX ctrl,
+    Core.Seq (Core.gate_x ctrl,
               Core.Seq (lift_to_controlled ~anti:false ctrl term,
-                        Core.GateX ctrl))
+                        Core.gate_x ctrl))
   else
     match term with
-    (* Single-qubit gates -> controlled versions *)
-    | Core.GateH i -> Core.GateCH (ctrl, i)
-    | Core.GateS i -> Core.GateCS (ctrl, i)
-    (* Note: For gates without controlled versions, we'd need to decompose.
-       For now, we only support H and S in case branches. *)
+    (* Gates: add ctrl to the controls list (stacking for nested cases) *)
+    | Core.Gate g -> Core.Gate (Core.add_control ctrl g)
 
     (* Composition: lift each part *)
     | Core.Seq (f, g) ->
@@ -343,8 +379,8 @@ and lift_to_controlled ~anti ctrl term =
     | Core.AssocPL (a, b, c) -> Core.AssocPL (a, b, c)
     | Core.AssocPR (a, b, c) -> Core.AssocPR (a, b, c)
 
-    (* Other gates: for now, pass through (TODO: add more controlled gates) *)
-    | t -> t
+    (* ExpI: lift the body *)
+    | Core.ExpI (theta, j) -> Core.ExpI (theta, lift_to_controlled ~anti:false ctrl j)
 
 (** Elaborate case expression.
 
@@ -356,14 +392,13 @@ and lift_to_controlled ~anti ctrl term =
     2. Quantum case: scrutinee is a superposition -> controlled gates
 
     For quantum case with 2 constructors:
-      Elaborates to: Anti-controlled-g ; f ; Controlled-g
+      Elaborates to: Anti-controlled-left ; Controlled-right
 
-    Where:
-    - Tag qubit is wire 0 (first wire of the Plus type)
-    - Anti-controlled means control on |0⟩ (for Left branch)
-    - Controlled means control on |1⟩ (for Right branch)
+    The ~base parameter is the wire offset for the current layout:
+    - Tag wire is at base + 0
+    - Payload wires start at base + 1
 *)
-and elaborate_case tyvar_env ty_env dt_env scrutinee branches =
+and elaborate_case ~base tyvar_env ty_env dt_env scrutinee branches =
   let n = List.length branches in
 
   (* Check if this is a classical case (known constructor) *)
@@ -374,17 +409,19 @@ and elaborate_case tyvar_env ty_env dt_env scrutinee branches =
 
   if is_classical then
     (* Classical case: compile-time selection *)
-    elaborate_classical_case tyvar_env ty_env dt_env scrutinee branches
+    elaborate_classical_case ~base tyvar_env ty_env dt_env scrutinee branches
   else if n = 2 then
     (* Quantum case with 2 constructors *)
-    elaborate_quantum_case_2 tyvar_env ty_env dt_env scrutinee branches
+    elaborate_quantum_case_2 ~base tyvar_env ty_env dt_env scrutinee branches
   else
     (* n > 2: general quantum case (TODO) *)
     failwith (Printf.sprintf "elaborate_case: %d-constructor quantum case not yet implemented" n)
 
 (** Classical case: scrutinee is a known constructor.
     Select the matching branch at compile time. *)
-and elaborate_classical_case tyvar_env ty_env dt_env scrutinee branches =
+and elaborate_classical_case ~base tyvar_env ty_env dt_env scrutinee branches =
+  (* For classical case, payload starts at base + 1 (after tag) *)
+  let payload_base = base + 1 in
   match scrutinee with
   | Ast.Ctor (ctor_name, payload) ->
     (* Find matching branch *)
@@ -395,11 +432,11 @@ and elaborate_classical_case tyvar_env ty_env dt_env scrutinee branches =
     ) branches in
     (match matching_branch with
      | Some (Ast.PatCtor (_, var), body) ->
-       (* Substitute payload for pattern variable and elaborate *)
+       (* Substitute payload for pattern variable and elaborate at payload_base *)
        let body' = subst var payload body in
-       elaborate tyvar_env ty_env dt_env body'
+       elaborate ~base:payload_base tyvar_env ty_env dt_env body'
      | Some (Ast.PatWild, body) ->
-       elaborate tyvar_env ty_env dt_env body
+       elaborate ~base:payload_base tyvar_env ty_env dt_env body
      | None ->
        failwith (Printf.sprintf "No matching branch for constructor %s" ctor_name))
   | _ ->
@@ -409,15 +446,19 @@ and elaborate_classical_case tyvar_env ty_env dt_env scrutinee branches =
 
     case x of Left(a) => f | Right(b) => g
 
-    Elaborates to: Anti-controlled-g ; f ; Controlled-g
+    Elaborates to: Anti-controlled-left ; Controlled-right
 
-    The tag qubit (wire 0) controls which branch is active.
-    - Left branch (tag=0): f is applied, g is anti-controlled (control on |0⟩)
-    - Right branch (tag=1): g is applied, f needs to "undo" via anti-controlled-g
+    The tag qubit (at base) controls which branch is active.
+    - Left branch (tag=0): left gates are anti-controlled
+    - Right branch (tag=1): right gates are controlled
+
+    For nested cases, the base parameter ensures each level uses the
+    correct tag wire, and branch bodies are elaborated at payload_base.
 *)
-and elaborate_quantum_case_2 tyvar_env ty_env dt_env _scrutinee branches =
-  (* For 2-constructor case, tag qubit is wire 0 *)
-  let tag_wire = 0 in
+and elaborate_quantum_case_2 ~base tyvar_env ty_env dt_env _scrutinee branches =
+  (* Tag wire is at base, payload starts at base + 1 *)
+  let tag_wire = base in
+  let payload_base = base + 1 in
 
   (* Get the two branches *)
   let (left_pat, left_body), (right_pat, right_body) = match branches with
@@ -435,12 +476,10 @@ and elaborate_quantum_case_2 tyvar_env ty_env dt_env _scrutinee branches =
     | Ast.PatWild -> "_"
   in
 
-  (* Elaborate the branch bodies.
-     Note: In a real implementation, we'd substitute the pattern variable
-     with the appropriate projection. For QBool (Unit + Unit), the payload
-     is trivial (Unit), so we just elaborate the body directly. *)
-  let left_elaborated = elaborate tyvar_env ty_env dt_env left_body in
-  let right_elaborated = elaborate tyvar_env ty_env dt_env right_body in
+  (* Elaborate the branch bodies at payload_base.
+     For nested sums, this ensures inner cases use the correct wire offsets. *)
+  let left_elaborated = elaborate ~base:payload_base tyvar_env ty_env dt_env left_body in
+  let right_elaborated = elaborate ~base:payload_base tyvar_env ty_env dt_env right_body in
 
   (* Quantum case decomposition:
      Anti-controlled-right ; left ; Controlled-right

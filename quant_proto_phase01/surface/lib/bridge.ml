@@ -81,6 +81,8 @@ type term =
   | TCH of int * int
   | TCS of int * int
   | TCSdg of int * int
+  (* General multi-controlled gate (for nested cases) *)
+  | TGate of string * int list * int list  (* gate_name, targets, controls *)
 
 (** Convert a term to JSON *)
 let rec term_to_json = function
@@ -141,6 +143,12 @@ let rec term_to_json = function
   | TCH (i, j) -> Printf.sprintf {|{"node": "CH", "i": %d, "j": %d}|} i j
   | TCS (i, j) -> Printf.sprintf {|{"node": "CS", "i": %d, "j": %d}|} i j
   | TCSdg (i, j) -> Printf.sprintf {|{"node": "CSdg", "i": %d, "j": %d}|} i j
+  (* General multi-controlled gate for nested cases *)
+  | TGate (name, targets, controls) ->
+    let targets_json = Printf.sprintf "[%s]" (String.concat ", " (List.map string_of_int targets)) in
+    let controls_json = Printf.sprintf "[%s]" (String.concat ", " (List.map string_of_int controls)) in
+    Printf.sprintf {|{"node": "Gate", "name": "%s", "targets": %s, "controls": %s}|}
+      name targets_json controls_json
 
 (** Simple JSON parsing helpers *)
 let find_string key json =
