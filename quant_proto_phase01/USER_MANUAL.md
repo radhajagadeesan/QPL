@@ -749,17 +749,17 @@ Types:
 
 Terms:
   term ::= x                              (* variable *)
-         | λx:ty. term                    (* abstraction *)
+         | λx:ty. term                    (* lambda abstraction *)
          | term term                      (* application *)
          | let x = term in term           (* let binding *)
          | let (x ⊗ y) : ty ⊗ ty = term in term
                                           (* tensor destructuring *)
          | case term of branches          (* case expression *)
-         | Ctor(term)                     (* constructor *)
+         | Ctor(term)                     (* constructor application *)
          | term ; term                    (* sequential composition *)
          | term ⊗ term                    (* parallel composition *)
          | id[ty]                         (* identity *)
-         | Gate[args]                     (* gate *)
+         | Gate[args]                     (* quantum gate *)
          | exp_i(θ, term)                 (* exponential of involution *)
 
 Branches:
