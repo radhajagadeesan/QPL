@@ -681,7 +681,123 @@ let test_eta_expanded_structural () =
   else
     print_endline "  ✓ Tensor destructuring is structural (eta-expanded distL works!)";
 
-  (* Test 8: Case with gate in one branch only - definitely needs controlled gates *)
+  (* Test 8: Tensor symmetry (TwistT) primitive *)
+  print_endline "\n--- TwistT: Tensor symmetry primitive ---";
+  let twistT_term = TwistT (TyQ, TyQ) in  (* Q ⊗ Q → Q ⊗ Q *)
+  print_endline ("  TwistT source: Q ⊗ Q → Q ⊗ Q (swap wires)");
+  let twistT_result = Elaborate.elaborate tyvar_env Elaborate.TyEnv.empty dt_env twistT_term in
+  let twistT_str = Elaborate.Core.term_to_string twistT_result in
+  print_endline ("  Elaborated: " ^ twistT_str);
+
+  (* Note: "twist⊗" is 8 bytes in UTF-8: "twist" (5) + ⊗ (3 bytes: E2 8A 97) *)
+  if String.length twistT_str >= 8 && String.sub twistT_str 0 8 = "twist⊗" then
+    print_endline "  ✓ TwistT is structural (pure wire permutation)"
+  else
+    print_endline ("  ✗ TwistT should be structural, got: " ^ twistT_str);
+
+  (* Test 9: Tensor associativity (AssocTL) primitive *)
+  print_endline "\n--- AssocTL: Tensor associativity primitive ---";
+  let assocTL_term = AssocTL (TyQ, TyQ, TyQ) in  (* (Q ⊗ Q) ⊗ Q → Q ⊗ (Q ⊗ Q) *)
+  print_endline ("  AssocTL source: (Q ⊗ Q) ⊗ Q → Q ⊗ (Q ⊗ Q)");
+  let assocTL_result = Elaborate.elaborate tyvar_env Elaborate.TyEnv.empty dt_env assocTL_term in
+  let assocTL_str = Elaborate.Core.term_to_string assocTL_result in
+  print_endline ("  Elaborated: " ^ assocTL_str);
+
+  (* Note: "assoc⊗" is 8 bytes in UTF-8: "assoc" (5) + ⊗ (3 bytes: E2 8A 97) *)
+  if String.length assocTL_str >= 8 && String.sub assocTL_str 0 8 = "assoc⊗" then
+    print_endline "  ✓ AssocTL is structural (pure wire permutation)"
+  else
+    print_endline ("  ✗ AssocTL should be structural, got: " ^ assocTL_str);
+
+  (* Test 10: Tensor associativity (AssocTR) primitive *)
+  print_endline "\n--- AssocTR: Tensor associativity inverse ---";
+  let assocTR_term = AssocTR (TyQ, TyQ, TyQ) in  (* Q ⊗ (Q ⊗ Q) → (Q ⊗ Q) ⊗ Q *)
+  print_endline ("  AssocTR source: Q ⊗ (Q ⊗ Q) → (Q ⊗ Q) ⊗ Q");
+  let assocTR_result = Elaborate.elaborate tyvar_env Elaborate.TyEnv.empty dt_env assocTR_term in
+  let assocTR_str = Elaborate.Core.term_to_string assocTR_result in
+  print_endline ("  Elaborated: " ^ assocTR_str);
+
+  (* Note: "assoc⊗" is 8 bytes in UTF-8: "assoc" (5) + ⊗ (3 bytes: E2 8A 97) *)
+  if String.length assocTR_str >= 8 && String.sub assocTR_str 0 8 = "assoc⊗" then
+    print_endline "  ✓ AssocTR is structural (pure wire permutation)"
+  else
+    print_endline ("  ✗ AssocTR should be structural, got: " ^ assocTR_str);
+
+  (* Test 11: Full eta-expanded DistL via tensor destructuring *)
+  print_endline "\n--- Eta-expanded DistL: A ⊗ (B + C) → (A ⊗ B) + (A ⊗ C) ---";
+  (*
+     let (a ⊗ bc) : Q ⊗ (I + I) = id in
+       case bc of
+         | Left(b)  => Left(a)   -- Left(a ⊗ b) but b is Unit
+         | Right(c) => Right(a)  -- Right(a ⊗ c) but c is Unit
+
+     For Q ⊗ (I + I):
+       Wire 0: Q (a)
+       Wire 1: tag for (I + I)
+     Output (Q + Q):
+       Wire 0: tag
+       Wire 1: Q
+     So this is a wire permutation [1, 0].
+  *)
+  let distL_eta = LetTen ("a", "bc", TyQ, TyPlus (TyUnit, TyUnit),
+    Id (TyTensor (TyQ, TyPlus (TyUnit, TyUnit))),
+    Case (Var "bc", [
+      (PatCtor ("Left", "b"), Ctor ("Left", Var "a"));
+      (PatCtor ("Right", "c"), Ctor ("Right", Var "a"));
+    ])
+  ) in
+  print_endline ("  Source: let (a ⊗ bc) = id in case bc of Left => Left(a) | Right => Right(a)");
+  let distL_eta_result = Elaborate.elaborate tyvar_env Elaborate.TyEnv.empty dt_env distL_eta in
+  let distL_eta_str = Elaborate.Core.term_to_string distL_eta_result in
+  print_endline ("  Elaborated: " ^ distL_eta_str);
+
+  let distL_eta_has_computational =
+    Str.string_match (Str.regexp ".*[^C]H\\[\\|.*[^C]S\\[\\|.*[^C]T\\[\\|.*CX\\[.*") distL_eta_str 0 ||
+    Str.string_match (Str.regexp ".*C[0-9]-H\\|.*C[0-9]-S\\|.*C[0-9]-T.*") distL_eta_str 0
+  in
+  if distL_eta_has_computational then
+    print_endline "  ✗ Eta-expanded DistL has computational gates!"
+  else
+    print_endline "  ✓ Eta-expanded DistL is structural (matches primitive DistL)";
+
+  (* Test 12: Full eta-expanded DistR via tensor destructuring *)
+  print_endline "\n--- Eta-expanded DistR: (A + B) ⊗ C → (A ⊗ C) + (B ⊗ C) ---";
+  (*
+     let (ab ⊗ c) : (I + I) ⊗ Q = id in
+       case ab of
+         | Left(a)  => Left(c)   -- Left(a ⊗ c) but a is Unit
+         | Right(b) => Right(c)  -- Right(b ⊗ c) but b is Unit
+
+     For (I + I) ⊗ Q:
+       Wire 0: tag for (I + I)
+       Wire 1: Q (c)
+     Output (Q + Q):
+       Wire 0: tag
+       Wire 1: Q
+     Tag is already at wire 0, so this should be identity!
+  *)
+  let distR_eta = LetTen ("ab", "c", TyPlus (TyUnit, TyUnit), TyQ,
+    Id (TyTensor (TyPlus (TyUnit, TyUnit), TyQ)),
+    Case (Var "ab", [
+      (PatCtor ("Left", "a"), Ctor ("Left", Var "c"));
+      (PatCtor ("Right", "b"), Ctor ("Right", Var "c"));
+    ])
+  ) in
+  print_endline ("  Source: let (ab ⊗ c) = id in case ab of Left => Left(c) | Right => Right(c)");
+  let distR_eta_result = Elaborate.elaborate tyvar_env Elaborate.TyEnv.empty dt_env distR_eta in
+  let distR_eta_str = Elaborate.Core.term_to_string distR_eta_result in
+  print_endline ("  Elaborated: " ^ distR_eta_str);
+
+  let distR_eta_has_computational =
+    Str.string_match (Str.regexp ".*[^C]H\\[\\|.*[^C]S\\[\\|.*[^C]T\\[\\|.*CX\\[.*") distR_eta_str 0 ||
+    Str.string_match (Str.regexp ".*C[0-9]-H\\|.*C[0-9]-S\\|.*C[0-9]-T.*") distR_eta_str 0
+  in
+  if distR_eta_has_computational then
+    print_endline "  ✗ Eta-expanded DistR has computational gates!"
+  else
+    print_endline "  ✓ Eta-expanded DistR is structural (matches primitive DistR)";
+
+  (* Test 13: Case with gate in one branch only - definitely needs controlled gates *)
   print_endline "\n--- Non-structural: case with different operations ---";
   let ty_env_2q = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "x" (TyPlus (TyQ, TyQ)) in
   let asymmetric_case = Case (Var "x", [
