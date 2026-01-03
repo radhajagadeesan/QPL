@@ -399,6 +399,65 @@ let test_nested_quantum_case () =
 
   print_endline ""
 
+(* Test triple-nested quantum case elaboration *)
+let test_triple_nested_quantum_case () =
+  print_endline "=== Testing triple-nested quantum case elaboration ===";
+
+  (* Build a triple-nested case expression on ((A + B) + C) + D:
+     case outer of
+       | Left(mid) => case mid of
+                        | Left(inner) => case inner of
+                                           | Left(a) => H[3]
+                                           | Right(b) => S[3]
+                        | Right(c) => T[3]
+       | Right(d) => X[3]
+
+     Layout: [outer_tag | mid_tag | inner_tag | payload] = wires [0, 1, 2, 3]
+
+     Expected: H gate in Left(Left(Left(a))) branch should be TRIPLY-controlled
+     by wires 0, 1, AND 2 (C0-C1-C2-H[3]).
+  *)
+  let open Ast in
+  let tyvar_env = Elaborate.TyVarEnv.empty in
+  (* Type: (((I + I) + I) + I) - three levels of nesting *)
+  let innermost_sum = TyPlus (TyUnit, TyUnit) in
+  let middle_sum = TyPlus (innermost_sum, TyUnit) in
+  let outer_sum = TyPlus (middle_sum, TyUnit) in
+  let ty_env = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "outer" outer_sum in
+  let ty_env = Elaborate.TyEnv.extend ty_env "mid" middle_sum in
+  let ty_env = Elaborate.TyEnv.extend ty_env "inner" innermost_sum in
+  let dt_env = Elaborate.DtEnv.empty in
+
+  let innermost_case = Case (Var "inner", [
+    (PatCtor ("Left", "a"), GateH 3);
+    (PatCtor ("Right", "b"), GateS 3);
+  ]) in
+
+  let middle_case = Case (Var "mid", [
+    (PatCtor ("Left", "inner"), innermost_case);
+    (PatCtor ("Right", "c"), GateT 3);
+  ]) in
+
+  let outer_case = Case (Var "outer", [
+    (PatCtor ("Left", "mid"), middle_case);
+    (PatCtor ("Right", "d"), GateX 3);
+  ]) in
+
+  print_endline ("  Source: triple-nested case on (((I+I)+I)+I)");
+
+  let elaborated = Elaborate.elaborate tyvar_env ty_env dt_env outer_case in
+  let result_str = Elaborate.Core.term_to_string elaborated in
+  print_endline ("  Elaborated: " ^ result_str);
+
+  (* Check that we have triply-controlled gates (C0-C1-C2- prefix) *)
+  if Str.string_match (Str.regexp ".*C[0-2]-C[0-2]-C[0-2]-.*") result_str 0
+  then
+    print_endline "  ✓ Triple-nested case produces triply-controlled gates"
+  else
+    print_endline "  ✗ Expected triply-controlled gates (C0-C1-C2-) not found";
+
+  print_endline ""
+
 (* Test error handling *)
 let test_errors () =
   print_endline "=== Testing error handling ===";
@@ -441,6 +500,7 @@ let () =
   test_elaborate ();
   test_quantum_case ();
   test_nested_quantum_case ();
+  test_triple_nested_quantum_case ();
   test_errors ();
 
   print_endline "All tests completed!"
