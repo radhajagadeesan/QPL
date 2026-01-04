@@ -4,268 +4,192 @@ Complete reference for types, terms, and compilation functions.
 
 ---
 
-## Quick Answers
+## Types (`src/lang/types.py`)
 
-### 1. TenTerm name + signature
+| Type | Description | Width |
+|------|-------------|-------|
+| `Q()` | Single qubit | 1 |
+| `I()` | Unit type | 0 |
+| `Ten(a, b)` | Tensor product a ⊗ b | width(a) + width(b) |
+| `Plus(a, b)` | Sum type a + b | 1 + width(a) + width(b) |
 
-**Location:** `src/lang/terms.py`
-
+**Functions:**
 ```python
-from lang.terms import TenTerm
+from lang.types import Q, I, Ten, Plus, width
 
-# Constructor signature:
-TenTerm(f: Term, g: Term)
-```
-
-- `TenTerm` represents parallel composition: `f ⊗ g`
-- Both arguments are `Term` objects (not types or sizes)
-- Types are inferred from the sub-terms
-
----
-
-### 2. Gate constructor signatures
-
-**Location:** `src/lang/terms.py`
-
-```python
-from lang.terms import H, S, CX
-
-# Hadamard gate on wire i
-H(i: int = 0, ty_total: Ty = Ten(Q(), Q()))
-
-# S (phase) gate on wire i
-S(i: int = 0, ty_total: Ty = Ten(Q(), Q()))
-
-# Controlled-X with control i, target j
-CX(i: int = 0, j: int = 1, ty_total: Ty = Ten(Q(), Q()))
-```
-
-**Notes:**
-- All gates have **default arguments** for 2-qubit context
-- `i`, `j` are **integer wire indices** (0-based)
-- `ty_total` is the **ambient type** of the whole circuit
-- For n-qubit circuits, pass the appropriate type: `ty_total=Ten(Ten(Q(), Q()), Q())` for 3 qubits
-
-**Examples:**
-```python
-# 2-qubit circuit (uses defaults)
-H()          # H on wire 0
-CX()         # CX on wires 0, 1
-S(1)         # S on wire 1
-
-# 3-qubit circuit (explicit type)
-ty3 = Ten(Ten(Q(), Q()), Q())
-H(0, ty3)
-CX(0, 2, ty3)
-S(2, ty3)
+width(ty: Ty) -> int       # Number of physical wires
 ```
 
 ---
 
-### 3. Compiler entrypoint
+## Terms (`src/lang/terms.py`)
 
-**Location:** `src/compile/to_pytket.py`
+### Identity and Composition
+
+| Term | Signature | Description |
+|------|-----------|-------------|
+| `Id(ty)` | `Id(ty: Ty)` | Identity on type |
+| `Seq(f, g, ...)` | `Seq(*terms)` | Sequential composition (variadic) |
+| `TenTerm(f, g)` | `TenTerm(f, g)` | Parallel composition f ⊗ g |
+
+### Structural Isomorphisms
+
+| Term | Type Signature |
+|------|----------------|
+| `TwistTen(a, b)` | a ⊗ b → b ⊗ a |
+| `TwistPlus(a, b)` | a + b → b + a |
+| `AssocTenL(a, b, c)` | (a ⊗ b) ⊗ c → a ⊗ (b ⊗ c) |
+| `AssocTenR(a, b, c)` | a ⊗ (b ⊗ c) → (a ⊗ b) ⊗ c |
+| `AssocPlusL(a, b, c)` | (a + b) + c → a + (b + c) |
+| `AssocPlusR(a, b, c)` | a + (b + c) → (a + b) + c |
+| `DistL(a, b, c)` | (a + b) ⊗ c → (a ⊗ c) + (b ⊗ c) |
+| `DistR(a, b, c)` | a ⊗ (b + c) → (a ⊗ b) + (a ⊗ c) |
+
+### Gates
+
+All gates take wire indices and an ambient type `ty_total`.
+
+**Single-qubit gates:**
+
+| Gate | Signature | Description |
+|------|-----------|-------------|
+| `H(i, ty)` | Hadamard | |
+| `X(i, ty)` | Pauli-X | |
+| `Y(i, ty)` | Pauli-Y | |
+| `Z(i, ty)` | Pauli-Z | |
+| `S(i, ty)` | S gate (π/2 phase) | |
+| `Sdg(i, ty)` | S-dagger | |
+| `T(i, ty)` | T gate (π/4 phase) | |
+| `Tdg(i, ty)` | T-dagger | |
+
+**Parameterized single-qubit gates:**
+
+| Gate | Signature | Description |
+|------|-----------|-------------|
+| `Rx(theta, i, ty)` | X rotation by θ | |
+| `Ry(theta, i, ty)` | Y rotation by θ | |
+| `Rz(theta, i, ty)` | Z rotation by θ | |
+| `Phase(theta, i, ty)` | Global phase | |
+
+**Two-qubit gates:**
+
+| Gate | Signature | Description |
+|------|-----------|-------------|
+| `CX(i, j, ty)` | CNOT (control i, target j) | |
+| `CZ(i, j, ty)` | Controlled-Z | |
+| `CH(i, j, ty)` | Controlled-Hadamard | |
+| `CS(i, j, ty)` | Controlled-S | |
+| `CSdg(i, j, ty)` | Controlled-S-dagger | |
+
+**Three-qubit gates:**
+
+| Gate | Signature | Description |
+|------|-----------|-------------|
+| `CCX(i, j, k, ty)` | Toffoli (controls i,j, target k) | |
+
+### Higher-Order Terms
+
+| Term | Description |
+|------|-------------|
+| `Feedback(k, body)` | Loop k wires back (GOI trace) |
+| `FunVar(name, dom, cod)` | Function variable |
+| `Lam(name, dom, cod, body)` | Lambda abstraction |
+| `Apply(f, arg)` | Function application |
+
+---
+
+## Compilation (`src/compile/to_pytket.py`)
+
+### compile()
+
+Standard compilation to pytket circuit.
 
 ```python
 from compile.to_pytket import compile, Compiled
 
-result: Compiled = compile(term, *, materialize=False, explain=False)
+result: Compiled = compile(term, materialize=False, explain=False)
+
+# Result fields:
+result.circuit   # pytket Circuit
+result.perm      # WirePerm (final wire permutation)
+result.log       # List[str] if explain=True
 ```
 
-**Signature:**
+### compile_goi()
+
+Compilation with feedback support.
+
 ```python
-def compile(
-    term: Term,
-    *,
-    materialize: bool = False,  # If True, insert SWAPs for final perm
-    explain: bool = False       # If True, populate result.log
-) -> Compiled
+from compile.to_pytket import compile_goi
+from compile.goi import GOIArtifact
+
+result = compile_goi(term, materialize=False, explain=False)
+
+# Returns Compiled if feedback extracted, GOIArtifact if residual
+if isinstance(result, GOIArtifact):
+    print("Residual loops:", result.loops)
+else:
+    print("Extracted:", result.circuit)
 ```
 
-**Returns:** `Compiled` object (not a raw Circuit)
+### compile_higher_order()
+
+Higher-order compilation via GOI.
 
 ```python
-@dataclass
-class Compiled:
-    circuit: Circuit      # pytket Circuit
-    perm: WirePerm        # Final wire permutation
-    log: Optional[List[str]]  # Explanation log (if explain=True)
-```
+from compile.to_pytket import compile_higher_order
 
-**Example:**
-```python
-from compile.to_pytket import compile
-from lang.terms import Seq, H, CX, TwistTen
-from lang.types import Q
-
-prog = Seq(TwistTen(Q(), Q()), H(), CX())
-result = compile(prog)
-
-circ = result.circuit   # pytket Circuit
-perm = result.perm      # WirePerm showing final wire mapping
+result = compile_higher_order(term, explain=False)
 ```
 
 ---
 
-### 4. Materializer entrypoint
-
-**Location:** `src/backends/materialize.py`
-
-```python
-from backends.materialize import swaps_for_perm, apply_swaps
-
-# Step 1: Convert WirePerm to list of swap pairs
-swaps: List[Tuple[int, int]] = swaps_for_perm(perm)
-
-# Step 2: Apply swaps to circuit
-apply_swaps(circ, swaps)
-```
-
-**Signatures:**
-```python
-def swaps_for_perm(p: WirePerm) -> List[Tuple[int, int]]
-def apply_swaps(circ: Circuit, swaps: List[Tuple[int, int]]) -> None
-```
-
-**Notes:**
-- There is **no single `materialize(circ, perm)` function**
-- Use the two-step API: `swaps_for_perm()` then `apply_swaps()`
-- Or use `compile(term, materialize=True)` to do it automatically
-
-**Example:**
-```python
-from compile.to_pytket import compile
-from backends.materialize import swaps_for_perm, apply_swaps
-
-result = compile(prog, materialize=False)
-circ = result.circuit.copy()
-swaps = swaps_for_perm(result.perm)
-apply_swaps(circ, swaps)
-# circ now contains explicit SWAP gates
-```
-
----
-
-### 5. How pytket is exposed
-
-**Yes, standard pytket API is used:**
-
-```python
-from pytket.circuit import Circuit
-
-circ = Circuit(n)           # Create n-qubit circuit
-circ.H(qubit)               # Add Hadamard
-circ.S(qubit)               # Add S gate
-circ.CX(control, target)    # Add CNOT
-circ.SWAP(a, b)             # Add SWAP
-
-cmds = circ.get_commands()  # Get list of commands
-for cmd in cmds:
-    op_type = cmd.op.type   # OpType enum
-    qubits = cmd.qubits     # List of Qubit objects
-```
-
-**Introspection:**
-```python
-for cmd in circ.get_commands():
-    op_name = cmd.op.type.name  # "H", "S", "CX", "SWAP"
-    qubit_indices = [q.index[0] for q in cmd.qubits]
-```
-
----
-
-## Complete API Reference
-
-### Types (`src/lang/types.py`)
-
-| Type | Description | Example |
-|------|-------------|---------|
-| `Q()` | Single qubit wire | `Q()` |
-| `Ten(a, b)` | Tensor product a ⊗ b | `Ten(Q(), Q())` |
-| `Plus(a, b)` | Sum type a ⊕ b | `Plus(Q(), Q())` |
-
-**Utility functions:**
-```python
-width(ty: Ty) -> int          # Number of physical wires
-pretty(ty: Ty) -> str         # Pretty-print type
-flatten_tensor(ty) -> List    # Flatten tensor tree
-flatten_plus(ty) -> List      # Flatten plus tree
-```
-
----
-
-### Terms (`src/lang/terms.py`)
-
-#### Identity and Composition
-| Term | Signature | Description |
-|------|-----------|-------------|
-| `Id(ty)` | `Id(ty: Ty)` | Identity on type |
-| `Seq(f, g, ...)` | `Seq(f, g, *rest)` | Sequential composition (variadic) |
-| `TenTerm(f, g)` | `TenTerm(f: Term, g: Term)` | Parallel composition f ⊗ g |
-
-#### Structural Isomorphisms (Tensor)
-| Term | Type Signature |
-|------|----------------|
-| `TwistTen(a, b)` | `a ⊗ b → b ⊗ a` |
-| `AssocTenL(a, b, c)` | `(a ⊗ b) ⊗ c → a ⊗ (b ⊗ c)` |
-| `AssocTenR(a, b, c)` | `a ⊗ (b ⊗ c) → (a ⊗ b) ⊗ c` |
-
-**Aliases:** `TensorTwist`, `TensorAssocL`, `TensorAssocR`
-
-#### Structural Isomorphisms (Sum)
-| Term | Type Signature |
-|------|----------------|
-| `TwistPlus(a, b)` | `a ⊕ b → b ⊕ a` |
-| `AssocPlusL(a, b, c)` | `(a ⊕ b) ⊕ c → a ⊕ (b ⊕ c)` |
-| `AssocPlusR(a, b, c)` | `a ⊕ (b ⊕ c) → (a ⊕ b) ⊕ c` |
-
-**Aliases:** `SumTwist`, `SumAssocL`, `SumAssocR`
-
-#### Distributivity
-| Term | Type Signature | Description |
-|------|----------------|-------------|
-| `DistL(a, b, c)` | `(a ⊕ b) ⊗ c → (a ⊗ c) ⊕ (b ⊗ c)` | Identity on wires (tag already at front) |
-| `DistR(a, b, c)` | `a ⊗ (b ⊕ c) → (a ⊗ b) ⊕ (a ⊗ c)` | Moves tag from position 1 to position 0 |
-
-**Note:** With tagged layout model, distributivity compiles to structural permutations (no gates).
-
-#### Gates
-| Gate | Signature | Description |
-|------|-----------|-------------|
-| `H(i, ty_total)` | `H(i=0, ty_total=Ten(Q(),Q()))` | Hadamard on wire i |
-| `S(i, ty_total)` | `S(i=0, ty_total=Ten(Q(),Q()))` | S gate on wire i |
-| `CX(i, j, ty_total)` | `CX(i=0, j=1, ty_total=Ten(Q(),Q()))` | CNOT control=i, target=j |
-
----
-
-### Permutations (`src/core/perm.py`)
+## Permutations (`src/core/perm.py`)
 
 ```python
 from core.perm import WirePerm, identity, compose, inverse
 
-# Construction (flexible)
-p = WirePerm([1, 0, 2, 3])           # From list
-p = WirePerm(4, [1, 0, 2, 3])        # With explicit n
-p = WirePerm(n=4, new_to_old=[...])  # Keyword args
+p = WirePerm([1, 0, 2])      # new_to_old mapping
+e = identity(n)              # Identity permutation
+q = compose(p2, p1)          # Composition
+inv = inverse(p)             # Inverse
 
-# Operations
-e = identity(n)           # Identity permutation
-q = compose(p2, p1)       # Composition: p2 ∘ p1
-inv = inverse(p)          # Inverse permutation
-
-# Application
 old_idx = p.apply_new_to_old(new_idx)
 ```
 
 ---
 
-### Type Checking (`src/typing_/check.py`)
+## Type Checking (`src/typing_/check.py`)
 
 ```python
-from typing_.check import type_of, assert_well_typed, TypeCheckError
+from typing_.check import type_of, assert_well_typed
 
-dom, cod = type_of(term)    # Get domain and codomain types
-assert_well_typed(term)     # Raises TypeCheckError if ill-typed
+dom, cod = type_of(term)     # Get domain and codomain
+assert_well_typed(term)      # Raises TypeCheckError if invalid
+```
+
+---
+
+## GOI Module (`src/compile/goi.py`)
+
+```python
+from compile.goi import (
+    GateAtom,
+    GOIArtifact,
+    LoopSpec,
+    make_unitary_value,
+    goi_seq,
+    execute_trace,
+)
+
+# Create GOI representation of a unitary
+h_goi = make_unitary_value('H', (0,), n_a=1, inverse_gate_name='H')
+
+# Compose via GOI
+composed = goi_seq(h_goi, s_goi, n_shared=1)
+
+# Execute trace (collapse loops)
+result = execute_trace(composed)
 ```
 
 ---
@@ -274,40 +198,34 @@ assert_well_typed(term)     # Raises TypeCheckError if ill-typed
 
 ```python
 from lang.types import Q, Ten
-from lang.terms import Seq, H, CX, TwistTen
+from lang.terms import Seq, H, CX
 from compile.to_pytket import compile
-from backends.materialize import swaps_for_perm, apply_swaps
 
-# 1. Define types
-ty2 = Ten(Q(), Q())
+# Build term
+ty = Ten(Q(), Q())
+bell = Seq(H(0, ty), CX(0, 1, ty))
 
-# 2. Build program
-prog = Seq(
-    TwistTen(Q(), Q()),   # Swap wires
-    H(0, ty2),            # H on wire 0
-    CX(0, 1, ty2),        # CNOT
-)
+# Compile
+result = compile(bell)
 
-# 3. Compile (no SWAPs in output)
-result = compile(prog)
-print(f"Circuit: {result.circuit}")
-print(f"Final perm: {result.perm}")
-
-# 4. Optionally materialize SWAPs
-result_mat = compile(prog, materialize=True)
-print(f"With SWAPs: {result_mat.circuit}")
+# Inspect
+print(f"Qubits: {result.circuit.n_qubits}")
+print(f"Gates: {result.circuit.n_gates}")
+for cmd in result.circuit.get_commands():
+    print(f"  {cmd}")
 ```
 
 ---
 
-## Invariants (Phase 0–4C)
+## Invariants
 
-1. **Structure = metadata only**: Structural terms emit NO gates (except X for sum type tag flips)
-2. **No SWAPs by default**: `compile()` never emits SWAPs unless `materialize=True`
-3. **Gates are reindexed**: Gate wires go through `WirePerm.apply_new_to_old()`
-4. **Deterministic**: Same AST → identical circuit
-5. **Distributivity supported**: DistL/DistR compile to structural permutations with tagged layout
+1. **Structural = permutation + tag flips only** — no gates on payload wires
+2. **No SWAPs by default** — only with `materialize=True`
+3. **Gates are reindexed** — through `WirePerm.apply_new_to_old()`
+4. **Deterministic** — same AST → identical circuit
 
 ---
 
-End of API Reference.
+## Test Coverage
+
+1145+ tests across all phases.

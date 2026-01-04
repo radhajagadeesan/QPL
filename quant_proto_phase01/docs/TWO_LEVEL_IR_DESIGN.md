@@ -247,6 +247,16 @@ Extraction attempts to collapse a GOI artifact back to IR1.
 
 ---
 
+### Higher-Order Compilation
+
+IR2 also enables **higher-order compilation** via GOI conjugation:
+
+- A unitary `U : A → A` becomes `(U† ⊗ U)` on `A* ⊗ A`
+- Function composition uses feedback to connect shared boundaries
+- `execute_trace` collapses loop wires to produce external circuits
+
+See `compile_higher_order()` and `demos/qswitch_demo.py` for examples.
+
 ### IR2 Summary
 
 IR2 answers: **"How does this program behave *with* feedback?"**
@@ -257,6 +267,7 @@ IR2 answers: **"How does this program behave *with* feedback?"**
 | Feedback | Explicit loop metadata |
 | Output | CompiledGOI or GOIArtifact |
 | Extraction | Sound but incomplete |
+| Higher-order | Via GOI conjugation |
 
 ---
 
@@ -319,8 +330,9 @@ We get a clean conceptual model:
 | 2 | Complete | `TenTerm` parallel composition |
 | 3 | Complete | GOI feedback, extraction |
 | 4C | Complete | Tagged layout, distributivity |
+| 5 | Complete | Higher-order compilation via GOI |
 
-**Test coverage:** 1098+ tests passing
+**Test coverage:** 1145+ tests passing
 
 ---
 
