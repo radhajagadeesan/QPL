@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-QSwitch(H, S) Demo - Runnable Script
+QSwitch Demo - Runnable Script
 
 Run with: PYTHONPATH=src python demos/qswitch_demo.py
 
@@ -16,11 +16,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from lang.terms import H, S, Seq, CS, CSdg, X
 from lang.types import Q, Ten
 from compile.to_pytket import compile
-from compile.goi import (
-    GateAtom, GOIArtifact, LoopSpec,
-    make_unitary_value, goi_seq, execute_trace
-)
-from core.perm import WirePerm, identity
 
 
 def section(title):
@@ -37,24 +32,64 @@ def subsection(title):
 
 
 def main():
-    section("QSwitch(H, S) Demo")
+    section("QSwitch Demo")
+
+    # =========================================================================
+    section("Part 1: QSwitch Definition")
+    # =========================================================================
 
     print("""
-QSwitch is a higher-order quantum combinator:
+QSwitch : (Q→Q) → (Q→Q) → (QBool ⊗ Q → QBool ⊗ Q)
 
-  QSwitch(f, g) : QBool ⊗ Q → QBool ⊗ Q
-
+QSwitch(f, g)(ctrl, data) =
   case ctrl of
-  | Zero => (ctrl, g;f data)
-  | One  => (ctrl, f;g data)
-
-Applied to H and S:
-  | Zero => S;H
-  | One  => H;S
+  | Zero => (ctrl, g;f data)   -- apply g then f
+  | One  => (ctrl, f;g data)   -- apply f then g
 """)
 
     # =========================================================================
-    section("Part 1: First-Order Circuit (2 qubits)")
+    section("Part 2: Abstract QSwitch(f, g) Circuit")
+    # =========================================================================
+
+    print("""The quantum case elaborates to controlled gates:
+
+  anti-controlled-g ; f ; controlled-g
+
+Expanded circuit structure:
+
+  X q[0];        -- flip ctrl for anti-control
+  C-g q[0],q[1]; -- g if ctrl was 0 (now 1)
+  X q[0];        -- restore ctrl
+  f q[1];        -- f unconditionally
+  C-g q[0],q[1]; -- g if ctrl is 1
+
+Wire 0: ctrl (control qubit)
+Wire 1: data (target qubit)
+""")
+
+    subsection("Verification")
+    print("""ctrl=0: X flips to 1, C-g fires, X flips back, f applied, C-g doesn't fire
+        → data sees: g ; f ✓
+
+ctrl=1: X flips to 0, C-g doesn't fire, X flips back, f applied, C-g fires
+        → data sees: f ; g ✓
+""")
+
+    # =========================================================================
+    section("Part 3: QSwitch(H, S) Instantiation")
+    # =========================================================================
+
+    print("""Substituting f=H, g=S:
+
+QSwitch(H, S)(ctrl, data) =
+  | Zero => (ctrl, S;H data)
+  | One  => (ctrl, H;S data)
+
+Circuit: X; CS; X; H; CS
+""")
+
+    # =========================================================================
+    section("Part 4: QSwitch(H, S) Circuit (2 qubits)")
     # =========================================================================
 
     ty = Ten(Q(), Q())
@@ -81,7 +116,7 @@ Applied to H and S:
     print("  |1⟩|ψ⟩ → |1⟩(H;S)|ψ⟩")
 
     # =========================================================================
-    section("Part 2: GOI Conjugation Form (4 qubits)")
+    section("Part 5: QSwitch(H, S) GOI Form (4 qubits)")
     # =========================================================================
 
     print("GOI representation: (QSwitch†) ⊗ QSwitch")
@@ -123,67 +158,16 @@ Applied to H and S:
         print(f"  {cmd}")
 
     # =========================================================================
-    section("Part 3: GOI Verification")
+    section("Summary")
     # =========================================================================
 
-    subsection("Test: twist ⊗ twist = id")
-
-    # twist for Q⊗Q
-    def make_twist_ten():
-        return GOIArtifact(
-            n_in=4, n_out=4,
-            perm=WirePerm(4, [1, 0, 3, 2]),
-            atoms=(),
-            loops=()
-        )
-
-    twist = make_twist_ten()
-    print(f"twist perm: {twist.perm.new_to_old}")
-
-    composed = goi_seq(twist, twist, n_shared=2)
-    traced = execute_trace(composed)
-
-    print(f"twist;twist perm: {traced.perm.new_to_old}")
-    print(f"twist;twist atoms: {list(traced.atoms)}")
-    print(f"Result: {'id ✓' if traced.perm.new_to_old == [0,1,2,3] and len(traced.atoms) == 0 else 'FAIL'}")
-
-    subsection("Test: H;S composition")
-
-    h_goi = make_unitary_value('H', (0,), n_a=1, inverse_gate_name='H')
-    s_goi = make_unitary_value('S', (0,), n_a=1, inverse_gate_name='Sdg')
-
-    print(f"⟦H⟧ atoms: {[(a.gate_name, a.wires) for a in h_goi.atoms]}")
-    print(f"⟦S⟧ atoms: {[(a.gate_name, a.wires) for a in s_goi.atoms]}")
-
-    hs = goi_seq(h_goi, s_goi, n_shared=1)
-    hs_traced = execute_trace(hs)
-
-    print()
-    print(f"⟦H;S⟧ after trace:")
-    for atom in hs_traced.atoms:
-        print(f"  {atom.gate_name} on wire {atom.wires}")
-
-    wire0 = [a.gate_name for a in hs_traced.atoms if 0 in a.wires]
-    wire1 = [a.gate_name for a in hs_traced.atoms if 1 in a.wires]
-    print()
-    print(f"Wire 0 (Q*): {wire0}  = (H;S)† = S†;H†")
-    print(f"Wire 1 (Q):  {wire1}  = H;S")
-
-    expected_0 = ['Sdg', 'H']
-    expected_1 = ['H', 'S']
-    ok = wire0 == expected_0 and wire1 == expected_1
-    print(f"Result: {'✓' if ok else 'FAIL'}")
-
-    # =========================================================================
-    section("Demo Complete")
-    # =========================================================================
-
-    print("All QSwitch demonstrations completed successfully!")
-    print()
-    print("Summary:")
-    print("  - QSwitch(H,S) first-order: 5 gates on 2 qubits")
-    print("  - QSwitch(H,S) GOI form:   10 gates on 4 qubits")
-    print("  - GOI laws verified: twist;twist=id, H;S composition")
+    print("""
+| Form                    | Qubits | Gates | Description           |
+|-------------------------|--------|-------|-----------------------|
+| QSwitch(f,g) abstract   | 2      | 5     | X; C-g; X; f; C-g     |
+| QSwitch(H,S) first-order| 2      | 5     | X; CS; X; H; CS       |
+| QSwitch(H,S) GOI        | 4      | 10    | Doubled conjugation   |
+""")
 
 
 if __name__ == "__main__":

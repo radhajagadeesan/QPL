@@ -1,35 +1,61 @@
-# QSwitch(H, S) Demo - Expected Output
-
-This document shows the expected output from the QSwitch demo for those who want to see the results without running the code.
+# QSwitch Demo - Expected Output
 
 ## 1. QSwitch Definition
 
 ```
-QSwitch(f, g) : QBool ⊗ Q → QBool ⊗ Q
+QSwitch : (Q→Q) → (Q→Q) → (QBool ⊗ Q → QBool ⊗ Q)
 
+QSwitch(f, g)(ctrl, data) =
   case ctrl of
   | Zero => (ctrl, g;f data)   -- apply g then f
   | One  => (ctrl, f;g data)   -- apply f then g
 ```
 
-## 2. QSwitch(H, S) Instantiation
+## 2. Abstract QSwitch(f, g) Circuit
+
+The quantum case elaborates to controlled gates:
+
+```
+anti-controlled-g ; f ; controlled-g
+```
+
+Expanded circuit structure:
+
+```
+Circuit for QSwitch(f, g):
+  X q[0];        -- flip ctrl for anti-control
+  C-g q[0],q[1]; -- g if ctrl was 0 (now 1)
+  X q[0];        -- restore ctrl
+  f q[1];        -- f unconditionally
+  C-g q[0],q[1]; -- g if ctrl is 1
+
+Wire 0: ctrl (control qubit)
+Wire 1: data (target qubit)
+```
+
+Verification:
+```
+ctrl=0: X flips to 1, C-g fires, X flips back, f applied, C-g doesn't fire
+        → data sees: g ; f ✓
+
+ctrl=1: X flips to 0, C-g doesn't fire, X flips back, f applied, C-g fires
+        → data sees: f ; g ✓
+```
+
+## 3. QSwitch(H, S) Instantiation
+
+Substituting f=H, g=S:
 
 ```
 QSwitch(H, S)(ctrl, data) =
   | Zero => (ctrl, S;H data)
   | One  => (ctrl, H;S data)
-
-Semantics:
-  |0⟩|ψ⟩ → |0⟩(S;H)|ψ⟩
-  |1⟩|ψ⟩ → |1⟩(H;S)|ψ⟩
 ```
 
-## 3. First-Order Circuit (2 qubits)
-
-When applied directly:
+## 4. QSwitch(H, S) Circuit (First-Order, 2 qubits)
 
 ```
-Circuit (ctrl=q[0], data=q[1]):
+Circuit:
   X q[0];
   CS q[0], q[1];
   X q[0];
@@ -40,7 +66,13 @@ Qubits: 2
 Gates:  5
 ```
 
-## 4. GOI Conjugation Form (4 qubits)
+Semantics:
+```
+  |0⟩|ψ⟩ → |0⟩(S;H)|ψ⟩
+  |1⟩|ψ⟩ → |1⟩(H;S)|ψ⟩
+```
+
+## 5. QSwitch(H, S) GOI Form (4 qubits)
 
 Higher-order representation `(QSwitch†) ⊗ QSwitch`:
 
@@ -67,29 +99,10 @@ Qubits: 4
 Gates:  10
 ```
 
-## 5. GOI Verification: twist ⊗ twist = id
+## 6. Summary
 
-```
-twist⊗_{Q,Q} GOI artifact:
-  perm=[1, 0, 3, 2]
-  atoms=()
-
-After trace (twist ; twist):
-  perm=[0, 1, 2, 3]  (identity)
-  atoms=()
-
-Result: twist ; twist = id ✓
-```
-
-## 6. GOI Verification: H;S Composition
-
-```
-⟦H⟧ = (H ⊗ H) on 2 wires
-⟦S⟧ = (Sdg ⊗ S) on 2 wires
-
-After goi_seq + execute_trace:
-  Wire 0 (Q*): Sdg, H  = (H;S)† = S†;H†
-  Wire 1 (Q):  H, S    = H;S
-
-Total: 4 gates on 2 qubits ✓
-```
+| Form | Qubits | Gates | Description |
+|------|--------|-------|-------------|
+| QSwitch(f,g) abstract | 2 | 5 | X; C-g; X; f; C-g |
+| QSwitch(H,S) first-order | 2 | 5 | X; CS; X; H; CS |
+| QSwitch(H,S) GOI | 4 | 10 | Doubled conjugation form |

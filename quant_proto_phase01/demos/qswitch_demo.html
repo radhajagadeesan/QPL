@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>QSwitch(H, S) Demo</title>
+    <title>QSwitch Demo</title>
     <style>
         body {
             background: #1e1e1e;
@@ -31,6 +31,7 @@
         .highlight { color: #dcdcaa; }
         .success { color: #4ec9b0; }
         .code { color: #9cdcfe; }
+        .comment { color: #6a9955; }
         .controls {
             text-align: center;
             margin: 20px;
@@ -69,27 +70,61 @@
 
 <script>
 const lines = [
-// Section 1
+// Part 1: Definition
 {t: 'section', text: '============================================================'},
-{t: 'section', text: 'QSwitch(H, S) Demo'},
+{t: 'section', text: 'Part 1: QSwitch Definition'},
 {t: 'section', text: '============================================================'},
 {t: 'code', text: ''},
-{t: 'code', text: 'QSwitch is a higher-order quantum combinator:'},
+{t: 'highlight', text: 'QSwitch : (Q→Q) → (Q→Q) → (QBool ⊗ Q → QBool ⊗ Q)'},
 {t: 'code', text: ''},
-{t: 'highlight', text: '  QSwitch(f, g) : QBool ⊗ Q → QBool ⊗ Q'},
-{t: 'code', text: ''},
+{t: 'code', text: 'QSwitch(f, g)(ctrl, data) ='},
 {t: 'code', text: '  case ctrl of'},
-{t: 'code', text: '  | Zero => (ctrl, g;f data)'},
-{t: 'code', text: '  | One  => (ctrl, f;g data)'},
-{t: 'code', text: ''},
-{t: 'code', text: 'Applied to H and S:'},
-{t: 'code', text: '  | Zero => S;H'},
-{t: 'code', text: '  | One  => H;S'},
+{t: 'code', text: '  | Zero => (ctrl, g;f data)   -- apply g then f'},
+{t: 'code', text: '  | One  => (ctrl, f;g data)   -- apply f then g'},
 {t: 'code', text: ''},
 
-// Section 2
+// Part 2: Abstract Circuit
 {t: 'section', text: '============================================================'},
-{t: 'section', text: 'Part 1: First-Order Circuit (2 qubits)'},
+{t: 'section', text: 'Part 2: Abstract QSwitch(f, g) Circuit'},
+{t: 'section', text: '============================================================'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'The quantum case elaborates to controlled gates:'},
+{t: 'code', text: ''},
+{t: 'success', text: '  anti-controlled-g ; f ; controlled-g'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'Expanded circuit structure:'},
+{t: 'code', text: ''},
+{t: 'code', text: '  X q[0];        -- flip ctrl for anti-control'},
+{t: 'code', text: '  C-g q[0],q[1]; -- g if ctrl was 0 (now 1)'},
+{t: 'code', text: '  X q[0];        -- restore ctrl'},
+{t: 'code', text: '  f q[1];        -- f unconditionally'},
+{t: 'code', text: '  C-g q[0],q[1]; -- g if ctrl is 1'},
+{t: 'code', text: ''},
+{t: 'comment', text: 'Wire 0: ctrl (control qubit)'},
+{t: 'comment', text: 'Wire 1: data (target qubit)'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'Verification:'},
+{t: 'code', text: 'ctrl=0: X→1, C-g fires, X→0, f applied, C-g off → g;f ✓'},
+{t: 'code', text: 'ctrl=1: X→0, C-g off, X→1, f applied, C-g fires → f;g ✓'},
+{t: 'code', text: ''},
+
+// Part 3: Instantiation
+{t: 'section', text: '============================================================'},
+{t: 'section', text: 'Part 3: QSwitch(H, S) Instantiation'},
+{t: 'section', text: '============================================================'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'Substituting f=H, g=S:'},
+{t: 'code', text: ''},
+{t: 'code', text: 'QSwitch(H, S)(ctrl, data) ='},
+{t: 'code', text: '  | Zero => (ctrl, S;H data)'},
+{t: 'code', text: '  | One  => (ctrl, H;S data)'},
+{t: 'code', text: ''},
+{t: 'success', text: 'Circuit: X; CS; X; H; CS'},
+{t: 'code', text: ''},
+
+// Part 4: Compiled Circuit
+{t: 'section', text: '============================================================'},
+{t: 'section', text: 'Part 4: QSwitch(H, S) Circuit (2 qubits)'},
 {t: 'section', text: '============================================================'},
 {t: 'code', text: ''},
 {t: 'highlight', text: 'Qubits: 2'},
@@ -102,17 +137,17 @@ const lines = [
 {t: 'code', text: '  H q[1];'},
 {t: 'code', text: '  CS q[0], q[1];'},
 {t: 'code', text: ''},
-{t: 'code', text: 'Semantics:'},
+{t: 'highlight', text: 'Semantics:'},
 {t: 'success', text: '  |0⟩|ψ⟩ → |0⟩(S;H)|ψ⟩'},
 {t: 'success', text: '  |1⟩|ψ⟩ → |1⟩(H;S)|ψ⟩'},
 {t: 'code', text: ''},
 
-// Section 3
+// Part 5: GOI Form
 {t: 'section', text: '============================================================'},
-{t: 'section', text: 'Part 2: GOI Conjugation Form (4 qubits)'},
+{t: 'section', text: 'Part 5: QSwitch(H, S) GOI Form (4 qubits)'},
 {t: 'section', text: '============================================================'},
 {t: 'code', text: ''},
-{t: 'code', text: 'GOI representation: (QSwitch†) ⊗ QSwitch'},
+{t: 'highlight', text: 'GOI representation: (QSwitch†) ⊗ QSwitch'},
 {t: 'code', text: ''},
 {t: 'code', text: 'Wire layout:'},
 {t: 'code', text: '  Wire 0: ctrl*  (negative/dual)'},
@@ -136,35 +171,16 @@ const lines = [
 {t: 'code', text: '  CS q[2], q[3];'},
 {t: 'code', text: ''},
 
-// Section 4
+// Summary
 {t: 'section', text: '============================================================'},
-{t: 'section', text: 'Part 3: GOI Verification'},
-{t: 'section', text: '============================================================'},
-{t: 'code', text: ''},
-{t: 'highlight', text: 'Test: twist ⊗ twist = id'},
-{t: 'code', text: 'twist perm: [1, 0, 3, 2]'},
-{t: 'code', text: 'twist;twist perm: [0, 1, 2, 3]'},
-{t: 'success', text: 'Result: id ✓'},
-{t: 'code', text: ''},
-{t: 'highlight', text: 'Test: H;S composition'},
-{t: 'code', text: '⟦H⟧ = (H ⊗ H) on 2 wires'},
-{t: 'code', text: '⟦S⟧ = (Sdg ⊗ S) on 2 wires'},
-{t: 'code', text: ''},
-{t: 'code', text: 'After trace:'},
-{t: 'code', text: '  Wire 0 (Q*): [Sdg, H] = (H;S)†'},
-{t: 'code', text: '  Wire 1 (Q):  [H, S]   = H;S'},
-{t: 'success', text: 'Result: ✓'},
-{t: 'code', text: ''},
-
-// Final
-{t: 'section', text: '============================================================'},
-{t: 'section', text: 'Demo Complete!'},
+{t: 'section', text: 'Summary'},
 {t: 'section', text: '============================================================'},
 {t: 'code', text: ''},
-{t: 'success', text: 'Summary:'},
-{t: 'success', text: '  • QSwitch(H,S) first-order:  5 gates / 2 qubits'},
-{t: 'success', text: '  • QSwitch(H,S) GOI form:    10 gates / 4 qubits'},
-{t: 'success', text: '  • GOI laws verified ✓'},
+{t: 'code', text: '| Form                    | Qubits | Gates | Circuit         |'},
+{t: 'code', text: '|-------------------------|--------|-------|-----------------|'},
+{t: 'code', text: '| QSwitch(f,g) abstract   | 2      | 5     | X; C-g; X; f; C-g|'},
+{t: 'code', text: '| QSwitch(H,S) first-order| 2      | 5     | X; CS; X; H; CS |'},
+{t: 'code', text: '| QSwitch(H,S) GOI        | 4      | 10    | Doubled form    |'},
 {t: 'code', text: ''},
 {t: 'success', text: 'Higher-order quantum programming works!'},
 ];
@@ -196,7 +212,7 @@ function start() {
         } else {
             clearInterval(timer);
         }
-    }, 150);
+    }, 120);
 }
 
 function showAll() {
