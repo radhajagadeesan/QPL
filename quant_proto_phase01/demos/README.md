@@ -1,16 +1,43 @@
 # QSwitch Demos
 
-Four ways to experience the QSwitch higher-order quantum programming demo:
+Demonstrations of QSwitch, a higher-order quantum programming combinator.
+
+## Quick Start
+
+| Format | File | Requirements |
+|--------|------|--------------|
+| Static output | `qswitch_demo_output.md` | None (just read) |
+| HTML animation | `qswitch_demo.html` | Any browser |
+| Python script | `qswitch_demo.py` | Python + pytket |
+| Video script | `qswitch_demo_video.py` | Python + pytket |
+| Detailed walkthrough | `quantum_switch_demo.py` | Python + pytket |
+
+---
 
 ## 1. Static Output (`qswitch_demo_output.md`)
 
 For those who just want to see the results without running code.
 
-**View:** Open `qswitch_demo_output.md` in any markdown viewer.
+**View:** Open in any markdown viewer or text editor.
 
-## 2. Runnable Script (`qswitch_demo.py`)
+---
 
-For those with the infrastructure installed (Python + pytket).
+## 2. HTML Animation (`qswitch_demo.html`)
+
+Interactive browser-based demo with play/pause controls.
+
+**View:** Open in any web browser (works offline).
+
+Controls:
+- **▶ Play Demo** — animated line-by-line output
+- **⏩ Show All** — show everything immediately
+- **↺ Reset** — start over
+
+---
+
+## 3. Runnable Script (`qswitch_demo.py`)
+
+For those with the infrastructure installed.
 
 **Requirements:**
 ```bash
@@ -23,51 +50,54 @@ cd quant_proto_phase01
 PYTHONPATH=src python demos/qswitch_demo.py
 ```
 
-## 3. HTML Animation (`qswitch_demo.html`)
-
-Interactive browser-based demo with play/pause controls.
-
-**View:** Open `qswitch_demo.html` in any web browser.
-
-- Click **▶ Play Demo** to watch the animated output
-- Click **⏩ Show All** to see everything at once
-- Click **↺ Reset** to start over
-
-No installation required - works offline in any browser.
+---
 
 ## 4. Video Recording Script (`qswitch_demo_video.py`)
 
-For creating a video demo or watching with visual timing.
+For creating video demos with visual timing.
 
-**Option A: Direct run (slow, visual)**
+**Direct run:**
 ```bash
 cd quant_proto_phase01
 PYTHONPATH=src python demos/qswitch_demo_video.py
 ```
 
-**Option B: Record with asciinema**
+**With asciinema:**
 ```bash
-# Install asciinema: pip install asciinema
+pip install asciinema
 cd quant_proto_phase01
 asciinema rec -c "PYTHONPATH=src python demos/qswitch_demo_video.py" qswitch_demo.cast
-
-# Play back:
 asciinema play qswitch_demo.cast
-
-# Upload to share:
-asciinema upload qswitch_demo.cast
 ```
 
-**Option C: Screen recording**
+---
 
-Use any screen recording tool (OBS, QuickTime, etc.) while running the video script.
+## 5. Detailed Walkthrough (`quantum_switch_demo.py`)
+
+Educational demo showing the full pipeline from surface syntax to circuit.
+
+**Run:**
+```bash
+cd quant_proto_phase01
+PYTHONPATH=src python demos/quantum_switch_demo.py
+```
 
 ---
 
 ## What the Demo Shows
 
-1. **QSwitch Definition** - Higher-order quantum combinator
-2. **QSwitch(H, S)** - Instantiation with Hadamard and S gates
-3. **First-Order Circuit** - 5 gates on 2 qubits
-4. **GOI Conjugation Form** - 10 gates on 4 qubits (doubled up)
-5. **GOI Verification** - twist;twist=id, H;S composition
+1. **Part 1: QSwitch Definition** — Higher-order type signature
+2. **Part 2: Abstract Circuit** — `anti-controlled-g ; f ; controlled-g`
+3. **Part 3: Instantiation** — QSwitch(H, S) substitution
+4. **Part 4: Compiled Circuit** — 5 gates on 2 qubits
+5. **Part 5: GOI Form** — 10 gates on 4 qubits (doubled conjugation)
+
+**Key insight:** QSwitch elaborates to controlled gates:
+```
+X[0]; C-g[0,1]; X[0]; f[1]; C-g[0,1]
+```
+
+For QSwitch(H, S):
+```
+X[0]; CS[0,1]; X[0]; H[1]; CS[0,1]
+```
