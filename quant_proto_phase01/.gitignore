@@ -52,3 +52,6 @@ docs/internal/
 
 # NSF documentation (stripped version/completion language)
 NSFDOCS/
+
+# Package zip
+granthi_package.zip
