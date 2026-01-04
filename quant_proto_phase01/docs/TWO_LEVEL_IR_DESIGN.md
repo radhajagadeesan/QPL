@@ -21,8 +21,8 @@ Source AST
     ▼
 ┌─────────────────────────────────────────────────────┐
 │  IR1: Flat IR                                       │
-│  • Wire layouts (tensor, tagged sums)               │
-│  • Structural permutations + tag management         │
+│  • Wire layouts (tensor, one-hot tagged sums)       │
+│  • Structural permutations (pure wire reordering)   │
 │  • Gate atoms (opaque unitaries)                    │
 │  • Deterministic command stream                     │
 │  └─── No feedback, always executable ───┘           │
@@ -60,54 +60,211 @@ IR1 is the *workhorse IR* of the compiler. It represents quantum programs as **f
 
 **Location:** `src/lang/types.py`
 
-Types determine **wire layouts**:
+Types determine **wire layouts**. We use **one-hot leaf-tag encoding** for sums.
 
-**Tensor (`⊗`)**
+---
+
+##### Tensor (`⊗`) — Simple Concatenation
+
 ```
 A ⊗ B  ≡  [ A_wires | B_wires ]
 width(A ⊗ B) = width(A) + width(B)
 ```
 
-**Sum (`⊕`) — Tagged Representation**
+**Example: Q ⊗ Q**
 ```
-A ⊕ B  ≡  [ tag | A_wires | B_wires ]
-width(A ⊕ B) = 1 + width(A) + width(B)
+Type:   Q ⊗ Q
+Width:  2
+Layout: [ q₀ | q₁ ]
+        ─────────
+         0    1
 ```
 
-The tag wire is an explicit qubit that encodes branch choice. This representation enables distributivity without wire duplication or classical control.
+**Example: (Q ⊗ Q) ⊗ Q**
+```
+Type:   (Q ⊗ Q) ⊗ Q
+Width:  3
+Layout: [ q₀ | q₁ | q₂ ]
+        ────────────────
+         0    1    2
+```
 
 ---
 
-#### 2. Structural Layer
+##### Sum (`+`) — One-Hot Leaf Tags
+
+```
+A + B  ≡  [ tag_A | tag_B | A_wires | B_wires ]
+width(A + B) = 2 + width(A) + width(B)
+```
+
+**Invariant:** Exactly one tag wire is |1⟩, the rest are |0⟩.
+
+**Example: Q + Q**
+```
+Type:   Q + Q
+Width:  4
+Layout: [ t₁ | t₂ | q_L | q_R ]
+        ─────────────────────────
+         0    1     2     3
+
+State |Left(ψ)⟩:  t₁=|1⟩, t₂=|0⟩, q_L=|ψ⟩, q_R=|0⟩
+State |Right(φ)⟩: t₁=|0⟩, t₂=|1⟩, q_L=|0⟩, q_R=|φ⟩
+```
+
+**Example: (Q + Q) + Q (nested sum flattens)**
+```
+Type:   (Q + Q) + Q
+Width:  6  (3 leaf tags + 3 payloads)
+Layout: [ t₁ | t₂ | t₃ | q₁ | q₂ | q₃ ]
+        ─────────────────────────────────
+         0    1    2    3    4    5
+
+This is an n-ary sum with 3 summands, using one-hot encoding.
+```
+
+---
+
+##### Mixed: A ⊗ (B + C)
+
+```
+A ⊗ (B + C)  ≡  [ A_wires | tag_B | tag_C | B_wires | C_wires ]
+width = width(A) + 2 + width(B) + width(C)
+```
+
+**Example: Q ⊗ (Q + Q)**
+```
+Type:   Q ⊗ (Q + Q)
+Width:  5
+Layout: [ q_A | t₁ | t₂ | q_B | q_C ]
+        ─────────────────────────────
+          0    1    2    3     4
+
+The A component occupies wire 0.
+The sum (Q + Q) occupies wires 1-4 (2 tags + 2 payloads).
+```
+
+**Example: (Q + Q) ⊗ Q**
+```
+Type:   (Q + Q) ⊗ Q
+Width:  5
+Layout: [ t₁ | t₂ | q_L | q_R | q_C ]
+        ─────────────────────────────
+         0    1    2     3     4
+
+The sum (Q + Q) occupies wires 0-3.
+The C component occupies wire 4.
+```
+
+---
+
+#### 2. Structural Layer — Pure Permutations
 
 **Location:** `src/core/perm.py`
 
-Structural operations are **layout isomorphisms**. They involve:
+With one-hot encoding, **all structural operations are pure wire permutations** (no gates needed).
 
-- **Wire permutations** — reordering of physical wires (tensor twists, associators)
-- **Tag flips** — X gates on tag wires (sum twists)
-
-The `TaggedPerm` dataclass captures both:
+A `WirePerm` is a bijection on wire indices:
 ```python
 @dataclass
-class TaggedPerm:
-    perm: WirePerm           # Wire reordering
-    tag_flips: FrozenSet[int]  # Positions needing X gates
+class WirePerm:
+    new_to_old: List[int]  # new_to_old[new_idx] = old_idx
 ```
 
-**Structural Operations:**
+---
 
-| Term | Permutation | Tag Flips |
-|------|-------------|-----------|
-| `TwistTen(A,B)` | Swaps A and B wire blocks | None |
-| `TwistPlus(A,B)` | Swaps A and B wire blocks | X on tag wire |
-| `AssocTenL/R` | Reassociates wire blocks | None |
-| `AssocPlusL/R` | Reassociates wire blocks + tags | (TODO: tag recoding) |
-| `DistL` | Identity | None |
-| `DistR` | Moves tag to front | None |
+##### TwistTen: A ⊗ B → B ⊗ A
 
-**Invariant:**
-> Structural operations never perform nontrivial unitary evolution on payload (non-tag) wires.
+Swaps the wire blocks for A and B.
+
+**Example: TwistTen(Q, Q)**
+```
+Input:  [ q₀ | q₁ ]       Output: [ q₁ | q₀ ]
+         0    1                    0    1
+
+Permutation: [1, 0]
+             new_to_old[0] = 1  (new wire 0 ← old wire 1)
+             new_to_old[1] = 0  (new wire 1 ← old wire 0)
+```
+
+---
+
+##### TwistPlus: A + B → B + A
+
+Swaps both the tag wires AND the payload blocks.
+
+**Example: TwistPlus(Q, Q)**
+```
+Input:  [ t₁ | t₂ | q_L | q_R ]    Output: [ t₂ | t₁ | q_R | q_L ]
+          0    1    2     3                  0    1    2     3
+
+Permutation: [1, 0, 3, 2]
+             Swaps tags (0↔1) and payloads (2↔3)
+```
+
+This is **involutive**: applying it twice gives identity.
+
+---
+
+##### DistL: (A + B) ⊗ C → (A ⊗ C) + (B ⊗ C)
+
+Tags are already at the front — this is **identity on wires**.
+
+**Example: DistL(Q, Q, Q)**
+```
+Input type:  (Q + Q) ⊗ Q
+Input:       [ t₁ | t₂ | q_L | q_R | q_C ]
+               0    1    2     3     4
+
+Output type: (Q ⊗ Q) + (Q ⊗ Q)
+Output:      [ t₁ | t₂ | q_L | q_R | q_C ]
+               0    1    2     3     4
+
+Permutation: [0, 1, 2, 3, 4]  (identity)
+```
+
+The wire layout is already correct! The type changes but the physical wires don't move.
+
+---
+
+##### DistR: A ⊗ (B + C) → (A ⊗ B) + (A ⊗ C)
+
+Moves the tag wires from the middle to the front.
+
+**Example: DistR(Q, Q, Q)**
+```
+Input type:  Q ⊗ (Q + Q)
+Input:       [ q_A | t₁ | t₂ | q_B | q_C ]
+               0     1    2    3     4
+
+Output type: (Q ⊗ Q) + (Q ⊗ Q)
+Output:      [ t₁ | t₂ | q_A | q_B | q_C ]
+               0    1    2     3     4
+
+Permutation: [1, 2, 0, 3, 4]
+             new wire 0 ← old wire 1 (first tag)
+             new wire 1 ← old wire 2 (second tag)
+             new wire 2 ← old wire 0 (A payload)
+             new wires 3,4 stay in place
+```
+
+The tags move from positions [1,2] to positions [0,1].
+
+---
+
+##### Structural Operations Summary
+
+| Term | Type | Permutation | Gates |
+|------|------|-------------|-------|
+| `TwistTen(Q,Q)` | Q⊗Q → Q⊗Q | [1, 0] | 0 |
+| `TwistPlus(Q,Q)` | Q+Q → Q+Q | [1, 0, 3, 2] | 0 |
+| `AssocTenL(Q,Q,Q)` | (Q⊗Q)⊗Q → Q⊗(Q⊗Q) | [0, 1, 2] | 0 |
+| `AssocPlusL(Q,Q,Q)` | (Q+Q)+Q → Q+(Q+Q) | reorders tags+payloads | 0 |
+| `DistL(Q,Q,Q)` | (Q+Q)⊗Q → (Q⊗Q)+(Q⊗Q) | [0, 1, 2, 3, 4] | 0 |
+| `DistR(Q,Q,Q)` | Q⊗(Q+Q) → (Q⊗Q)+(Q⊗Q) | [1, 2, 0, 3, 4] | 0 |
+
+**Key Invariant:**
+> With one-hot encoding, structural operations are **always** pure permutations. No X gates, no tag recoding, no gates on any wires.
 
 ---
 
@@ -117,8 +274,9 @@ class TaggedPerm:
 
 Gates are opaque, unitary primitives:
 - Single-qubit: `H`, `S`, `Sdg`, `T`, `Tdg`, `X`, `Y`, `Z`, `Rx`, `Ry`, `Rz`, `Phase`
-- Two-qubit: `CX`, `CZ`, `CRz`
+- Two-qubit: `CX`, `CZ`, `CH`, `CS`, `CSdg`, `CRz`
 - Three-qubit: `CCX`
+- Exponentials: `ExpSwap` (exp(iθ·SWAP))
 
 Gates:
 - Act only on payload wires
@@ -165,7 +323,8 @@ IR1 answers: **"What does this program do *without* feedback?"**
 | Property | Value |
 |----------|-------|
 | Structure | Flat, acyclic |
-| Layout | Tagged sums, tensor products |
+| Layout | One-hot tagged sums, tensor products |
+| Structural | Pure wire permutations (no gates) |
 | Output | pytket Circuit + WirePerm |
 | Feedback | None |
 
@@ -277,7 +436,7 @@ IR2 answers: **"How does this program behave *with* feedback?"**
 
 In hindsight, the clean story would be:
 
-1. Fix **tagged sums and layout invariants** from day one.
+1. Fix **one-hot tagged sums and layout invariants** from day one.
 2. Build IR1 fully on top of that representation.
 3. Add IR2 as a semantic layer for feedback.
 4. Refine extraction completeness.
@@ -298,10 +457,15 @@ In hindsight, the clean story would be:
 
 **Phase 4C: IR1 Refinement**
 - Realized sums require **tagged layouts**
-- Added `TaggedPerm` for permutation + tag flips
+- Initially used binary tags (1 tag wire per Plus node)
 - Implemented distributivity (`DistL`, `DistR`) structurally
-- Updated invariants: structural ≠ permutation-only (tag flips allowed)
-- Re-validated IR2 extraction logic
+
+**Phase 5: One-Hot Encoding**
+- Switched to **one-hot leaf-tag encoding**
+- All structural operations become pure permutations
+- No more X gates for TwistPlus
+- No more tag recoding for AssocPlus
+- Added `ExpSwap` and `ExpInvolution` for exponentials of involutions
 
 ---
 
@@ -317,7 +481,7 @@ We get a clean conceptual model:
 |-------|------|
 | IR1 | Canonical flat target — always executable |
 | IR2 | Semantic overlay for feedback — explanatory |
-| Tagged sums | Belong in IR1 from the start |
+| One-hot sums | Belong in IR1 from the start |
 | GOI | Never computes; only explains routing |
 
 ---
@@ -330,15 +494,15 @@ We get a clean conceptual model:
 | 2 | Complete | `TenTerm` parallel composition |
 | 3 | Complete | GOI feedback, extraction |
 | 4C | Complete | Tagged layout, distributivity |
-| 5 | Complete | Higher-order compilation via GOI |
+| 5 | Complete | One-hot encoding, higher-order, exp involutions |
 
-**Test coverage:** 1145+ tests passing
+**Test coverage:** 1169+ tests passing
 
 ---
 
 ## Final Takeaway
 
-> **IR1:** Flat, layout-driven, executable.
+> **IR1:** Flat, layout-driven, executable. Structural = pure permutation.
 > **IR2:** Routed, cyclic, explanatory.
 > **Extraction:** A sound bridge from IR2 back to IR1.
 

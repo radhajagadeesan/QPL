@@ -12,15 +12,29 @@ For compiler API details, see `COMPILER_API_GUIDE.md`.
 
 | Type | Description |
 |------|-------------|
-| `Q` | Qubit |
-| `I` | Unit (no wires) |
+| `Q` | Qubit (1 wire) |
+| `I` | Unit (0 wires) |
 
 ### Type Constructors
 
-| Constructor | Meaning |
-|-------------|---------|
-| `A ⊗ B` | Tensor product (parallel wires) |
-| `A + B` | Sum type (tagged union) |
+| Constructor | Meaning | Wire Width |
+|-------------|---------|------------|
+| `A ⊗ B` | Tensor product (parallel wires) | width(A) + width(B) |
+| `A + B` | Sum type (tagged union) | 2 + width(A) + width(B) |
+
+### Sum Type Encoding (One-Hot Leaf Tags)
+
+Sum types use **one-hot leaf-tag encoding**. An n-ary sum `A₁ + A₂ + ... + Aₙ` has:
+- **N tag wires** (one-hot: exactly one is |1⟩)
+- **Payload wires** for each summand
+
+Wire layout: `[tag₁ | tag₂ | ... | tagₙ | A₁ | A₂ | ... | Aₙ]`
+
+Examples:
+- `Q + Q` = 4 wires: `[t₁, t₂, q₁, q₂]`
+- `(Q + Q) + Q` = 6 wires: `[t₁, t₂, t₃, q₁, q₂, q₃]` (nested sums flatten)
+
+This encoding makes **all structural operations on sums compile to pure wire permutations** (no gates needed).
 
 ### Syntax
 
@@ -55,25 +69,82 @@ datatype Maybe['a] = None of I | Some of 'a
 
 ### Gates
 
+#### Single-Qubit Gates
+
 | Gate | Description |
 |------|-------------|
 | `H[i]` | Hadamard on wire i |
-| `S[i]` | S gate (π/2 phase) on wire i |
 | `X[i]`, `Y[i]`, `Z[i]` | Pauli gates |
-| `T[i]` | T gate (π/4 phase) |
+| `S[i]`, `Sdg[i]` | S gate and S-dagger (±π/2 phase) |
+| `T[i]`, `Tdg[i]` | T gate and T-dagger (±π/4 phase) |
+
+#### Parameterized Gates
+
+| Gate | Description |
+|------|-------------|
+| `Rz[θ,i]` | Z rotation by θ radians |
+| `Rx[θ,i]` | X rotation by θ radians |
+| `Ry[θ,i]` | Y rotation by θ radians |
+| `Phase[φ,i]` | Global phase e^{iφ} |
+
+#### Two-Qubit Gates
+
+| Gate | Description |
+|------|-------------|
 | `CX[i,j]` | CNOT (control i, target j) |
-| `CS[i,j]` | Controlled-S |
-| `Rz[θ,i]` | Z rotation by θ |
+| `CZ[i,j]` | Controlled-Z |
+| `CH[i,j]` | Controlled-Hadamard |
+| `CS[i,j]`, `CSdg[i,j]` | Controlled-S and S-dagger |
+| `CRz[θ,i,j]` | Controlled-Rz |
+
+#### Three-Qubit Gates
+
+| Gate | Description |
+|------|-------------|
+| `CCX[i,j,k]` | Toffoli (controls i,j, target k) |
 
 ### Structural Primitives
+
+All structural primitives compile to **pure wire permutations** (no gates).
+
+#### Tensor Isomorphisms
 
 | Primitive | Type |
 |-----------|------|
 | `id[A]` | A → A |
 | `twist⊗[A,B]` | A ⊗ B → B ⊗ A |
-| `twist+[A,B]` | A + B → B + A |
 | `assoc⊗L[A,B,C]` | (A ⊗ B) ⊗ C → A ⊗ (B ⊗ C) |
 | `assoc⊗R[A,B,C]` | A ⊗ (B ⊗ C) → (A ⊗ B) ⊗ C |
+
+#### Sum Isomorphisms
+
+| Primitive | Type |
+|-----------|------|
+| `twist+[A,B]` | A + B → B + A |
+| `assoc+L[A,B,C]` | (A + B) + C → A + (B + C) |
+| `assoc+R[A,B,C]` | A + (B + C) → (A + B) + C |
+
+#### Distributivity
+
+| Primitive | Type |
+|-----------|------|
+| `distL[A,B,C]` | (A + B) ⊗ C → (A ⊗ C) + (B ⊗ C) |
+| `distR[A,B,C]` | A ⊗ (B + C) → (A ⊗ B) + (A ⊗ C) |
+
+### Exponentials of Involutions
+
+For a structural involution P (where P² = id), you can compute:
+
+```
+exp(iθP) = cos(θ)·id + i·sin(θ)·P
+```
+
+| Primitive | Type | Description |
+|-----------|------|-------------|
+| `exp_i[θ,P]` | A → A | Exponential of involution P |
+| `ExpSwap[θ,i,j]` | Q⊗Q → Q⊗Q | Atomic exp(iθ·SWAP) on wires i,j |
+
+The compiler verifies P is involutive, decomposes it into disjoint transpositions, and emits `ExpSwap` gates for each.
 
 ### Binding Forms
 
@@ -103,6 +174,28 @@ def bell : Q ⊗ Q → Q ⊗ Q =
 ```ocaml
 def ghz : Q ⊗ Q ⊗ Q → Q ⊗ Q ⊗ Q =
   H[0] ; CX[0, 1] ; CX[0, 2]
+```
+
+### Swap (Structural Involution)
+
+```ocaml
+(* Bool swap: F ↔ T *)
+datatype Bool['a, 'b] = F of 'a | T of 'b
+
+def swap : Bool['a,'b] → Bool['b,'a] =
+  λx. case x of
+    | F(a) => T(a)
+    | T(b) => F(b)
+
+(* This elaborates to twist+[A,B] - a pure permutation *)
+```
+
+### Exponential of Swap
+
+```ocaml
+(* exp(iπ/4 · swap) creates superposition of id and swap *)
+def exp_swap : Bool[Q,Q] → Bool[Q,Q] =
+  exp_i[π/4, swap]
 ```
 
 ### Conditional Composition (QSwitch)
@@ -146,6 +239,29 @@ let () =
   | Bridge.CompileError msg ->
     Printf.printf "Error: %s\n" msg
 ```
+
+---
+
+## Key Properties
+
+### Structural Operations are Free
+
+With one-hot leaf-tag encoding, **all structural operations compile to pure wire permutations**:
+- `twist+`, `assoc+L`, `assoc+R` - no gates
+- `distL`, `distR` - no gates
+- `twist⊗`, `assoc⊗L`, `assoc⊗R` - no gates
+
+This means structural rewiring has zero quantum cost.
+
+### Involution Certification
+
+When using `exp_i[θ,P]`, the compiler:
+1. Compiles P to a wire permutation π
+2. Verifies π² = identity (involutive check)
+3. Decomposes π into disjoint swaps
+4. Emits certified `ExpSwap` gates
+
+If P is not involutive, compilation fails with an error.
 
 ---
 

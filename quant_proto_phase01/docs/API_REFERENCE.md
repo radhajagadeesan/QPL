@@ -11,7 +11,15 @@ Complete reference for types, terms, and compilation functions.
 | `Q()` | Single qubit | 1 |
 | `I()` | Unit type | 0 |
 | `Ten(a, b)` | Tensor product a ⊗ b | width(a) + width(b) |
-| `Plus(a, b)` | Sum type a + b | 1 + width(a) + width(b) |
+| `Plus(a, b)` | Sum type a + b (one-hot) | 2 + width(a) + width(b) |
+
+### One-Hot Encoding
+
+Sum types use one-hot leaf-tag encoding:
+- Binary `Plus(A, B)` has 2 tag wires + payloads
+- Nested sums flatten: `Plus(Plus(Q,Q), Q)` = 3 tags + 3 data = 6 wires
+- Wire layout: `[t₁ | t₂ | ... | tₙ | A₁ | A₂ | ... | Aₙ]`
+- Invariant: exactly one tag wire is |1⟩
 
 **Functions:**
 ```python
@@ -33,6 +41,8 @@ width(ty: Ty) -> int       # Number of physical wires
 | `TenTerm(f, g)` | `TenTerm(f, g)` | Parallel composition f ⊗ g |
 
 ### Structural Isomorphisms
+
+All compile to **pure wire permutations** (no gates).
 
 | Term | Type Signature |
 |------|----------------|
@@ -80,12 +90,31 @@ All gates take wire indices and an ambient type `ty_total`.
 | `CH(i, j, ty)` | Controlled-Hadamard | |
 | `CS(i, j, ty)` | Controlled-S | |
 | `CSdg(i, j, ty)` | Controlled-S-dagger | |
+| `CRz(theta, i, j, ty)` | Controlled-Rz by θ | |
 
 **Three-qubit gates:**
 
 | Gate | Signature | Description |
 |------|-----------|-------------|
 | `CCX(i, j, k, ty)` | Toffoli (controls i,j, target k) | |
+
+### Exponentials of Involutions
+
+| Term | Signature | Description |
+|------|-----------|-------------|
+| `ExpSwap(theta, i, j, ty)` | exp(iθ · SWAP) on wires i, j | Atomic building block |
+| `ExpInvolution(theta, body, ty)` | exp(iθ · P) where P is involution | Compiled to ExpSwap atoms |
+
+**ExpSwap unitary:**
+```
+exp(iθ · SWAP) = cos(θ)·I + i·sin(θ)·SWAP
+```
+
+**ExpInvolution compilation:**
+1. Compile body P to WirePerm π
+2. Verify π² = identity (involutive)
+3. Decompose π into disjoint transpositions (a₁,b₁), (a₂,b₂), ...
+4. Emit `ExpSwap(θ, aₖ, bₖ)` for each transposition
 
 ### Higher-Order Terms
 
@@ -147,7 +176,7 @@ result = compile_higher_order(term, explain=False)
 ## Permutations (`src/core/perm.py`)
 
 ```python
-from core.perm import WirePerm, identity, compose, inverse
+from core.perm import WirePerm, identity, compose, inverse, is_involution, decompose_involution
 
 p = WirePerm([1, 0, 2])      # new_to_old mapping
 e = identity(n)              # Identity permutation
@@ -155,6 +184,26 @@ q = compose(p2, p1)          # Composition
 inv = inverse(p)             # Inverse
 
 old_idx = p.apply_new_to_old(new_idx)
+```
+
+### Involution Functions
+
+```python
+from core.perm import is_involution, decompose_involution
+
+# Check if permutation is involutive (p ∘ p = id)
+is_involution(p: WirePerm) -> bool
+
+# Decompose involution into disjoint transpositions
+# Requires: is_involution(p) == True
+decompose_involution(p: WirePerm) -> List[Tuple[int, int]]
+```
+
+**Example:**
+```python
+p = WirePerm([1, 0, 3, 2])   # Two swaps: (0,1) and (2,3)
+assert is_involution(p)
+swaps = decompose_involution(p)  # [(0, 1), (2, 3)]
 ```
 
 ---
@@ -217,15 +266,36 @@ for cmd in result.circuit.get_commands():
 
 ---
 
+## Example: Exponential of Involution
+
+```python
+from lang.types import Q, Plus
+from lang.terms import TwistPlus, ExpInvolution
+from compile.to_pytket import compile
+
+# TwistPlus(Q, Q) is involutive: swap ∘ swap = id
+ty = Plus(Q(), Q())
+twist = TwistPlus(Q(), Q())
+
+# exp(i * 0.5 * twist)
+term = ExpInvolution(theta=0.5, body=twist, ty_total=ty)
+result = compile(term)
+
+# Produces ExpSwap gates for each transposition in the permutation
+```
+
+---
+
 ## Invariants
 
-1. **Structural = permutation + tag flips only** — no gates on payload wires
+1. **Structural = pure permutation** — no gates, only wire reordering (one-hot encoding)
 2. **No SWAPs by default** — only with `materialize=True`
 3. **Gates are reindexed** — through `WirePerm.apply_new_to_old()`
 4. **Deterministic** — same AST → identical circuit
+5. **Involution certification** — ExpInvolution verifies π² = id at compile time
 
 ---
 
 ## Test Coverage
 
-1145+ tests across all phases.
+1169+ tests across all phases.
