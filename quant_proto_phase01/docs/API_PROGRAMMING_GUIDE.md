@@ -297,12 +297,19 @@ Feedback(k, body)            # Loop k wires back
 # result : A → B
 ```
 
+**Higher-Order (GOI Apply):**
+```python
+FunVar(name, dom, cod)       # Function variable x : A → B
+Lam(name, dom, cod, body)    # Lambda: λx:A→B. body
+Apply(f, arg)                # Application: f arg (via GOI)
+```
+
 ---
 
 ### 2.3 Compilation
 
 ```python
-from compile.to_pytket import compile, compile_goi
+from compile.to_pytket import compile, compile_goi, compile_higher_order
 
 # Standard compilation (Phases 0-2)
 result = compile(term, materialize=False)
@@ -315,6 +322,10 @@ if isinstance(result, GOIArtifact):
     print("Residual:", result.loops)
 else:
     print("Extracted:", result.circuit)
+
+# Higher-order via GOI (function composition)
+result = compile_higher_order(term, explain=True)
+# Produces GOI conjugation form: (f†) ⊗ f
 ```
 
 **Result types:**
@@ -468,3 +479,83 @@ from core.perm import WirePerm, identity, compose, inverse
 | Get perm mapping | `perm.new_to_old` |
 | Check for SWAPs | `any(c.op.type.name == "SWAP" for c in circ.get_commands())` |
 | Get type width | `width(ty)` |
+| Compile higher-order | `compile_higher_order(term)` |
+
+---
+
+## Part V — Higher-Order Compilation (GOI)
+
+### 5.1 GOI Representation
+
+In the Geometry of Interaction model:
+- A morphism `f : A → B` is represented as `End(A* ⊗ B)`
+- A unitary `U : A → A` becomes `(U† ⊗ U)` on `A* ⊗ A`
+
+```python
+from compile.goi import make_unitary_value, goi_seq, execute_trace
+
+# Create GOI representation of H : Q → Q
+h_goi = make_unitary_value('H', (0,), n_a=1, inverse_gate_name='H')
+# Result: (H ⊗ H) on 2 wires (H is self-adjoint)
+
+# Create GOI representation of S : Q → Q
+s_goi = make_unitary_value('S', (0,), n_a=1, inverse_gate_name='Sdg')
+# Result: (Sdg ⊗ S) on 2 wires
+```
+
+### 5.2 Composition via Feedback
+
+```python
+# Compose H ; S via GOI
+composed = goi_seq(h_goi, s_goi, n_shared=1)
+traced = execute_trace(composed)
+
+# Result: 4 gates on 2 wires
+# Wire 0: Sdg, H  (= (H;S)† = S†;H†)
+# Wire 1: H, S    (= H;S)
+```
+
+### 5.3 QSwitch Example
+
+```python
+from lang.terms import H, S, Seq, CS, X
+from lang.types import Q, Ten
+from compile.to_pytket import compile
+
+ty = Ten(Q(), Q())
+
+# QSwitch(H, S) : QBool ⊗ Q → QBool ⊗ Q
+qswitch_hs = Seq(
+    X(0, ty),       # anti-control
+    CS(0, 1, ty),   # S if ctrl=0
+    X(0, ty),       # restore
+    H(1, ty),       # H unconditional
+    CS(0, 1, ty),   # S if ctrl=1
+)
+
+result = compile(qswitch_hs)
+# 5 gates: X, CS, X, H, CS
+# Semantics:
+#   |0⟩|ψ⟩ → |0⟩(S;H)|ψ⟩
+#   |1⟩|ψ⟩ → |1⟩(H;S)|ψ⟩
+```
+
+---
+
+## Part VI — Demos
+
+Interactive demos in `demos/`:
+
+| File | Description |
+|------|-------------|
+| `qswitch_demo.py` | Runnable Python demo |
+| `qswitch_demo.html` | HTML animation (browser) |
+| `qswitch_demo_output.md` | Static output |
+
+```bash
+# Run demo
+PYTHONPATH=src python demos/qswitch_demo.py
+
+# View HTML animation
+open demos/qswitch_demo.html
+```

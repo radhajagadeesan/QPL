@@ -600,7 +600,73 @@ term = Seq(H(0), CX(0, 1), CX(0, 2))
 # |000⟩ → (|000⟩ + |111⟩)/√2
 ```
 
-### 7.3 Algorithmic Examples
+### 7.3 QSwitch: Higher-Order Quantum Control
+
+QSwitch is a higher-order combinator that switches composition order based on a quantum control bit:
+
+```ml
+(* Surface definition *)
+QSwitch(f, g) : QBool ⊗ Q → QBool ⊗ Q =
+  case ctrl of
+  | Zero => (ctrl, g;f data)   -- apply g then f
+  | One  => (ctrl, f;g data)   -- apply f then g
+```
+
+**QSwitch(H, S) instantiation:**
+```python
+from lang.terms import H, S, Seq, CS, X
+from lang.types import Q, Ten
+from compile.to_pytket import compile
+
+ty = Ten(Q(), Q())
+
+# QSwitch(H,S): anti-controlled-S ; H ; controlled-S
+qswitch_hs = Seq(
+    X(0, ty),       # anti-control setup
+    CS(0, 1, ty),   # S if ctrl was 0
+    X(0, ty),       # restore ctrl
+    H(1, ty),       # H unconditional
+    CS(0, 1, ty),   # S if ctrl is 1
+)
+
+result = compile(qswitch_hs)
+# Circuit: 5 gates on 2 qubits
+# Semantics:
+#   |0⟩|ψ⟩ → |0⟩(S;H)|ψ⟩
+#   |1⟩|ψ⟩ → |1⟩(H;S)|ψ⟩
+```
+
+**GOI Conjugation Form (doubled):**
+```
+QSwitch(H,S) in GOI form: 10 gates on 4 qubits
+  Wires 0,1: (QSwitch)† on negative side
+  Wires 2,3: QSwitch on positive side
+```
+
+### 7.4 Demos
+
+Interactive demos are available in the `demos/` directory:
+
+| File | Description |
+|------|-------------|
+| `qswitch_demo_output.md` | Static output (just view results) |
+| `qswitch_demo.py` | Runnable Python script |
+| `qswitch_demo.html` | HTML animation (open in browser) |
+| `qswitch_demo_video.py` | Script for video recording |
+
+**Run the demo:**
+```bash
+PYTHONPATH=src python demos/qswitch_demo.py
+```
+
+**View HTML animation:**
+```bash
+# Open in browser
+xdg-open demos/qswitch_demo.html  # Linux
+open demos/qswitch_demo.html       # macOS
+```
+
+### 7.5 Algorithmic Examples
 
 See `surface/examples/algorithmic_snippets.surf` for:
 - Deutsch-Jozsa algorithm
@@ -656,7 +722,43 @@ from compile.to_pytket import compile_goi
 result = compile_goi(term_with_feedback)
 ```
 
-### 9.2 Pipeline Architecture
+### 9.2 Higher-Order Compilation
+
+For higher-order terms with function composition via GOI:
+
+```python
+from lang.terms import H, S, Seq, Apply
+from compile.to_pytket import compile_higher_order
+
+# Compose H ; S via GOI infrastructure
+term = Seq(H(0, ty), S(0, ty))
+result = compile_higher_order(term, explain=True)
+
+# Result: 4 gates on 2 qubits (GOI conjugation form)
+# Wire 0 (Q*): Sdg, H  = (H;S)†
+# Wire 1 (Q):  H, S    = H;S
+```
+
+**GOI Representation:**
+- A morphism `f : A → B` is represented as `End(A* ⊗ B)`
+- A unitary `U : A → A` becomes `(U† ⊗ U)` on `A* ⊗ A` (conjugation form)
+- Composition uses `goi_seq` + `execute_trace` to collapse internal wires
+
+**Higher-Order Term Types:**
+```python
+from lang.terms import FunVar, Lam, Apply
+
+# Function variable (placeholder in lambda body)
+FunVar(name, dom, cod)  # x : A → B
+
+# Lambda abstraction
+Lam(name, dom, cod, body)  # λx:A→B. body
+
+# Application (compiled via GOI)
+Apply(f, arg)  # f arg
+```
+
+### 9.3 Pipeline Architecture
 
 ```
 Surface Program
@@ -671,7 +773,7 @@ Core IR (Id, Seq, TenTerm, gates, structural isos)
 Circuit with SWAPs
 ```
 
-### 9.3 Invariants
+### 9.4 Invariants
 
 The compiler maintains these invariants:
 
@@ -716,7 +818,7 @@ cd surface && dune test
 quant_proto_phase01/
 ├── src/
 │   ├── lang/           # Types and terms
-│   ├── compile/        # Compilation phases
+│   ├── compile/        # Compilation phases (incl. GOI)
 │   ├── core/           # Permutation algebra
 │   ├── backends/       # Circuit backends
 │   └── typing_/        # Type checking
@@ -724,6 +826,10 @@ quant_proto_phase01/
 │   ├── lib/            # OCaml surface language
 │   ├── test/           # Surface tests
 │   └── examples/       # Example programs
+├── demos/              # Interactive demos
+│   ├── qswitch_demo.py      # Runnable demo
+│   ├── qswitch_demo.html    # HTML animation
+│   └── README.md            # Demo instructions
 ├── tests/              # Python tests
 └── docs/               # Documentation
 ```
