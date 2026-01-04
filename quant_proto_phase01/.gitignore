@@ -49,3 +49,6 @@ RadhaMSG/
 
 # Internal developer docs (kept locally, not in repo)
 docs/internal/
+
+# NSF documentation (stripped version/completion language)
+NSFDOCS/
