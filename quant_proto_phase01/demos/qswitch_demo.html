@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>QSwitch(H, S) Demo</title>
+    <style>
+        body {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            padding: 20px;
+            line-height: 1.4;
+        }
+        .terminal {
+            background: #0d0d0d;
+            border-radius: 8px;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        .header {
+            color: #888;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #333;
+        }
+        .line { opacity: 0; white-space: pre; }
+        .line.visible { opacity: 1; transition: opacity 0.3s; }
+        .section { color: #4ec9b0; font-weight: bold; }
+        .highlight { color: #dcdcaa; }
+        .success { color: #4ec9b0; }
+        .code { color: #9cdcfe; }
+        .controls {
+            text-align: center;
+            margin: 20px;
+        }
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+        }
+        button:hover { background: #1177bb; }
+        .progress {
+            text-align: center;
+            color: #888;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <button onclick="start()">▶ Play Demo</button>
+        <button onclick="showAll()">⏩ Show All</button>
+        <button onclick="reset()">↺ Reset</button>
+    </div>
+
+    <div class="terminal">
+        <div class="header">QSwitch Demo - Higher-Order Quantum Programming</div>
+        <div id="output"></div>
+    </div>
+
+    <div class="progress" id="progress"></div>
+
+<script>
+const lines = [
+// Section 1
+{t: 'section', text: '============================================================'},
+{t: 'section', text: 'QSwitch(H, S) Demo'},
+{t: 'section', text: '============================================================'},
+{t: 'code', text: ''},
+{t: 'code', text: 'QSwitch is a higher-order quantum combinator:'},
+{t: 'code', text: ''},
+{t: 'highlight', text: '  QSwitch(f, g) : QBool ⊗ Q → QBool ⊗ Q'},
+{t: 'code', text: ''},
+{t: 'code', text: '  case ctrl of'},
+{t: 'code', text: '  | Zero => (ctrl, g;f data)'},
+{t: 'code', text: '  | One  => (ctrl, f;g data)'},
+{t: 'code', text: ''},
+{t: 'code', text: 'Applied to H and S:'},
+{t: 'code', text: '  | Zero => S;H'},
+{t: 'code', text: '  | One  => H;S'},
+{t: 'code', text: ''},
+
+// Section 2
+{t: 'section', text: '============================================================'},
+{t: 'section', text: 'Part 1: First-Order Circuit (2 qubits)'},
+{t: 'section', text: '============================================================'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'Qubits: 2'},
+{t: 'highlight', text: 'Gates:  5'},
+{t: 'code', text: ''},
+{t: 'code', text: 'Circuit:'},
+{t: 'code', text: '  X q[0];'},
+{t: 'code', text: '  CS q[0], q[1];'},
+{t: 'code', text: '  X q[0];'},
+{t: 'code', text: '  H q[1];'},
+{t: 'code', text: '  CS q[0], q[1];'},
+{t: 'code', text: ''},
+{t: 'code', text: 'Semantics:'},
+{t: 'success', text: '  |0⟩|ψ⟩ → |0⟩(S;H)|ψ⟩'},
+{t: 'success', text: '  |1⟩|ψ⟩ → |1⟩(H;S)|ψ⟩'},
+{t: 'code', text: ''},
+
+// Section 3
+{t: 'section', text: '============================================================'},
+{t: 'section', text: 'Part 2: GOI Conjugation Form (4 qubits)'},
+{t: 'section', text: '============================================================'},
+{t: 'code', text: ''},
+{t: 'code', text: 'GOI representation: (QSwitch†) ⊗ QSwitch'},
+{t: 'code', text: ''},
+{t: 'code', text: 'Wire layout:'},
+{t: 'code', text: '  Wire 0: ctrl*  (negative/dual)'},
+{t: 'code', text: '  Wire 1: data*  (negative/dual)'},
+{t: 'code', text: '  Wire 2: ctrl   (positive)'},
+{t: 'code', text: '  Wire 3: data   (positive)'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'Qubits: 4'},
+{t: 'highlight', text: 'Gates:  10'},
+{t: 'code', text: ''},
+{t: 'code', text: 'Circuit:'},
+{t: 'code', text: '  CSdg q[0], q[1];'},
+{t: 'code', text: '  X q[2];'},
+{t: 'code', text: '  X q[0];'},
+{t: 'code', text: '  H q[1];'},
+{t: 'code', text: '  CS q[2], q[3];'},
+{t: 'code', text: '  CSdg q[0], q[1];'},
+{t: 'code', text: '  X q[2];'},
+{t: 'code', text: '  H q[3];'},
+{t: 'code', text: '  X q[0];'},
+{t: 'code', text: '  CS q[2], q[3];'},
+{t: 'code', text: ''},
+
+// Section 4
+{t: 'section', text: '============================================================'},
+{t: 'section', text: 'Part 3: GOI Verification'},
+{t: 'section', text: '============================================================'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'Test: twist ⊗ twist = id'},
+{t: 'code', text: 'twist perm: [1, 0, 3, 2]'},
+{t: 'code', text: 'twist;twist perm: [0, 1, 2, 3]'},
+{t: 'success', text: 'Result: id ✓'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'Test: H;S composition'},
+{t: 'code', text: '⟦H⟧ = (H ⊗ H) on 2 wires'},
+{t: 'code', text: '⟦S⟧ = (Sdg ⊗ S) on 2 wires'},
+{t: 'code', text: ''},
+{t: 'code', text: 'After trace:'},
+{t: 'code', text: '  Wire 0 (Q*): [Sdg, H] = (H;S)†'},
+{t: 'code', text: '  Wire 1 (Q):  [H, S]   = H;S'},
+{t: 'success', text: 'Result: ✓'},
+{t: 'code', text: ''},
+
+// Final
+{t: 'section', text: '============================================================'},
+{t: 'section', text: 'Demo Complete!'},
+{t: 'section', text: '============================================================'},
+{t: 'code', text: ''},
+{t: 'success', text: 'Summary:'},
+{t: 'success', text: '  • QSwitch(H,S) first-order:  5 gates / 2 qubits'},
+{t: 'success', text: '  • QSwitch(H,S) GOI form:    10 gates / 4 qubits'},
+{t: 'success', text: '  • GOI laws verified ✓'},
+{t: 'code', text: ''},
+{t: 'success', text: 'Higher-order quantum programming works!'},
+];
+
+let currentLine = 0;
+let timer = null;
+
+function render() {
+    const output = document.getElementById('output');
+    output.innerHTML = '';
+    lines.forEach((line, i) => {
+        const div = document.createElement('div');
+        div.className = 'line ' + line.t + (i < currentLine ? ' visible' : '');
+        div.textContent = line.text;
+        output.appendChild(div);
+    });
+    document.getElementById('progress').textContent =
+        `Line ${currentLine} / ${lines.length}`;
+}
+
+function start() {
+    if (timer) clearInterval(timer);
+    currentLine = 0;
+    render();
+    timer = setInterval(() => {
+        if (currentLine < lines.length) {
+            currentLine++;
+            render();
+        } else {
+            clearInterval(timer);
+        }
+    }, 150);
+}
+
+function showAll() {
+    if (timer) clearInterval(timer);
+    currentLine = lines.length;
+    render();
+}
+
+function reset() {
+    if (timer) clearInterval(timer);
+    currentLine = 0;
+    render();
+}
+
+render();
+</script>
+</body>
+</html>
