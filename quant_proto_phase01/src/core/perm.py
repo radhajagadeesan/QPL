@@ -13,32 +13,32 @@ A WirePerm p of size n stores a mapping `p.new_to_old` such that:
 Composition:
   (q ∘ p).new_to_old[i] = p.new_to_old[ q.new_to_old[i] ].
 
-Tagged Sum Layout
------------------
-For A ⊕ B, the wire layout is:
-  [tag | A_wires | B_wires]
+One-Hot Leaf-Tag Sum Layout
+---------------------------
+For an n-ary sum A₁ ⊕ ... ⊕ Aₙ (represented as nested binary Plus),
+the wire layout uses one-hot encoding:
 
-where:
-  - tag is a single qubit indicating which branch is "active" (0=left, 1=right)
-  - A_wires and B_wires are the data wires for each branch
-  - width(A ⊕ B) = 1 + width(A) + width(B)
+  [t₁ | t₂ | ... | tₙ | A₁_wires | A₂_wires | ... | Aₙ_wires]
 
-Some sum operations (like TwistPlus) require flipping the tag bit in addition
-to permuting data wires. These are represented as TaggedPerm objects.
+Key invariant:
+  ALL structural operations on sums compile to PURE WIRE PERMUTATIONS.
+  No tag bit flips (X gates) are ever required.
 
-Distributivity
---------------
-With the tagged layout:
-  - DistL : (A⊕B)⊗C → (A⊗C)⊕(B⊗C) is identity on wires (same physical layout)
-  - DistR : A⊗(B⊕C) → (A⊗B)⊕(A⊗C) moves the tag to the front
+This makes:
+  - TwistPlus: pure permutation (swap tags and payloads)
+  - AssocPlusL/R: identity (same physical layout after flattening)
+  - DistL: identity on wires (with shared tensor semantics)
+  - DistR: pure permutation (move tags to front)
+  - Involutions easy to detect: π² = id iff P is involutive
+  - exp(iθP) lowering clean: decompose into ExpSwap atoms
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, FrozenSet
+from typing import List, FrozenSet, Tuple
 
-from lang.types import Ty, Ten, Plus, width
+from lang.types import Ty, Ten, Plus, width, flatten_plus
 
 
 class WirePerm:
@@ -142,6 +142,42 @@ def is_involution(p: WirePerm) -> bool:
     return composed == identity(p.n)
 
 
+def decompose_involution(p: WirePerm) -> List[Tuple[int, int]]:
+    """Decompose an involutive permutation into disjoint transpositions.
+
+    For an involution π with π² = id, every element is either:
+    - Fixed (1-cycle): π(i) = i
+    - Part of a swap (2-cycle): π(i) = j and π(j) = i where i ≠ j
+
+    Returns a list of (a, b) pairs representing disjoint swaps.
+    Fixed points are not included.
+
+    Requires: is_involution(p) == True
+
+    This decomposition is used for exp(iθP) lowering:
+    - Each transposition (a, b) becomes an ExpSwap(θ, a, b) gate atom
+    - Disjoint transpositions commute, so order doesn't matter
+    """
+    if not is_involution(p):
+        raise ValueError("decompose_involution requires an involutive permutation")
+
+    swaps = []
+    seen = set()
+
+    for i in range(p.n):
+        if i in seen:
+            continue
+        j = p.apply_new_to_old(i)
+        if i != j:
+            # Found a swap (i, j) - use canonical ordering (smaller first)
+            swaps.append((min(i, j), max(i, j)))
+            seen.add(i)
+            seen.add(j)
+        # else: fixed point, skip
+
+    return swaps
+
+
 def block_swap(m: int, n: int) -> WirePerm:
     total = m + n
     new_to_old = list(range(m, total)) + list(range(0, m))
@@ -238,29 +274,48 @@ def assoc_tensor_R_perm(a: Ty, b: Ty, c: Ty) -> WirePerm:
 
 
 def twist_plus_perm(a: Ty, b: Ty) -> TaggedPerm:
-    """TwistPlus: A ⊕ B → B ⊕ A in tagged layout.
+    """TwistPlus: A ⊕ B → B ⊕ A with one-hot leaf-tag encoding.
+
+    The domain type Plus(a, b) is flattened to get leaf summands.
+    The "a" block summands and "b" block summands are swapped.
 
     Layout transformation:
-      Input:  [tag | A_wires | B_wires]
-      Output: [tag | B_wires | A_wires]
+      Input:  [t_A₁ | ... | t_Aₘ | t_B₁ | ... | t_Bₖ | A₁_data | ... | Aₘ_data | B₁_data | ... | Bₖ_data]
+      Output: [t_B₁ | ... | t_Bₖ | t_A₁ | ... | t_Aₘ | B₁_data | ... | Bₖ_data | A₁_data | ... | Aₘ_data]
 
-    The tag is flipped (X gate) because:
-      - tag=0 meant "left branch (A)" in input
-      - tag=0 should mean "left branch (B)" in output
-      - So if we had A active (tag=0), we need tag=1 for A in output
+    This is a PURE PERMUTATION - no X gates needed with one-hot encoding!
     """
-    w_a = width(a)
-    w_b = width(b)
-    total = 1 + w_a + w_b  # 1 tag + data wires
+    # Get leaf summand counts for each side
+    a_summands = flatten_plus(a) if isinstance(a, Plus) else [a]
+    b_summands = flatten_plus(b) if isinstance(b, Plus) else [b]
+    n_a_tags = len(a_summands)
+    n_b_tags = len(b_summands)
+    n_tags = n_a_tags + n_b_tags
 
-    # Tag stays at position 0, data wires get swapped
-    # [0 | 1..w_a | w_a+1..w_a+w_b] -> [0 | w_a+1..w_a+w_b | 1..w_a]
-    new_to_old = [0]  # tag stays at position 0
-    new_to_old.extend(range(1 + w_a, 1 + w_a + w_b))  # B_wires come first
-    new_to_old.extend(range(1, 1 + w_a))  # A_wires come second
+    # Data widths for each summand (NOT width(a) which would include nested tags!)
+    # Each leaf summand contributes its own width to the data section
+    w_a_data = sum(width(s) for s in a_summands)
+    w_b_data = sum(width(s) for s in b_summands)
+    total = n_tags + w_a_data + w_b_data
+
+    # Build permutation: swap tag blocks and data blocks
+    # Input layout:
+    #   Tags: [0..n_a_tags-1 = A_tags | n_a_tags..n_tags-1 = B_tags]
+    #   Data: [n_tags..n_tags+w_a_data-1 = A_data | n_tags+w_a_data..total-1 = B_data]
+    # Output layout: [B_tags | A_tags | B_data | A_data]
+
+    new_to_old = []
+    # B tags come first
+    new_to_old.extend(range(n_a_tags, n_tags))
+    # A tags come second
+    new_to_old.extend(range(0, n_a_tags))
+    # B data
+    new_to_old.extend(range(n_tags + w_a_data, total))
+    # A data
+    new_to_old.extend(range(n_tags, n_tags + w_a_data))
 
     perm = WirePerm(total, new_to_old)
-    return TaggedPerm(perm=perm, tag_flips=frozenset([0]))  # Flip the tag
+    return TaggedPerm(perm=perm, tag_flips=frozenset())  # No flips needed!
 
 
 def twist_plus_perm_wire_only(a: Ty, b: Ty) -> WirePerm:
@@ -270,56 +325,29 @@ def twist_plus_perm_wire_only(a: Ty, b: Ty) -> WirePerm:
 
 
 def assoc_plus_L_perm(a: Ty, b: Ty, c: Ty) -> TaggedPerm:
-    """AssocPlusL: (A ⊕ B) ⊕ C → A ⊕ (B ⊕ C) in tagged layout.
+    """AssocPlusL: (A ⊕ B) ⊕ C → A ⊕ (B ⊕ C) with one-hot leaf-tag encoding.
 
-    Layout transformation:
-      Input:  [t_outer | t_inner | A_wires | B_wires | C_wires]
-              (t_outer: 0=AB, 1=C; t_inner: 0=A, 1=B when t_outer=0)
-      Output: [t_outer' | A_wires | t_inner' | B_wires | C_wires]
-              (t_outer': 0=A, 1=BC; t_inner': 0=B, 1=C when t_outer'=1)
+    With one-hot encoding, both types flatten to the SAME layout!
+      (A ⊕ B) ⊕ C flattens to [A, B, C]: [t_A | t_B | t_C | A | B | C]
+      A ⊕ (B ⊕ C) flattens to [A, B, C]: [t_A | t_B | t_C | A | B | C]
 
-    This permutation moves the inner tag from position 1 to position 1+w_a.
-    Note: The tag recoding semantics require controlled operations in general,
-    but for structural purposes we implement the wire permutation.
+    Therefore, AssocPlusL is IDENTITY - the physical layout is unchanged.
     """
-    w_a = width(a)
-    w_b = width(b)
-    w_c = width(c)
-    total = 2 + w_a + w_b + w_c  # 2 tags + data wires
-
-    # Build permutation:
-    # Input positions:  [0=t_out, 1=t_in, 2..2+w_a-1=A, 2+w_a..2+w_a+w_b-1=B, 2+w_a+w_b..end=C]
-    # Output positions: [0=t_out', 1..1+w_a-1=A, 1+w_a=t_in', 1+w_a+1..end=B, then C]
-    new_to_old = [0]  # outer tag stays at 0
-    new_to_old.extend(range(2, 2 + w_a))  # A_wires at positions 1 to w_a
-    new_to_old.append(1)  # inner tag moves to position 1 + w_a
-    new_to_old.extend(range(2 + w_a, 2 + w_a + w_b))  # B_wires
-    new_to_old.extend(range(2 + w_a + w_b, total))  # C_wires
-
-    perm = WirePerm(total, new_to_old)
-    # Note: Full semantic correctness requires tag recoding (controlled-X gates)
-    # For now we return just the permutation; tag recoding is a TODO
-    return TaggedPerm(perm=perm, tag_flips=frozenset())
+    total = width(Plus(Plus(a, b), c))
+    return TaggedPerm(perm=identity(total), tag_flips=frozenset())
 
 
 def assoc_plus_R_perm(a: Ty, b: Ty, c: Ty) -> TaggedPerm:
-    """AssocPlusR: A ⊕ (B ⊕ C) → (A ⊕ B) ⊕ C (inverse of AssocPlusL)."""
-    w_a = width(a)
-    w_b = width(b)
-    w_c = width(c)
-    total = 2 + w_a + w_b + w_c
+    """AssocPlusR: A ⊕ (B ⊕ C) → (A ⊕ B) ⊕ C with one-hot leaf-tag encoding.
 
-    # Inverse of assoc_plus_L_perm
-    # Input:  [t_out | A_wires | t_in | B_wires | C_wires]
-    # Output: [t_out' | t_in' | A_wires | B_wires | C_wires]
-    new_to_old = [0]  # outer tag stays at 0
-    new_to_old.append(1 + w_a)  # inner tag from position 1+w_a to position 1
-    new_to_old.extend(range(1, 1 + w_a))  # A_wires from 1..w_a to 2..2+w_a
-    new_to_old.extend(range(2 + w_a, 2 + w_a + w_b))  # B_wires
-    new_to_old.extend(range(2 + w_a + w_b, total))  # C_wires
+    With one-hot encoding, both types flatten to the SAME layout!
+      A ⊕ (B ⊕ C) flattens to [A, B, C]: [t_A | t_B | t_C | A | B | C]
+      (A ⊕ B) ⊕ C flattens to [A, B, C]: [t_A | t_B | t_C | A | B | C]
 
-    perm = WirePerm(total, new_to_old)
-    return TaggedPerm(perm=perm, tag_flips=frozenset())
+    Therefore, AssocPlusR is IDENTITY - the physical layout is unchanged.
+    """
+    total = width(Plus(a, Plus(b, c)))
+    return TaggedPerm(perm=identity(total), tag_flips=frozenset())
 
 
 # ---------------------------------------------------------------------------
@@ -327,62 +355,53 @@ def assoc_plus_R_perm(a: Ty, b: Ty, c: Ty) -> TaggedPerm:
 # ---------------------------------------------------------------------------
 
 def dist_L_perm(a: Ty, b: Ty, c: Ty) -> TaggedPerm:
-    """DistL: (A ⊕ B) ⊗ C → (A ⊗ C) ⊕ (B ⊗ C) in tagged layout.
+    """DistL: (A ⊕ B) ⊗ C → (A ⊗ C) ⊕ (B ⊗ C) with one-hot leaf-tag encoding.
 
     This is the key insight of the tagged layout model:
     DistL is IDENTITY on wires!
 
-    Input layout for (A ⊕ B) ⊗ C:
-      [(A ⊕ B) wires | C wires] = [tag | A_wires | B_wires | C_wires]
-      Width: (1 + w_a + w_b) + w_c = 1 + w_a + w_b + w_c
+    With one-hot encoding:
+      Input (A ⊕ B) ⊗ C:  [t_A | t_B | A_wires | B_wires | C_wires]
+      Output (A⊗C)⊕(B⊗C): [t_{A⊗C} | t_{B⊗C} | A_wires | B_wires | C_wires]
+                          = [t_A | t_B | A_wires | B_wires | C_wires]
 
-    Output layout for (A ⊗ C) ⊕ (B ⊗ C):
-      [tag | (A ⊗ C)_wires | (B ⊗ C)_wires]
-
-      But (A ⊗ C) shares C with (B ⊗ C) in the linear/GOI interpretation!
-      So the layout is: [tag | A_wires | C_wires : B_wires | C_wires]
-      where C_wires is SHARED between branches.
-
-      In practice, this means:
-        [tag | A_wires | B_wires | C_wires]
-        - If tag=0: active data is A_wires ++ C_wires
-        - If tag=1: active data is B_wires ++ C_wires
+    With shared tensor semantics:
+      - If t_A=1: active data is A_wires ++ C_wires
+      - If t_B=1: active data is B_wires ++ C_wires
 
     The physical wire layout is IDENTICAL - only the type interpretation changes.
     """
-    w_a = width(a)
-    w_b = width(b)
-    w_c = width(c)
-    n = 1 + w_a + w_b + w_c  # tagged layout width
-
-    return TaggedPerm(perm=identity(n), tag_flips=frozenset())
+    total = width(Ten(Plus(a, b), c))
+    return TaggedPerm(perm=identity(total), tag_flips=frozenset())
 
 
 def dist_R_perm(a: Ty, b: Ty, c: Ty) -> TaggedPerm:
-    """DistR: A ⊗ (B ⊕ C) → (A ⊗ B) ⊕ (A ⊗ C) in tagged layout.
+    """DistR: A ⊗ (B ⊕ C) → (A ⊗ B) ⊕ (A ⊗ C) with one-hot leaf-tag encoding.
 
-    Input layout for A ⊗ (B ⊕ C):
-      [A_wires | (B ⊕ C)_wires] = [A_wires | tag | B_wires | C_wires]
-      Width: w_a + (1 + w_b + w_c) = 1 + w_a + w_b + w_c
+    With one-hot encoding:
+      Input A ⊗ (B ⊕ C):  [A_wires | t_B | t_C | B_wires | C_wires]
+      Output (A⊗B)⊕(A⊗C): [t_B | t_C | A_wires | B_wires | C_wires]
 
-    Output layout for (A ⊗ B) ⊕ (A ⊗ C):
-      [tag | (A ⊗ B)_wires | (A ⊗ C)_wires]
-      With sharing: [tag | A_wires | B_wires | C_wires]
-
-    The tag needs to move from position w_a to position 0.
+    The tags move from after A_wires to before A_wires.
     """
     w_a = width(a)
-    w_b = width(b)
-    w_c = width(c)
-    n = 1 + w_a + w_b + w_c
+    # Get number of tags for B ⊕ C
+    bc_summands = flatten_plus(Plus(b, c))
+    n_tags = len(bc_summands)
 
-    # Input positions:  [0..w_a-1=A | w_a=tag | w_a+1..w_a+w_b=B | rest=C]
-    # Output positions: [0=tag | 1..w_a=A | w_a+1..w_a+w_b=B | rest=C]
-    new_to_old = [w_a]  # tag moves from position w_a to position 0
-    new_to_old.extend(range(0, w_a))  # A_wires move to positions 1..w_a
-    new_to_old.extend(range(w_a + 1, n))  # B and C wires stay in order
+    total = width(Ten(a, Plus(b, c)))
 
-    perm = WirePerm(n, new_to_old)
+    # Input positions:  [0..w_a-1=A | w_a..w_a+n_tags-1=tags | rest=B,C_wires]
+    # Output positions: [0..n_tags-1=tags | n_tags..n_tags+w_a-1=A | rest=B,C_wires]
+    new_to_old = []
+    # Tags move to front
+    new_to_old.extend(range(w_a, w_a + n_tags))
+    # A_wires move after tags
+    new_to_old.extend(range(0, w_a))
+    # B and C wires stay in order
+    new_to_old.extend(range(w_a + n_tags, total))
+
+    perm = WirePerm(total, new_to_old)
     return TaggedPerm(perm=perm, tag_flips=frozenset())
 
 
@@ -397,18 +416,24 @@ def undist_L_perm(a: Ty, b: Ty, c: Ty) -> TaggedPerm:
 def undist_R_perm(a: Ty, b: Ty, c: Ty) -> TaggedPerm:
     """UndistR: (A ⊗ B) ⊕ (A ⊗ C) → A ⊗ (B ⊕ C) (inverse of DistR).
 
-    Inverse of dist_R_perm: move tag from position 0 back to position w_a.
+    Inverse of dist_R_perm: move tags from front back to after A_wires.
     """
     w_a = width(a)
-    w_b = width(b)
-    w_c = width(c)
-    n = 1 + w_a + w_b + w_c
+    # Get number of tags for B ⊕ C
+    bc_summands = flatten_plus(Plus(b, c))
+    n_tags = len(bc_summands)
 
-    # Input positions:  [0=tag | 1..w_a=A | w_a+1..w_a+w_b=B | rest=C]
-    # Output positions: [0..w_a-1=A | w_a=tag | w_a+1..end=B,C]
-    new_to_old = list(range(1, w_a + 1))  # A_wires from 1..w_a to 0..w_a-1
-    new_to_old.append(0)  # tag from position 0 to position w_a
-    new_to_old.extend(range(w_a + 1, n))  # B and C wires stay in order
+    total = width(Ten(a, Plus(b, c)))
 
-    perm = WirePerm(n, new_to_old)
+    # Input positions:  [0..n_tags-1=tags | n_tags..n_tags+w_a-1=A | rest=B,C_wires]
+    # Output positions: [0..w_a-1=A | w_a..w_a+n_tags-1=tags | rest=B,C_wires]
+    new_to_old = []
+    # A_wires move to front
+    new_to_old.extend(range(n_tags, n_tags + w_a))
+    # Tags move after A_wires
+    new_to_old.extend(range(0, n_tags))
+    # B and C wires stay in order
+    new_to_old.extend(range(n_tags + w_a, total))
+
+    perm = WirePerm(total, new_to_old)
     return TaggedPerm(perm=perm, tag_flips=frozenset())

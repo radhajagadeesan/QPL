@@ -83,6 +83,9 @@ type term =
   | TCSdg of int * int
   (* General multi-controlled gate (for nested cases) *)
   | TGate of string * int list * int list  (* gate_name, targets, controls *)
+  (* Exponentials of structural involutions *)
+  | TExpSwap of float * int * int  (* exp(iθ·SWAP) on wires i and j *)
+  | TExpInvolution of float * term  (* exp(iθ·P) where P is involution *)
   (* Higher-order constructs (GOI apply) *)
   | TFunVar of string * Rep.t * Rep.t  (* function variable: x : A → B *)
   | TLam of string * Rep.t * Rep.t * term  (* lambda: λx:A→B. body *)
@@ -153,6 +156,12 @@ let rec term_to_json = function
     let controls_json = Printf.sprintf "[%s]" (String.concat ", " (List.map string_of_int controls)) in
     Printf.sprintf {|{"node": "Gate", "name": "%s", "targets": %s, "controls": %s}|}
       name targets_json controls_json
+  (* Exponentials of structural involutions *)
+  | TExpSwap (theta, i, j) ->
+    Printf.sprintf {|{"node": "ExpSwap", "theta": %f, "i": %d, "j": %d}|} theta i j
+  | TExpInvolution (theta, body) ->
+    Printf.sprintf {|{"node": "ExpInvolution", "theta": %f, "body": %s}|}
+      theta (term_to_json body)
   (* Higher-order constructs (GOI apply) *)
   | TFunVar (name, dom, cod) ->
     Printf.sprintf {|{"node": "FunVar", "name": "%s", "dom": %s, "cod": %s}|}

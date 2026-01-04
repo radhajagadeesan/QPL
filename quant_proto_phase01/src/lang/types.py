@@ -7,19 +7,28 @@ We represent wire bundles using a *shape tree* built from two monoidals:
   - Tensor  (⊗): parallel composition of bundles
   - Plus    (⊕): tagged sum with shared data wires
 
-Tagged Sum Layout
------------------
-For A ⊕ B, the wire layout is:
-  [tag | A_wires | B_wires]
+One-Hot Leaf-Tag Sum Layout
+---------------------------
+For an n-ary sum A₁ ⊕ A₂ ⊕ ... ⊕ Aₙ (represented as nested binary Plus),
+the wire layout uses **one-hot encoding**:
+
+  [t₁ | t₂ | ... | tₙ | A₁_wires | A₂_wires | ... | Aₙ_wires]
 
 where:
-  - tag is a single qubit indicating which branch is "active"
-  - A_wires and B_wires are the data wires for each branch
-  - width(A ⊕ B) = 1 + width(A) + width(B)
+  - t₁...tₙ are one-hot tag wires (exactly one is 1)
+  - Aᵢ_wires are the data wires for each summand
+  - width(sum) = n + sum(width(Aᵢ))
 
-This encoding enables distributivity as a pure permutation:
-  DistL : (A⊕B)⊗C → (A⊗C)⊕(B⊗C) is identity on wires
-  DistR : A⊗(B⊕C) → (A⊗B)⊕(A⊗C) rearranges to move tag to front
+Key invariant:
+  ALL structural operations on sums compile to pure wire permutations.
+  No tag bit flips (X gates) are ever required.
+
+This encoding enables:
+  - TwistPlus: pure permutation (swap tags and payloads)
+  - AssocPlusL/R: identity (same physical layout after flattening)
+  - DistL: identity on wires (with shared tensor semantics)
+  - DistR: pure permutation (move tags to front)
+  - Involutions: all structural involutions are WirePerms with π² = id
 
 Stability
 ---------
@@ -78,8 +87,10 @@ Ty = Union[Unit, Q, Ten, Plus]
 def width(ty: Ty) -> int:
     """Number of physical wires represented by ty.
 
-    For Plus types, includes 1 tag qubit plus data wires from both branches.
-    Layout for A ⊕ B: [tag | A_wires | B_wires]
+    For Plus types with n leaf summands, uses one-hot encoding:
+      n tag wires + sum of summand widths.
+    Layout for A₁ ⊕ ... ⊕ Aₙ: [t₁ | ... | tₙ | A₁_wires | ... | Aₙ_wires]
+    Note: summands may themselves contain Plus, which get their own tags.
     Unit type has width 0.
     """
     if isinstance(ty, Unit):
@@ -89,8 +100,13 @@ def width(ty: Ty) -> int:
     if isinstance(ty, Ten):
         return width(ty.left) + width(ty.right)
     if isinstance(ty, Plus):
-        # Tagged layout: 1 tag qubit + all data wires
-        return 1 + width(ty.left) + width(ty.right)
+        # One-hot leaf-tag encoding: n tags for n summands + their widths
+        # Note: summands are non-Plus types (flattened), but may contain
+        # nested Plus (e.g., Ten(A, Plus(B, C))) which get their own tags.
+        summands = flatten_plus(ty)
+        n_tags = len(summands)
+        payload = sum(width(s) for s in summands)
+        return n_tags + payload
     raise TypeError(f"Unknown Ty node: {ty!r}")
 
 
@@ -113,7 +129,7 @@ def data_width(ty: Ty) -> int:
 
 
 def tag_count(ty: Ty) -> int:
-    """Number of tag qubits in ty (one per Plus node)."""
+    """Number of tag qubits in ty (one-hot: n tags for n leaf summands)."""
     if isinstance(ty, Unit):
         return 0
     if isinstance(ty, Q):
@@ -121,7 +137,8 @@ def tag_count(ty: Ty) -> int:
     if isinstance(ty, Ten):
         return tag_count(ty.left) + tag_count(ty.right)
     if isinstance(ty, Plus):
-        return 1 + tag_count(ty.left) + tag_count(ty.right)
+        # One-hot encoding: n tags for n leaf summands
+        return len(flatten_plus(ty))
     raise TypeError(f"Unknown Ty node: {ty!r}")
 
 

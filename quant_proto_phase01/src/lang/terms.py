@@ -442,6 +442,50 @@ class Apply:
     arg: "Term"
 
 
+# -- Exponentials of structural involutions
+
+@dataclass(frozen=True, slots=True)
+class ExpSwap:
+    """Exponential of SWAP on wires i and j: exp(iθ · SWAP).
+
+    This is the atomic building block for exponentials of structural involutions.
+    Any involutive permutation π decomposes into disjoint transpositions,
+    and exp(iθ · π) = ∏ₖ exp(iθ · SWAP(aₖ,bₖ)) for each transposition (aₖ,bₖ).
+
+    The unitary is: exp(iθ · SWAP) = cos(θ)·I + i·sin(θ)·SWAP
+    """
+    theta: float
+    i: int = 0
+    j: int = 1
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
+@dataclass(frozen=True, slots=True)
+class ExpInvolution:
+    """Exponential of a structural involution: exp(iθP).
+
+    P must be a structural term that compiles to an involutive WirePerm (π² = id).
+    At compile time:
+    1. Compile P to WirePerm π
+    2. Verify π² = id
+    3. Decompose π into disjoint transpositions
+    4. Emit ExpSwap(θ, a, b) for each transposition (a, b)
+
+    This gives: exp(iθ · P) = cos(θ)·id + i·sin(θ)·P
+    """
+    theta: float
+    body: "Term"  # The involution P
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+
+
 Term = Union[
     Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
@@ -458,6 +502,8 @@ Term = Union[
     CH, CS, CSdg,
     # Higher-order constructs (GOI apply)
     FunVar, Lam, Apply,
+    # Exponentials of structural involutions
+    ExpSwap, ExpInvolution,
 ]
 
 

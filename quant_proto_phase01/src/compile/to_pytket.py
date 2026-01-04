@@ -24,6 +24,8 @@ from lang.terms import (
     CH, CS, CSdg,
     # Higher-order constructs (GOI apply)
     FunVar, Lam, Apply,
+    # Exponentials of structural involutions
+    ExpSwap, ExpInvolution,
 )
 from lang.types import width
 from typing_.check import type_of, assert_well_typed, TypeCheckError
@@ -33,6 +35,7 @@ from core.perm import (
     twist_plus_perm, assoc_plus_L_perm, assoc_plus_R_perm,
     dist_L_perm, dist_R_perm, undist_L_perm, undist_R_perm,
     TaggedPerm, tagged_from_perm, tagged_compose,
+    is_involution, decompose_involution,
 )
 from backends.materialize import swaps_for_perm, apply_swaps
 from compile.goi import (
@@ -90,6 +93,106 @@ def _contains_feedback(t: Term) -> bool:
     if isinstance(t, TenTerm):
         return _contains_feedback(t.f) or _contains_feedback(t.g)
     return False
+
+
+def _compile_structural_to_perm(t: Term) -> WirePerm:
+    """Compile a purely structural term to its wire permutation.
+
+    This is used by ExpInvolution to extract the permutation from its body.
+    The body must be purely structural (no gates).
+
+    Returns:
+        The wire permutation induced by the structural term.
+
+    Raises:
+        TypeCheckError: If the term contains non-structural elements (gates).
+    """
+    from lang.types import width as type_width, Plus, flatten_plus
+    dom, _ = type_of(t)
+    n = type_width(dom)
+    p = identity(n)
+
+    def embed_local_perm(local_perm: WirePerm, offset: int) -> WirePerm:
+        local_width = local_perm.n
+        global_perm = list(range(n))
+        for i in range(local_width):
+            global_perm[offset + i] = offset + local_perm.new_to_old[i]
+        return WirePerm(n, global_perm)
+
+    def go(term: Term, offset: int = 0) -> None:
+        nonlocal p
+        if isinstance(term, Id):
+            return
+
+        if isinstance(term, Seq):
+            go(term.f, offset)
+            go(term.g, offset)
+            return
+
+        if isinstance(term, TenTerm):
+            left_dom, _ = type_of(term.f)
+            left_width = type_width(left_dom)
+            go(term.f, offset)
+            go(term.g, offset + left_width)
+            return
+
+        if isinstance(term, TwistTen):
+            local_step = twist_tensor_perm(term.a, term.b)
+            step = embed_local_perm(local_step, offset)
+            p = compose(step, p)
+            return
+
+        if isinstance(term, AssocTenL):
+            local_step = assoc_tensor_L_perm(term.a, term.b, term.c)
+            step = embed_local_perm(local_step, offset)
+            p = compose(step, p)
+            return
+
+        if isinstance(term, AssocTenR):
+            local_step = assoc_tensor_R_perm(term.a, term.b, term.c)
+            step = embed_local_perm(local_step, offset)
+            p = compose(step, p)
+            return
+
+        if isinstance(term, TwistPlus):
+            tagged = twist_plus_perm(term.a, term.b)
+            # With one-hot encoding, tag_flips should be empty
+            step = embed_local_perm(tagged.perm, offset)
+            p = compose(step, p)
+            return
+
+        if isinstance(term, AssocPlusL):
+            tagged = assoc_plus_L_perm(term.a, term.b, term.c)
+            step = embed_local_perm(tagged.perm, offset)
+            p = compose(step, p)
+            return
+
+        if isinstance(term, AssocPlusR):
+            tagged = assoc_plus_R_perm(term.a, term.b, term.c)
+            step = embed_local_perm(tagged.perm, offset)
+            p = compose(step, p)
+            return
+
+        if isinstance(term, DistL):
+            tagged = dist_L_perm(term.a, term.b, term.c)
+            step = embed_local_perm(tagged.perm, offset)
+            p = compose(step, p)
+            return
+
+        if isinstance(term, DistR):
+            tagged = dist_R_perm(term.a, term.b, term.c)
+            step = embed_local_perm(tagged.perm, offset)
+            p = compose(step, p)
+            return
+
+        # ExpInvolution body should not contain gates
+        raise TypeCheckError(
+            f"ExpInvolution body must be purely structural, "
+            f"but contains non-structural term: {type(term).__name__}"
+        )
+
+    go(t)
+    return p
 
 
 def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> Compiled:
@@ -213,6 +316,37 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
         phys_i = p.apply_new_to_old(i + offset)
         phys_j = p.apply_new_to_old(j + offset)
         circ.CSdg(phys_i, phys_j)
+
+    def emit_ExpSwap(theta: float, i: int, j: int, offset: int = 0) -> None:
+        """Emit exp(iθ · SWAP) on wires i and j.
+
+        exp(iθ · SWAP) = cos(θ)I + i·sin(θ)·SWAP
+
+        Decomposition uses XXPhase, YYPhase, ZZPhase:
+        SWAP = (I + XX + YY + ZZ) / 2
+        exp(iθ · SWAP) = e^{iθ/2} · exp(iθ·XX/2) · exp(iθ·YY/2) · exp(iθ·ZZ/2)
+
+        In pytket: XXPhase(α) = exp(-iαπ·XX/2)
+        So we use α = -θ/π to get exp(iθ·XX/2), etc.
+        """
+        import math
+        phys_i = p.apply_new_to_old(i + offset)
+        phys_j = p.apply_new_to_old(j + offset)
+
+        # Parameter for pytket's XXPhase/YYPhase/ZZPhase
+        # pytket uses α where XXPhase(α) = exp(-iαπ·XX/2)
+        # We want exp(iθ·XX/2), so α = -θ/π
+        alpha = -theta / math.pi
+
+        # Global phase e^{iθ/2} - pytket doesn't have global phase directly
+        # but we can add it via GPhase if needed, or just accept it as implicit
+        # For now, emit the 3 rotation gates
+        circ.XXPhase(alpha, phys_i, phys_j)
+        circ.YYPhase(alpha, phys_i, phys_j)
+        circ.ZZPhase(alpha, phys_i, phys_j)
+
+        if explain:
+            log.append(f"ExpSwap theta={theta} local ({i},{j}) + offset {offset} -> physical ({phys_i},{phys_j})")
 
     def embed_local_perm(local_perm: WirePerm, offset: int) -> WirePerm:
         """Embed a local permutation into the global n-wire space.
@@ -370,6 +504,33 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
             emit_CS(t.i, t.j, offset); return
         if isinstance(t, CSdg):
             emit_CSdg(t.i, t.j, offset); return
+
+        # Exponentials of structural involutions
+        if isinstance(t, ExpSwap):
+            emit_ExpSwap(t.theta, t.i, t.j, offset); return
+
+        if isinstance(t, ExpInvolution):
+            # Compile the body as a structural term to get its permutation
+            # We need to compile only the structural part, not gates
+            body_perm = _compile_structural_to_perm(t.body)
+
+            # Verify it's an involution
+            if not is_involution(body_perm):
+                raise TypeCheckError(
+                    f"ExpInvolution body must compile to an involutive permutation, "
+                    f"but got perm with π² ≠ id"
+                )
+
+            # Decompose into disjoint transpositions
+            swaps = decompose_involution(body_perm)
+
+            # Emit ExpSwap for each transposition
+            for (a, b) in swaps:
+                emit_ExpSwap(t.theta, a, b, offset)
+
+            if explain:
+                log.append(f"ExpInvolution theta={t.theta} body_perm={body_perm.new_to_old} swaps={swaps}")
+            return
 
         # Higher-order constructs (GOI apply)
         # These require special handling via GOI infrastructure
@@ -682,6 +843,44 @@ def compile_goi(
             emit_atom("CSdg", [t.i, t.j], offset)
             return
 
+        # Exponentials of structural involutions
+        if isinstance(t, ExpSwap):
+            # ExpSwap emits 3 gate atoms: XXPhase, YYPhase, ZZPhase
+            import math
+            alpha = -t.theta / math.pi
+            emit_atom("XXPhase", [t.i, t.j], offset, params=(alpha,))
+            emit_atom("YYPhase", [t.i, t.j], offset, params=(alpha,))
+            emit_atom("ZZPhase", [t.i, t.j], offset, params=(alpha,))
+            if explain:
+                log.append(f"ExpSwap theta={t.theta} -> XXPhase/YYPhase/ZZPhase(alpha={alpha})")
+            return
+
+        if isinstance(t, ExpInvolution):
+            # Compile the body as a structural term to get its permutation
+            body_perm = _compile_structural_to_perm(t.body)
+
+            # Verify it's an involution
+            if not is_involution(body_perm):
+                raise TypeCheckError(
+                    f"ExpInvolution body must compile to an involutive permutation, "
+                    f"but got perm with π² ≠ id"
+                )
+
+            # Decompose into disjoint transpositions
+            swaps = decompose_involution(body_perm)
+
+            # Emit ExpSwap atoms for each transposition
+            import math
+            alpha = -t.theta / math.pi
+            for (a, b) in swaps:
+                emit_atom("XXPhase", [a, b], offset, params=(alpha,))
+                emit_atom("YYPhase", [a, b], offset, params=(alpha,))
+                emit_atom("ZZPhase", [a, b], offset, params=(alpha,))
+
+            if explain:
+                log.append(f"ExpInvolution theta={t.theta} body_perm={body_perm.new_to_old} swaps={swaps}")
+            return
+
         raise TypeError(f"Unknown term node: {t!r}")
 
     # If term is a top-level Feedback, we process it specially
@@ -772,6 +971,13 @@ def compile_goi(
                 circ.CS(wires[0], wires[1])
             elif name == "CSdg":
                 circ.CSdg(wires[0], wires[1])
+            # ExpSwap decomposition gates
+            elif name == "XXPhase":
+                circ.XXPhase(params[0], wires[0], wires[1])
+            elif name == "YYPhase":
+                circ.YYPhase(params[0], wires[0], wires[1])
+            elif name == "ZZPhase":
+                circ.ZZPhase(params[0], wires[0], wires[1])
             else:
                 raise ValueError(f"Unknown gate: {name}")
             if explain:

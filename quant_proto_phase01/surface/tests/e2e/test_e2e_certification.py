@@ -5,9 +5,10 @@ Verifies:
 - exp_i rejects non-involutive permutations
 - Certified programs never yield residual GOI
 
-Note: With the tagged layout model:
-- Sum types A + B have width = 1 + width(A) + width(B) (includes tag qubit)
-- TwistPlus emits an X gate for the tag flip
+Note: With the one-hot leaf-tag encoding:
+- Sum types A + B have width = 2 + width(A) + width(B) (2 one-hot tags + payloads)
+- Plus(Q, Q) = 2 tags + 2 data = 4 wires
+- TwistPlus is a PURE PERMUTATION (no X gates) - swaps both tags and data
 """
 
 import sys
@@ -44,10 +45,10 @@ class TestInvolutionAcceptance:
         circuit, perm = compile_term(term, materialize=False)
 
         assert is_involutive(perm), "TwistPlus should be involutive"
-        # Tagged layout: Q + Q has width 3 (1 tag + 1 + 1)
-        # perm = [0, 2, 1] (tag stays, data swaps)
-        assert perm.n == 3
-        assert perm.new_to_old == [0, 2, 1]
+        # One-hot layout: Q + Q has width 4 (2 tags + 2 data)
+        # perm = [1, 0, 3, 2] (swaps tags AND data)
+        assert perm.n == 4
+        assert perm.new_to_old == [1, 0, 3, 2]
 
     def test_twist_tensor_is_involutive(self):
         """TwistTensor is involutive."""
@@ -70,8 +71,8 @@ class TestInvolutionAcceptance:
         term = Seq(twist, twist)
         circuit, perm = compile_term(term, materialize=False)
 
-        # Tagged layout: Q + Q has width 3
-        assert perm.new_to_old == [0, 1, 2], "twist ; twist should be identity"
+        # One-hot layout: Q + Q has width 4 (2 tags + 2 data)
+        assert perm.new_to_old == [0, 1, 2, 3], "twist ; twist should be identity"
         assert is_involutive(perm)
 
 
@@ -175,16 +176,15 @@ class TestNoResidualGOI:
     """Test that certified programs never yield residual GOI."""
 
     def test_structural_no_goi(self):
-        """Pure structural programs should have minimal GOI residual.
+        """Pure structural programs should have no gates.
 
-        Note: With tagged layout, TwistPlus emits 1 X gate for tag flip.
-        This is expected behavior, not a GOI residual issue.
+        Note: With one-hot encoding, TwistPlus is a pure permutation (no gates).
         """
         term = TwistPlus(Q(), Q())
         circuit, perm = compile_term(term, materialize=False)
 
-        # TwistPlus emits exactly 1 X gate for tag flip (expected)
-        assert circuit.n_gates == 1, f"Expected 1 gate (X for tag flip), got {circuit.n_gates}"
+        # With one-hot encoding, TwistPlus is pure permutation (0 gates)
+        assert circuit.n_gates == 0, f"Expected 0 gates (pure permutation), got {circuit.n_gates}"
 
     def test_certified_exp_i_no_residual(self):
         """Certified exp_i should produce clean output without residual GOI."""

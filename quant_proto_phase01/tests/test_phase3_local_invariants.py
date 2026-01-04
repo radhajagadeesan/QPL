@@ -151,8 +151,8 @@ class TestDistributivitySupported:
         result = compile_goi(term)
         # Should return CompiledGOI since it extracts successfully
         assert isinstance(result, CompiledGOI)
-        # Width: (1 + 1 + 1) + 1 = 4 for (Q ⊕ Q) ⊗ Q
-        assert result.circuit.n_qubits == 4
+        # Width: (2 + 1 + 1) + 1 = 5 for (Q ⊕ Q) ⊗ Q with one-hot encoding
+        assert result.circuit.n_qubits == 5
         # DistL is identity on wires
         assert len(result.circuit.get_commands()) == 0
 

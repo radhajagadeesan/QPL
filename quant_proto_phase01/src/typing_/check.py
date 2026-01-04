@@ -21,6 +21,8 @@ from lang.terms import (
     Rz, Rx, Ry, Phase, CRz,
     # Controlled single-qubit gates
     CH, CS, CSdg,
+    # Exponentials of structural involutions
+    ExpSwap, ExpInvolution,
 )
 
 
@@ -174,6 +176,28 @@ def type_of(t: Term) -> DomCod:
         if t.i == t.j:
             raise TypeCheckError("Controlled gate requires distinct control/target indices (i != j).")
         return (t.ty_total, t.ty_total)
+
+    # ExpSwap: two-wire parameterized gate
+    if isinstance(t, ExpSwap):
+        n = width(t.ty_total)
+        if t.i < 0 or t.i >= n or t.j < 0 or t.j >= n:
+            raise TypeCheckError(f"ExpSwap index out of range: (i,j)=({t.i},{t.j}), width={n}")
+        if t.i == t.j:
+            raise TypeCheckError("ExpSwap requires distinct wire indices (i != j).")
+        return (t.ty_total, t.ty_total)
+
+    # ExpInvolution: parameterized structural involution
+    if isinstance(t, ExpInvolution):
+        # The body must be a structural term (checked at compile time)
+        # Type is the same as the body's type
+        body_dom, body_cod = type_of(t.body)
+        if width(body_dom) != width(body_cod):
+            raise TypeCheckError(
+                f"ExpInvolution body must have equal domain and codomain width, "
+                f"got {width(body_dom)} and {width(body_cod)}"
+            )
+        # ExpInvolution preserves the type (since exp(iθP) : A → A when P : A → A)
+        return (body_dom, body_cod)
 
     raise TypeCheckError(f"Unknown term node: {t!r}")
 

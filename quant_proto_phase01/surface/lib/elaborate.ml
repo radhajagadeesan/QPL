@@ -370,18 +370,28 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
 
   | Ast.App (f, arg) ->
     (* Application elaboration:
-       - If arg has function type, use GOI application (don't β-reduce)
-       - If f is a λ with non-function arg type, β-reduce *)
-    let arg_ty = infer_type ty_env arg in
-    (match arg_ty with
-     | Some (Ast.TyArrow (_, _)) ->
-       (* Argument has function type: use Int/GOI application *)
-       let f' = elaborate ~base tyvar_env ty_env dt_env f in
-       let arg' = elaborate ~base tyvar_env ty_env dt_env arg in
-       Core.Apply (f', arg')
-     | _ ->
-       (* Non-function argument: β-reduce if f is a lambda *)
-       match f with
+       - If arg is a higher-order function value (lambda with arrow param, or
+         variable of arrow type), use GOI application (don't β-reduce)
+       - Otherwise, β-reduce if f is a lambda
+
+       Note: Gates like H, S, CX have arrow types (Q → Q) but are first-order
+       morphisms, not higher-order function values. They should be β-reduced. *)
+    let is_higher_order_arg = match arg with
+      | Ast.Lam (_, param_ty, _) -> is_arrow_type param_ty
+      | Ast.Var x ->
+        (match TyEnv.lookup ty_env x with
+         | Some (Ast.TyArrow (_, _)) -> true
+         | _ -> false)
+      | _ -> false
+    in
+    if is_higher_order_arg then
+      (* Higher-order argument: use Int/GOI application *)
+      let f' = elaborate ~base tyvar_env ty_env dt_env f in
+      let arg' = elaborate ~base tyvar_env ty_env dt_env arg in
+      Core.Apply (f', arg')
+    else
+      (* First-order argument (including gates): β-reduce if f is a lambda *)
+      (match f with
        | Ast.Lam (x, ty, body) ->
          check_ty tyvar_env ty;
          let body' = subst x arg body in

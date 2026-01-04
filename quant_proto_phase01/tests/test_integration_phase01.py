@@ -92,10 +92,10 @@ class TestTypeConstruction:
         assert width(Ten(Q(), Q())) == 2
         assert width(Ten(Ten(Q(), Q()), Q())) == 3
 
-    def test_plus_tagged_width(self):
-        # Tagged layout: A ⊕ B has width = 1 + width(A) + width(B)
-        # This includes 1 tag qubit + all data wires from both branches
-        assert width(Plus(Q(), Q())) == 3  # 1 tag + 1 + 1
+    def test_plus_one_hot_width(self):
+        # One-hot layout: n summands = n tags + data wires
+        # Plus(Q(), Q()) has 2 summands, so 2 tags + 2 data = 4
+        assert width(Plus(Q(), Q())) == 4  # 2 tags + 1 + 1
 
     def test_nested_types(self):
         ty = Ten(Ten(Q(), Q()), Ten(Q(), Q()))
@@ -232,12 +232,12 @@ class TestCompilation:
         assert result.perm == identity(2)
 
     def test_distributivity_compiles(self):
-        # Tagged layout model: distributivity is now supported
+        # One-hot layout: distributivity is supported
         prog = DistL(Q(), Q(), Q())
         result = compile(prog)
         # DistL is identity on wires under the sharing model
-        # Width: (1 + 1 + 1) + 1 = 4 for (Q ⊕ Q) ⊗ Q
-        assert result.circuit.n_qubits == 4
+        # Width: (2 + 1 + 1) + 1 = 5 for (Q ⊕ Q) ⊗ Q with one-hot encoding
+        assert result.circuit.n_qubits == 5
         assert len(result.circuit.get_commands()) == 0  # No gates
 
 

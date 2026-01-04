@@ -101,9 +101,10 @@ def test_distl_is_identity():
     term = DistL(Q(), Q(), Q())
 
     result = compile(term, materialize=False)
-    # Width: (1 + 1 + 1) + 1 = 4 for (Q ⊕ Q) ⊗ Q
-    assert result.circuit.n_qubits == 4
-    assert result.perm.new_to_old == identity(4).new_to_old
+    # Width with one-hot encoding: (2 + 1 + 1) + 1 = 5 for (Q ⊕ Q) ⊗ Q
+    # 2 tag wires + 2 data wires for Plus(Q,Q), plus 1 data wire for Q
+    assert result.circuit.n_qubits == 5
+    assert result.perm.new_to_old == identity(5).new_to_old
 
 
 @pytest.mark.integration
@@ -112,11 +113,11 @@ def test_distr_moves_tag():
     term = DistR(Q(), Q(), Q())
 
     result = compile(term, materialize=False)
-    # Width: 1 + (1 + 1 + 1) = 4 for Q ⊗ (Q ⊕ Q)
-    assert result.circuit.n_qubits == 4
-    # Tag moves from position 1 to position 0
-    # [A=0, tag=1, B=2, C=3] -> [tag=0, A=1, B=2, C=3]
-    expected_perm = [1, 0, 2, 3]
+    # Width with one-hot encoding: 1 + (2 + 1 + 1) = 5 for Q ⊗ (Q ⊕ Q)
+    assert result.circuit.n_qubits == 5
+    # Layout: [A=0, tag1=1, tag2=2, B=3, C=4]
+    # After DistR, tags move to front: [tag1=0, tag2=1, A=2, B=3, C=4]
+    expected_perm = [1, 2, 0, 3, 4]
     assert result.perm.new_to_old == expected_perm
 
 

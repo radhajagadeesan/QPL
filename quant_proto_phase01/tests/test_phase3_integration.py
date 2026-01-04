@@ -283,7 +283,8 @@ class TestDistributivitySupported:
         # Should compile without error
         result = compile(term)
         # DistL is identity on wires under the sharing model
-        assert result.circuit.n_qubits == 4  # (1 + 1 + 1) + 1 = 4
+        # With one-hot encoding: (2 + 1 + 1) + 1 = 5
+        assert result.circuit.n_qubits == 5
         assert len(result.circuit.get_commands()) == 0
 
     def test_distl_compiles_in_compile_goi(self):

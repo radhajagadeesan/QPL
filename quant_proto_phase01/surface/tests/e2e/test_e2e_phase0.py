@@ -1,14 +1,16 @@
 """End-to-end tests for Phase 0 compilation.
 
 Verifies:
-- Structural programs compile to WirePerm (with tag flips for sum types)
+- Structural programs compile to WirePerm (pure permutation for all structural ops)
 - materialize=False introduces no swaps
 - Compilation is deterministic
 
-Note: With the tagged layout model:
-- Sum types A + B have width = 1 + width(A) + width(B) (includes tag qubit)
-- TwistPlus emits an X gate for the tag flip
-- DistL/DistR now compile successfully
+Note: With the one-hot leaf-tag encoding:
+- Sum types A + B have width = 2 + width(A) + width(B) (2 one-hot tags + payloads)
+- Plus(Q, Q) = 2 tags + 2 data = 4 wires
+- Nested sums flatten: Plus(Plus(Q,Q), Q) = 3 tags + 3 data = 6 wires
+- TwistPlus is now a PURE PERMUTATION (no X gates) - swaps tags AND data
+- DistL/DistR compile successfully as pure permutations
 """
 
 import sys
@@ -42,18 +44,19 @@ AssocTensorR = AssocTenR
 class TestStructuralCompilation:
     """Test that structural programs compile to WirePerm only."""
 
-    def test_twist_plus_compiles_with_tag_flip(self):
-        """TwistPlus should compile to permutation + X gate for tag flip."""
+    def test_twist_plus_compiles_as_pure_perm(self):
+        """TwistPlus should compile to pure permutation (no gates) with one-hot encoding."""
         term = TwistPlus(Q(), Q())
         circuit, perm = compile_term(term, materialize=False)
 
-        # Tagged layout: Q + Q has width 3 (1 tag + 1 + 1)
+        # One-hot layout: Q + Q has width 4 (2 tags + 2 data)
         assert perm is not None
-        assert perm.n == 3
-        # Tag stays at 0, data wires swap: [0, 2, 1]
-        assert perm.new_to_old == [0, 2, 1], "TwistPlus should swap data wires"
-        # Should emit exactly 1 X gate for tag flip
-        assert circuit.n_gates == 1, f"Expected 1 gate (X for tag flip), got: {circuit.n_gates}"
+        assert perm.n == 4
+        # With one-hot: swaps tags AND data: [1, 0, 3, 2]
+        # Layout: [t1, t2, A, B] -> [t2, t1, B, A]
+        assert perm.new_to_old == [1, 0, 3, 2], "TwistPlus should swap both tags and data"
+        # No gates - pure permutation with one-hot encoding
+        assert circuit.n_gates == 0, f"Expected 0 gates (pure perm), got: {circuit.n_gates}"
 
     def test_twist_tensor_compiles_to_perm_only(self):
         """TwistTensor should compile to permutation with no gates."""
@@ -66,23 +69,28 @@ class TestStructuralCompilation:
         assert perm.new_to_old == [1, 0]
 
     def test_assoc_plus_compiles_to_perm_only(self):
-        """AssocPlusL/R should compile to permutation with no gates."""
+        """AssocPlusL/R should compile to permutation with no gates.
+
+        With one-hot encoding:
+        - Nested Plus flattens to 3 summands: 3 tags + 3 data = 6 wires
+        - AssocPlus is pure permutation (reorders tags and data blocks)
+        """
         a, b, c = Q(), Q(), Q()
 
         # AssocPlusL: (A + B) + C -> A + (B + C)
-        # Tagged layout: (Q + Q) + Q has width 5 (2 tags + 3 data)
+        # One-hot layout: 3 tags + 3 data = 6 wires
         term_l = AssocPlusL(a, b, c)
         circuit, perm = compile_term(term_l, materialize=False)
         assert is_empty_circuit(circuit)
         assert perm is not None
-        assert perm.n == 5, f"Expected width 5, got {perm.n}"
+        assert perm.n == 6, f"Expected width 6, got {perm.n}"
 
         # AssocPlusR: A + (B + C) -> (A + B) + C
         term_r = AssocPlusR(a, b, c)
         circuit, perm = compile_term(term_r, materialize=False)
         assert is_empty_circuit(circuit)
         assert perm is not None
-        assert perm.n == 5
+        assert perm.n == 6
 
     def test_assoc_tensor_compiles_to_perm_only(self):
         """AssocTensorL/R should compile to permutation with no gates."""
@@ -101,28 +109,32 @@ class TestStructuralCompilation:
     def test_dist_compiles_to_perm_only(self):
         """DistL/DistR should compile to permutation with no gates.
 
-        With tagged layout model:
+        With one-hot encoding:
+        - (Q + Q) ⊗ Q has width 5 (2 tags + 2 data + 1 Q)
         - DistL is identity on wires
-        - DistR moves tag to front
+        - DistR moves tags to front
         """
         a, b, c = Q(), Q(), Q()
 
         # DistL: (A + B) ⊗ C -> (A ⊗ C) + (B ⊗ C)
-        # Width: 1 + 1 + 1 + 1 = 4 (tag + Q + Q + Q)
+        # Input: (Q + Q) ⊗ Q = 2 tags + 2 data + 1 Q = 5 wires
         term_l = DistL(a, b, c)
         circuit, perm = compile_term(term_l, materialize=False)
         assert is_empty_circuit(circuit), "DistL should emit no gates"
         assert perm is not None
-        assert perm.n == 4
-        assert perm.new_to_old == [0, 1, 2, 3], "DistL is identity on wires"
+        assert perm.n == 5, f"Expected width 5, got {perm.n}"
+        assert perm.new_to_old == [0, 1, 2, 3, 4], "DistL is identity on wires"
 
         # DistR: A ⊗ (B + C) -> (A ⊗ B) + (A ⊗ C)
+        # Input: Q ⊗ (Q + Q) = 1 Q + 2 tags + 2 data = 5 wires
         term_r = DistR(a, b, c)
         circuit, perm = compile_term(term_r, materialize=False)
         assert is_empty_circuit(circuit), "DistR should emit no gates"
         assert perm is not None
-        assert perm.n == 4
-        assert perm.new_to_old[0] == 1, "DistR moves tag from position 1 to front"
+        assert perm.n == 5, f"Expected width 5, got {perm.n}"
+        # Tags move from positions 1,2 to front: [A=0, t1=1, t2=2, B=3, C=4] -> [t1, t2, A, B, C]
+        assert perm.new_to_old[0] == 1, "DistR moves first tag to position 0"
+        assert perm.new_to_old[1] == 2, "DistR moves second tag to position 1"
 
     def test_identity_compiles_to_routing_identity(self):
         """Id should compile to identity ROUTING permutation.
@@ -148,31 +160,40 @@ class TestStructuralCompilation:
         assert composed == list(range(perm.n)), "Id must be involutive (p∘p=id)"
 
     def test_sequential_structural_compiles_correctly(self):
-        """Sequence of structural ops should compile correctly."""
-        # TwistPlus ; TwistPlus = Id (both perm and tag flips cancel)
+        """Sequence of structural ops should compile correctly.
+
+        With one-hot encoding:
+        - Plus(Q,Q) = 2 tags + 2 data = 4 wires
+        - TwistPlus ; TwistPlus = Id (pure permutation, no gates)
+        """
         twist = TwistPlus(Q(), Q())
         term = Seq(twist, twist)
         circuit, perm = compile_term(term, materialize=False)
 
         assert perm is not None
-        # Perm should be identity: [0, 1, 2] for 3-wire sum type
-        assert perm.new_to_old == [0, 1, 2], "twist;twist should be identity perm"
-        # Two X gates cancel (X;X = I), but may still be emitted
-        # The key invariant is the perm is identity
+        # Perm should be identity: [0, 1, 2, 3] for 4-wire sum type with one-hot
+        assert perm.new_to_old == [0, 1, 2, 3], "twist;twist should be identity perm"
+        # With one-hot encoding, no X gates needed (pure permutation)
+        assert circuit.n_gates == 0, "TwistPlus;TwistPlus should emit no gates"
 
     def test_parallel_structural_compiles_correctly(self):
-        """Tensor of structural ops should compile correctly."""
-        # TwistPlus has width 3 (tag + 2 data), TwistTensor has width 2
+        """Tensor of structural ops should compile correctly.
+
+        With one-hot encoding:
+        - TwistPlus(Q,Q) has width 4 (2 tags + 2 data)
+        - TwistTensor(Q,Q) has width 2
+        - Both are pure permutations (no gates)
+        """
         twist1 = TwistPlus(Q(), Q())
         twist2 = TwistTensor(Q(), Q())
         term = TenTerm(twist1, twist2)
         circuit, perm = compile_term(term, materialize=False)
 
         assert perm is not None
-        # Total width: 3 + 2 = 5
-        assert perm.n == 5, f"Expected width 5, got {perm.n}"
-        # TwistPlus emits 1 X gate for tag flip
-        assert circuit.n_gates == 1, "Should emit 1 X gate from TwistPlus"
+        # Total width: 4 + 2 = 6
+        assert perm.n == 6, f"Expected width 6, got {perm.n}"
+        # With one-hot encoding, no X gates (pure permutation)
+        assert circuit.n_gates == 0, "Should emit 0 gates (pure permutation)"
 
 
 class TestMaterializeFlag:

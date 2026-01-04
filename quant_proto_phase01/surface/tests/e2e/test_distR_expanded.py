@@ -56,25 +56,26 @@ class TestDistRExpanded:
         assert is_empty_circuit(circuit), f"DistR should emit no gates, got {circuit.n_gates}"
 
     def test_distR_permutation_structure(self):
-        """DistR should move the tag from position 1 to position 0.
+        """DistR should move the tags to the front.
 
-        Input layout:  A ⊗ (B + C) = [A_wire, tag, B_wire, C_wire]
-                                   = [0,      1,   2,      3     ]
+        With one-hot encoding:
+        Input layout:  A ⊗ (B + C) = [A_wire, tag1, tag2, B_wire, C_wire]
+                                   = [0,      1,    2,    3,      4     ]
 
-        Output layout: (A ⊗ B) + (A ⊗ C) = [tag, A_wire, B_wire, C_wire]
-                                         = [tag, A,      B,      C     ]
+        Output layout: (A ⊗ B) + (A ⊗ C) = [tag1, tag2, A_wire, B_wire, C_wire]
 
-        The permutation moves tag from position 1 to position 0.
+        The permutation moves tags from positions 1,2 to positions 0,1.
         """
         a, b, c = Q(), Q(), Q()
         term = DistR(a, b, c)
         circuit, perm = compile_term(term, materialize=False)
 
-        # Width should be 4: 1 (A) + 1 (tag) + 1 (B) + 1 (C) = 4
-        assert perm.n == 4, f"Expected width 4, got {perm.n}"
+        # Width should be 5: 1 (A) + 2 (tags) + 1 (B) + 1 (C) = 5
+        assert perm.n == 5, f"Expected width 5, got {perm.n}"
 
-        # Tag moves from position 1 to position 0
-        assert perm.new_to_old[0] == 1, f"Tag should move to front, got perm={perm.new_to_old}"
+        # Tags move from positions 1,2 to positions 0,1
+        assert perm.new_to_old[0] == 1, f"First tag should move to front, got perm={perm.new_to_old}"
+        assert perm.new_to_old[1] == 2, f"Second tag should move to position 1, got perm={perm.new_to_old}"
 
     def test_distL_is_structural(self):
         """DistL should compile to structural rewiring only (no gates).
@@ -92,22 +93,23 @@ class TestDistRExpanded:
         assert is_empty_circuit(circuit), f"DistL should emit no gates, got {circuit.n_gates}"
 
     def test_distL_is_identity(self):
-        """DistL is identity on wires (tag already at front).
+        """DistL is identity on wires (tags already at front).
 
-        Input layout:  (A + B) ⊗ C = [tag, A_wire, B_wire, C_wire]
-        Output layout: (A ⊗ C) + (B ⊗ C) = [tag, A_wire, C_wire, B_wire]...
+        With one-hot encoding:
+        Input layout:  (A + B) ⊗ C = [tag1, tag2, A_wire, B_wire, C_wire]
+        Output layout: (A ⊗ C) + (B ⊗ C) = [tag1, tag2, A_wire, B_wire, C_wire]
 
-        Actually with tagged layout, both have same physical layout.
+        Tags are already at front, so DistL is identity on wires.
         """
         a, b, c = Q(), Q(), Q()
         term = DistL(a, b, c)
         circuit, perm = compile_term(term, materialize=False)
 
-        # Width should be 4
-        assert perm.n == 4, f"Expected width 4, got {perm.n}"
+        # Width should be 5: 2 (tags) + 1 (A) + 1 (B) + 1 (C) = 5
+        assert perm.n == 5, f"Expected width 5, got {perm.n}"
 
         # DistL is identity on wires
-        assert perm.new_to_old == [0, 1, 2, 3], f"DistL should be identity, got {perm.new_to_old}"
+        assert perm.new_to_old == [0, 1, 2, 3, 4], f"DistL should be identity, got {perm.new_to_old}"
 
 
 class TestDistRDistLRoundTrip:
@@ -132,8 +134,8 @@ class TestDistRDistLRoundTrip:
         assert is_empty_circuit(circuitL)
         assert is_empty_circuit(circuitR)
 
-        # Both should have same width
-        assert permL.n == permR.n == 4
+        # Both should have same width: 2 tags + 3 data = 5
+        assert permL.n == permR.n == 5
 
 
 class TestDistributivityWithTypes:
@@ -148,22 +150,22 @@ class TestDistributivityWithTypes:
         term = DistR(a, b, c)
         circuit, perm = compile_term(term, materialize=False)
 
-        # Width: 2 (a) + 1 (tag) + 1 (b) + 1 (c) = 5
-        assert perm.n == 5, f"Expected width 5, got {perm.n}"
+        # Width with one-hot: 2 (a) + 2 (tags) + 1 (b) + 1 (c) = 6
+        assert perm.n == 6, f"Expected width 6, got {perm.n}"
         assert is_empty_circuit(circuit)
 
     def test_distL_nested_sum(self):
         """DistL with nested sum types."""
         # (Q + Q) ⊗ Q → (Q ⊗ Q) + (Q ⊗ Q)
-        # Note: Q + Q has width 3 (tag + 2)
+        # Note: Q + Q has width 4 (2 tags + 2 data) with one-hot
         a, b = Q(), Q()
         c = Q()
 
         term = DistL(a, b, c)
         circuit, perm = compile_term(term, materialize=False)
 
-        # Width: 1 (tag) + 1 (a) + 1 (b) + 1 (c) = 4
-        assert perm.n == 4, f"Expected width 4, got {perm.n}"
+        # Width with one-hot: 2 (tags) + 1 (a) + 1 (b) + 1 (c) = 5
+        assert perm.n == 5, f"Expected width 5, got {perm.n}"
         assert is_empty_circuit(circuit)
 
 

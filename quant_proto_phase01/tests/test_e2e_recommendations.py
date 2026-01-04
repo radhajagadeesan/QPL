@@ -177,14 +177,16 @@ class TestStructuralPurity:
         result = compile(prog, materialize=False)
         assert count_gates(result.circuit) == 0
 
-    def test_sum_swap_emits_x_gate(self):
-        """TwistPlus emits X gate for tag flip in tagged layout model."""
+    def test_sum_swap_is_pure_permutation(self):
+        """TwistPlus is pure permutation with one-hot leaf-tag encoding.
+
+        With one-hot encoding, NO X gates are needed - all structural
+        operations on sums are pure wire permutations!
+        """
         prog = TwistPlus(Q(), Q())
         result = compile(prog, materialize=False)
-        ops = get_op_sequence(result.circuit)
-        # Tagged layout: TwistPlus emits X gate for tag flip
-        x_ops = [op for op, _ in ops if op == 'X']
-        assert len(x_ops) == 1, "TwistPlus should emit exactly one X gate"
+        # One-hot encoding: TwistPlus is a pure permutation, no gates
+        assert count_gates(result.circuit) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -232,26 +234,38 @@ class TestDistributivityMacros:
     """Ensure distributive programming patterns remain supported."""
 
     def test_dist_l_identity(self):
-        """DistL: (A ⊕ B) ⊗ C → (A ⊗ C) ⊕ (B ⊗ C) is identity on wires."""
+        """DistL: (A ⊕ B) ⊗ C → (A ⊗ C) ⊕ (B ⊗ C) is identity on wires.
+
+        With one-hot encoding:
+          (Q ⊕ Q) has 2 tags + 2 data = 4 wires
+          (Q ⊕ Q) ⊗ Q has 4 + 1 = 5 wires
+        """
         prog = DistL(Q(), Q(), Q())
         result = compile(prog)
 
-        # Width: tag + Q + Q + Q = 4
-        assert result.circuit.n_qubits == 4
+        # Width: 2 one-hot tags + Q + Q + Q = 5
+        assert result.circuit.n_qubits == 5
         # Identity on wires: no gates
         assert count_gates(result.circuit) == 0
 
-    def test_dist_r_permutes_tag(self):
-        """DistR: A ⊗ (B ⊕ C) → (A ⊗ B) ⊕ (A ⊗ C) moves tag to front."""
+    def test_dist_r_permutes_tags(self):
+        """DistR: A ⊗ (B ⊕ C) → (A ⊗ B) ⊕ (A ⊗ C) moves tags to front.
+
+        With one-hot encoding:
+          Q ⊗ (Q ⊕ Q): Q has 1 wire, (Q ⊕ Q) has 2 tags + 2 data = 4
+          Total: 1 + 4 = 5 wires = [A | t_B | t_C | B | C]
+          After DistR: [t_B | t_C | A | B | C]
+        """
         prog = DistR(Q(), Q(), Q())
         result = compile(prog)
 
-        # Width: Q + tag + Q + Q = 4
-        assert result.circuit.n_qubits == 4
+        # Width: Q + 2 tags + Q + Q = 5
+        assert result.circuit.n_qubits == 5
         # No gates (just permutation)
         assert count_gates(result.circuit) == 0
-        # Perm should move wire 1 (tag) to front
+        # Perm should move wire 1 (first tag) to position 0
         assert result.perm.new_to_old[0] == 1
+        assert result.perm.new_to_old[1] == 2  # second tag
 
     def test_distributivity_elaboration_succeeds(self):
         """Surface elaboration and compilation of distributivity succeeds."""
@@ -441,45 +455,58 @@ class TestMinimalHighValue:
 # Tagged Layout Model Coverage
 # ---------------------------------------------------------------------------
 
-class TestTaggedLayoutCoverage:
-    """Verify tagged layout model changes are properly covered."""
+class TestOneHotLayoutCoverage:
+    """Verify one-hot leaf-tag layout model changes are properly covered."""
 
-    def test_plus_width_includes_tag(self):
-        """Plus types include tag qubit in width."""
-        assert width(Plus(Q(), Q())) == 3  # 1 tag + 1 + 1
+    def test_plus_width_with_one_hot_tags(self):
+        """Plus types include one-hot tags in width.
 
-    def test_nested_plus_width(self):
-        """Nested Plus types accumulate tags correctly."""
-        # (Q ⊕ Q) ⊕ Q
+        With one-hot encoding: n summands = n tags.
+        Plus(Q(), Q()) has 2 summands, so 2 tags + 2 data = 4 wires.
+        """
+        assert width(Plus(Q(), Q())) == 4  # 2 tags + 1 + 1
+
+    def test_nested_plus_width_flattened(self):
+        """Nested Plus types flatten to single n-ary sum.
+
+        (Q ⊕ Q) ⊕ Q flattens to [Q, Q, Q] = 3 summands.
+        Width = 3 tags + 3 data = 6 wires.
+        """
         ty = Plus(Plus(Q(), Q()), Q())
-        # Inner: 3, Outer: 1 + 3 + 1 = 5
-        assert width(ty) == 5
+        assert width(ty) == 6  # 3 tags + 3 data
 
-    def test_twist_plus_involution_property(self):
-        """TwistPlus is involutive (twist ∘ twist = id)."""
+    def test_twist_plus_is_pure_permutation(self):
+        """TwistPlus is a pure permutation (no X gates).
+
+        With one-hot encoding, TwistPlus just permutes tags and data.
+        Two consecutive twists cancel to identity.
+        """
         prog = Seq(TwistPlus(Q(), Q()), TwistPlus(Q(), Q()))
         result = compile(prog, materialize=False)
         # After two twists, should be identity
-        assert result.perm == identity(3)
-        # X gates cancel (X ∘ X = I)
-        # Net gate count should be 0 after optimization
-        # (Current implementation may show 2 X gates that cancel)
+        assert result.perm == identity(4)  # 2 tags + 2 data = 4 wires
+        # NO X gates needed with one-hot encoding!
+        assert count_gates(result.circuit) == 0
 
     def test_dist_l_preserves_physical_width(self):
-        """DistL preserves physical wire count (sharing model)."""
+        """DistL preserves physical wire count (sharing model).
+
+        With one-hot encoding:
+          (Q ⊕ Q) ⊗ Q: 2 tags + 3 data = 5 wires
+        """
         prog = DistL(Q(), Q(), Q())
         result = compile(prog)
-        # (Q ⊕ Q) ⊗ Q has width 4: tag + Q + Q + Q
-        # (Q ⊗ Q) ⊕ (Q ⊗ Q) also has width 4: tag + Q + Q + Q (C shared)
-        assert result.circuit.n_qubits == 4
+        assert result.circuit.n_qubits == 5
 
     def test_dist_r_preserves_physical_width(self):
-        """DistR preserves physical wire count."""
+        """DistR preserves physical wire count.
+
+        With one-hot encoding:
+          Q ⊗ (Q ⊕ Q): 1 + (2 tags + 2 data) = 5 wires
+        """
         prog = DistR(Q(), Q(), Q())
         result = compile(prog)
-        # Q ⊗ (Q ⊕ Q) has width 4: Q + tag + Q + Q
-        # (Q ⊗ Q) ⊕ (Q ⊗ Q) also has width 4
-        assert result.circuit.n_qubits == 4
+        assert result.circuit.n_qubits == 5
 
 
 # ---------------------------------------------------------------------------

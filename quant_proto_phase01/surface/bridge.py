@@ -34,6 +34,8 @@ from lang.terms import (
     CH, CS, CSdg,
     # Higher-order constructs (GOI apply)
     FunVar, Lam, Apply,
+    # Exponentials of structural involutions
+    ExpSwap, ExpInvolution,
 )
 from core.perm import WirePerm, identity, compose
 from compile.to_pytket import compile
@@ -76,6 +78,10 @@ def _max_wire_index(j: dict) -> int:
         max_idx = max(max_idx, _max_wire_index(j["f"]))
     if "g" in j:
         max_idx = max(max_idx, _max_wire_index(j["g"]))
+    if "body" in j:
+        max_idx = max(max_idx, _max_wire_index(j["body"]))
+    if "arg" in j:
+        max_idx = max(max_idx, _max_wire_index(j["arg"]))
 
     return max_idx
 
@@ -291,6 +297,14 @@ def parse_term(j: dict, ty_total: Ty = None) -> Term:
 
     elif node == "Apply":
         return Apply(parse_term(j["f"], ty_total), parse_term(j["arg"], ty_total))
+
+    # Exponentials of structural involutions
+    elif node == "ExpSwap":
+        return ExpSwap(j["theta"], j["i"], j["j"], ty_total)
+
+    elif node == "ExpInvolution":
+        body = parse_term(j["body"], ty_total)
+        return ExpInvolution(j["theta"], body, ty_total)
 
     else:
         raise ValueError(f"Unknown term node: {node}")
