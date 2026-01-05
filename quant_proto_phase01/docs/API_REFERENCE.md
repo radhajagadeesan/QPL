@@ -13,6 +13,15 @@ Complete reference for types, terms, and compilation functions.
 | `Ten(a, b)` | Tensor product a ⊗ b | width(a) + width(b) |
 | `Plus(a, b)` | Sum type a + b (one-hot) | 2 + width(a) + width(b) |
 
+### Function Types (Surface Language)
+
+Function types `A → B` exist in the **surface language** (OCaml `TyArrow`):
+- Represent morphisms from A to B
+- Used for lambda abstractions and higher-order programming
+- **No Python type constructor**—handled via higher-order terms
+
+In Python, use `Lam`, `Apply`, `FunVar` for higher-order programming (see Higher-Order Terms).
+
 ### One-Hot Encoding
 
 Sum types use one-hot leaf-tag encoding:

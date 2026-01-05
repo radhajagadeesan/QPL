@@ -21,6 +21,16 @@ For compiler API details, see `COMPILER_API_GUIDE.md`.
 |-------------|---------|------------|
 | `A ⊗ B` | Tensor product (parallel wires) | width(A) + width(B) |
 | `A + B` | Sum type (tagged union) | 2 + width(A) + width(B) |
+| `A → B` | Function type (morphism) | Compile-time only |
+
+### Function Types
+
+Function types `A → B` represent morphisms from A to B. They are **compile-time constructs** used for:
+- Lambda abstractions: `λx:A. body` has type `A → B` if body has type B
+- Higher-order functions: passing and returning morphisms
+- Let bindings: `let f = ... in ...`
+
+Function types elaborate away during compilation—they don't correspond to physical wires. The body of a function becomes a circuit fragment that gets inlined at application sites.
 
 ### Sum Type Encoding (One-Hot Leaf Tags)
 
@@ -43,6 +53,7 @@ Q                       (* Qubit *)
 I                       (* Unit *)
 A ⊗ B                   (* Tensor product *)
 A + B                   (* Sum type *)
+A → B                   (* Function type *)
 Bool['a, 'b]            (* Named datatype *)
 ```
 

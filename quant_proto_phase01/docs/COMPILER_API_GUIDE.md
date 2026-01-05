@@ -34,6 +34,8 @@ w = width(qq)           # Returns 2
 w = width(s)            # Returns 4
 ```
 
+**Note:** Function types `A → B` exist in the surface language (OCaml) but not in the Python core API. In Python, higher-order programming uses the `Lam`, `Apply`, and `FunVar` terms directly. See [Higher-Order Terms](#higher-order-terms).
+
 ### One-Hot Sum Encoding
 
 Sum types use one-hot leaf-tag encoding:
@@ -114,6 +116,29 @@ AssocPlusR(a, b, c)     # a + (b + c) → (a + b) + c
 DistL(a, b, c)          # (a + b) ⊗ c → (a ⊗ c) + (b ⊗ c)
 DistR(a, b, c)          # a ⊗ (b + c) → (a ⊗ b) + (a ⊗ c)
 ```
+
+### Higher-Order Terms
+
+Function types in the Python core are represented through higher-order terms:
+
+```python
+from lang.terms import Lam, Apply, FunVar, Feedback
+
+# Lambda abstraction: λx:A. body
+# If body : B, then Lam(x, A, B, body) : A → B
+Lam(name, dom, cod, body)
+
+# Function variable (for substitution)
+FunVar(name, dom, cod)    # Variable x : dom → cod
+
+# Function application
+Apply(f, arg)             # f(arg) where f : A → B, arg : A
+
+# Feedback (GOI trace)
+Feedback(k, body)         # Loop k wires back
+```
+
+Higher-order terms elaborate away during compilation—lambdas are inlined at application sites.
 
 ### Exponentials of Involutions
 
