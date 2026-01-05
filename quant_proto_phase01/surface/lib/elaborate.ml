@@ -967,3 +967,76 @@ let elaborate_program (program : Ast.program) =
   in
 
   (List.rev defs, main)
+
+(** Convert Ast.ty to Rep.t for bridge serialization.
+    Type variables become Rep.Var with index based on name. *)
+let rec ty_to_rep = function
+  | Ast.TyQ -> Rep.Var 0  (* Q becomes a variable placeholder *)
+  | Ast.TyUnit -> Rep.Unit
+  | Ast.TyVar v ->
+    (* Map type variable names to indices *)
+    let idx = Char.code (String.get v 0) - Char.code 'a' in
+    Rep.Var idx
+  | Ast.TyTensor (a, b) -> Rep.Tensor (ty_to_rep a, ty_to_rep b)
+  | Ast.TyPlus (a, b) -> Rep.Plus (ty_to_rep a, ty_to_rep b)
+  | Ast.TyArrow (a, b) -> Rep.Tensor (ty_to_rep a, ty_to_rep b)  (* Int encoding *)
+  | Ast.TyNamed (_, _) -> Rep.Var 0  (* Named types become placeholder *)
+
+(** Convert Core.term to Bridge.term for Python compilation.
+
+    This bridges the gap between:
+    - Surface AST → Core.term (via elaborate)
+    - Bridge.term → Python (via bridge.py)
+*)
+let rec core_to_bridge (term : Core.term) : Bridge.term =
+  match term with
+  | Core.Seq (f, g) -> Bridge.TSeq (core_to_bridge f, core_to_bridge g)
+  | Core.Ten (f, g) -> Bridge.TTenTerm (core_to_bridge f, core_to_bridge g)
+  | Core.Id ty -> Bridge.TId (ty_to_rep ty)
+  | Core.TwistT (a, b) -> Bridge.TTwistTen (ty_to_rep a, ty_to_rep b)
+  | Core.TwistP (a, b) -> Bridge.TTwistPlus (ty_to_rep a, ty_to_rep b)
+  | Core.AssocTL (a, b, c) -> Bridge.TAssocTenL (ty_to_rep a, ty_to_rep b, ty_to_rep c)
+  | Core.AssocTR (a, b, c) -> Bridge.TAssocTenR (ty_to_rep a, ty_to_rep b, ty_to_rep c)
+  | Core.AssocPL (a, b, c) -> Bridge.TAssocPlusL (ty_to_rep a, ty_to_rep b, ty_to_rep c)
+  | Core.AssocPR (a, b, c) -> Bridge.TAssocPlusR (ty_to_rep a, ty_to_rep b, ty_to_rep c)
+  | Core.DistL (a, b, c) -> Bridge.TDistL (ty_to_rep a, ty_to_rep b, ty_to_rep c)
+  | Core.DistR (a, b, c) -> Bridge.TDistR (ty_to_rep a, ty_to_rep b, ty_to_rep c)
+  | Core.Gate g -> gate_to_bridge g
+  | Core.ExpI (theta, j) -> Bridge.TExpInvolution (theta, core_to_bridge j)
+  (* Higher-order constructs *)
+  | Core.FunVar (name, dom, cod) ->
+    Bridge.TFunVar (name, ty_to_rep dom, ty_to_rep cod)
+  | Core.Lam (name, dom, cod, body) ->
+    Bridge.TLam (name, ty_to_rep dom, ty_to_rep cod, core_to_bridge body)
+  | Core.Apply (f, arg) ->
+    Bridge.TApply (core_to_bridge f, core_to_bridge arg)
+
+(** Convert Core.gate to Bridge.term *)
+and gate_to_bridge (g : Core.gate) : Bridge.term =
+  let open Core in
+  match g.controls, g.name, g.targets with
+  (* No controls - basic gates *)
+  | [], GH, [i] -> Bridge.TH i
+  | [], GS, [i] -> Bridge.TS i
+  | [], GSdg, [i] -> Bridge.TSdg i
+  | [], GX, [i] -> Bridge.TX i
+  | [], GY, [i] -> Bridge.TY i
+  | [], GZ, [i] -> Bridge.TZ i
+  | [], GT, [i] -> Bridge.TT i
+  | [], GTdg, [i] -> Bridge.TTdg i
+  | [], GRz theta, [i] -> Bridge.TRz (theta, i)
+  | [], GRx theta, [i] -> Bridge.TRx (theta, i)
+  | [], GRy theta, [i] -> Bridge.TRy (theta, i)
+  | [], GCX, [i; j] -> Bridge.TCX (i, j)
+  (* Single control *)
+  | [c], GH, [t] -> Bridge.TCH (c, t)
+  | [c], GS, [t] -> Bridge.TCS (c, t)
+  | [c], GSdg, [t] -> Bridge.TCSdg (c, t)
+  | [c], GZ, [t] -> Bridge.TCZ (c, t)
+  | [c], GRz theta, [t] -> Bridge.TCRz (theta, c, t)
+  (* Two controls (Toffoli) *)
+  | [c1; c2], GX, [t] -> Bridge.TCCX (c1, c2, t)
+  (* General multi-controlled gate *)
+  | controls, name, targets ->
+    let name_str = Core.gate_name_to_string name in
+    Bridge.TGate (name_str, targets, controls)

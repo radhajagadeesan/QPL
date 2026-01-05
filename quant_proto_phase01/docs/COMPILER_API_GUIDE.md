@@ -117,15 +117,24 @@ DistR(a, b, c)          # a ⊗ (b + c) → (a ⊗ b) + (a ⊗ c)
 
 ### Exponentials of Involutions
 
+For a structural involution `P : A → A` where P² = id:
+
 ```python
 from lang.terms import ExpSwap, ExpInvolution
 
-# Atomic exponential of SWAP
-ExpSwap(theta, i, j, ty)  # exp(iθ · SWAP) on wires i, j
+# exp_i(θ, P) : A → A where P : A → A is involutive
+# Typing: if P : A → A and P² = id, then ExpInvolution(θ, P) : A → A
+ExpInvolution(theta, body, ty_total)
 
-# Exponential of structural involution
-# P must compile to involutive permutation (π² = id)
-ExpInvolution(theta, body, ty)  # exp(iθ · P)
+# Atomic exponential of SWAP (building block)
+ExpSwap(theta, i, j, ty_total)  # exp(iθ · SWAP) on wires i, j
+```
+
+**Type signature:**
+```
+ExpInvolution : (θ: float, P: Term, ty: Ty) → Term
+  where P : A → A and P² = id
+  result type: A → A
 ```
 
 At compile time, `ExpInvolution`:

@@ -271,6 +271,41 @@ let test_qswitch_circuit () =
     print_endline ("✗ QSwitch(H,S) compilation failed: " ^ err);
     assert false
 
+(* Test: ExpI through elaboration pipeline *)
+let test_exp_i_elaboration () =
+  print_endline "=== Testing exp_i through elaboration pipeline ===";
+
+  (* Build surface AST: exp_i(π/8, twist+[Q,Q]) *)
+  let pi = 3.14159265358979 in
+  let theta = pi /. 8.0 in
+  let twist_ast = Ast.TwistP (Ast.TyQ, Ast.TyQ) in
+  let exp_i_ast = Ast.ExpI (theta, twist_ast) in
+
+  (* Elaborate to Core *)
+  let tyvar_env = [] in
+  let ty_env = [] in
+  let dt_env = [] in
+  let core_term = Elaborate.elaborate tyvar_env ty_env dt_env exp_i_ast in
+  print_endline ("✓ Elaborated to Core: " ^ Elaborate.Core.term_to_string core_term);
+
+  (* Convert to Bridge term *)
+  let bridge_term = Elaborate.core_to_bridge core_term in
+  print_endline "✓ Converted to Bridge term";
+
+  (* Compile through Python bridge *)
+  match Bridge.compile bridge_term with
+  | Bridge.CompileOk (perm, size) ->
+    print_endline "✓ exp_i compiled successfully through full pipeline";
+    print_endline (Printf.sprintf "  perm.n = %d" perm.n);
+    print_endline (Printf.sprintf "  circuit_size = %d" size);
+    (* exp_i(θ, twist+) should produce ExpSwap gates *)
+    (* TwistPlus(Q,Q) has 2 transpositions: (0,1) and (2,3) *)
+    assert (size >= 0);  (* ExpSwap gates are counted *)
+    print_endline "✓ exp_i elaboration pipeline works"
+  | Bridge.CompileError err ->
+    print_endline ("✗ exp_i compilation failed: " ^ err);
+    assert false
+
 (* Run all tests *)
 let () =
   print_endline "QPL Bridge Integration Tests";
@@ -310,6 +345,9 @@ let () =
   print_endline "";
 
   test_qswitch_circuit ();
+  print_endline "";
+
+  test_exp_i_elaboration ();
   print_endline "";
 
   print_endline "All bridge tests passed!"

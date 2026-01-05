@@ -100,10 +100,27 @@ All gates take wire indices and an ambient type `ty_total`.
 
 ### Exponentials of Involutions
 
-| Term | Signature | Description |
-|------|-----------|-------------|
-| `ExpSwap(theta, i, j, ty)` | exp(iθ · SWAP) on wires i, j | Atomic building block |
-| `ExpInvolution(theta, body, ty)` | exp(iθ · P) where P is involution | Compiled to ExpSwap atoms |
+**Typing rule:**
+```
+P : A → A    P² = id
+─────────────────────
+exp_i(θ, P) : A → A
+```
+
+| Term | Type | Description |
+|------|------|-------------|
+| `ExpInvolution(θ, P, ty)` | A → A | exp(iθ·P) where P : A → A is involution |
+| `ExpSwap(θ, i, j, ty)` | Q⊗Q → Q⊗Q | Atomic exp(iθ·SWAP) on wires i, j |
+
+**Signatures:**
+```python
+ExpInvolution(theta: float, body: Term, ty_total: Ty) -> Term
+# Requires: body : A → A and body² = id
+# Returns: term of type A → A
+
+ExpSwap(theta: float, i: int, j: int, ty_total: Ty) -> Term
+# Returns: term of type ty_total → ty_total
+```
 
 **ExpSwap unitary:**
 ```

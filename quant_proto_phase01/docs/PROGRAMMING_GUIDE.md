@@ -133,18 +133,33 @@ All structural primitives compile to **pure wire permutations** (no gates).
 
 ### Exponentials of Involutions
 
-For a structural involution P (where P² = id), you can compute:
+For a structural involution `P : A → A` (where P² = id), you can compute:
 
+```
+exp_i(θ, P) : A → A
+```
+
+This implements the unitary:
 ```
 exp(iθP) = cos(θ)·id + i·sin(θ)·P
 ```
 
+**Typing rule:**
+```
+P : A → A    P² = id
+─────────────────────
+exp_i(θ, P) : A → A
+```
+
 | Primitive | Type | Description |
 |-----------|------|-------------|
-| `exp_i[θ,P]` | A → A | Exponential of involution P |
-| `ExpSwap[θ,i,j]` | Q⊗Q → Q⊗Q | Atomic exp(iθ·SWAP) on wires i,j |
+| `exp_i(θ, P)` | A → A | Exponential of involution P : A → A |
+| `ExpSwap(θ, i, j)` | Q⊗Q → Q⊗Q | Atomic exp(iθ·SWAP) on wires i,j |
 
-The compiler verifies P is involutive, decomposes it into disjoint transpositions, and emits `ExpSwap` gates for each.
+The compiler:
+1. Verifies P is involutive (P² = id)
+2. Decomposes P into disjoint transpositions
+3. Emits `ExpSwap` gates for each transposition
 
 ### Binding Forms
 
