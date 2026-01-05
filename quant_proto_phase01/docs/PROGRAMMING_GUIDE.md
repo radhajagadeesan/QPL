@@ -295,19 +295,36 @@ If P is not involutive, compilation fails with an error.
 
 Granthi includes worked demonstrations in the `demos/` directory. These are the **best starting point** for understanding how programs behave end-to-end.
 
-See `demos/README.md` for:
+See `demos/README.md` for full details. Key demos:
 
-| Format | File | Requirements |
-|--------|------|--------------|
-| Static output | `qswitch_demo_output.md` | None |
-| HTML animation | `qswitch_demo.html` | Any browser |
-| Python script | `qswitch_demo.py` | Python + pytket |
-| Detailed walkthrough | `quantum_switch_demo.py` | Python + pytket |
+| Demo | File | What it Shows |
+|------|------|---------------|
+| QSwitch | `qswitch_demo.py` | Higher-order quantum switch combinator |
+| ExpInvolution | `exp_twist_demo.py` | Composition law: exp(θ);exp(θ) = exp(2θ) |
+| Pauli Conjugation | `pauli_conjugation_demo.py` | exp(π/4,X);Z;exp(-π/4,X) = Y on qubit as I+I |
 
-The demos show:
-- Higher-order programs (QSwitch)
-- Conditional composition
-- Full compilation pipeline
+### ExpInvolution Demo
+
+Verifies the composition law for exponentials of involutions:
+```
+exp_i(π/4, twist) ; exp_i(π/4, twist) = exp_i(π/2, twist) = i·SWAP
+```
+
+Extracts unitaries from compiled circuits and compares mathematically.
+
+### Pauli Conjugation Demo
+
+Verifies the Pauli identity using qubit as `I + I` (one-hot encoding):
+```
+exp_i(π/4, X) ; Z ; exp_i(-π/4, X) = Y
+```
+
+Where:
+- X = `twist+[I,I]` (structural swap of tags)
+- Z = Z gate on wire 1
+- Y = `twist ; S[1] ; Sdg[0]`
+
+Shows both 4×4 physical unitaries and 2×2 logical qubit submatrices.
 
 **No knowledge of compiler internals is required to understand the demos.**
 
