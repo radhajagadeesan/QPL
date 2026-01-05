@@ -287,3 +287,85 @@ class TestExpInvolutionIntegration:
         op_names = [c.op.type.name for c in cmds]
         assert op_names[0] == "H"
         assert op_names[-1] == "CX"
+
+
+class TestExpInvolutionCompositionLaw:
+    """Test exp_i(θ,P) ; exp_i(θ,P) = exp_i(2θ,P) via unitary extraction."""
+
+    @staticmethod
+    def matrices_equal_up_to_phase(A, B, tol=1e-9):
+        """Check if A = e^{iφ} · B for some phase φ."""
+        import numpy as np
+        for i in range(B.shape[0]):
+            for j in range(B.shape[1]):
+                if abs(B[i, j]) > tol:
+                    if abs(A[i, j]) < tol:
+                        return False, 0
+                    phase = A[i, j] / B[i, j]
+                    diff = abs(A - phase * B).max()
+                    return diff < tol, phase
+        return False, 0
+
+    def test_twist_compiles_to_swap(self):
+        """TwistTen(Q,Q) compiles to SWAP (verified by unitary extraction)."""
+        import numpy as np
+        twist = TwistTen(Q(), Q())
+        result = compile(twist, materialize=True)
+        U = result.circuit.get_unitary()
+
+        SWAP = np.array([[1,0,0,0],[0,0,1,0],[0,1,0,0],[0,0,0,1]], dtype=complex)
+        match, _ = self.matrices_equal_up_to_phase(U, SWAP)
+        assert match, "TwistTen should compile to SWAP"
+
+    def test_composition_equals_swap_up_to_phase(self):
+        """exp_i(π/4, twist) ; exp_i(π/4, twist) = SWAP up to global phase."""
+        import numpy as np
+        ty = Ten(Q(), Q())
+        twist = TwistTen(Q(), Q())
+        theta = math.pi / 4
+
+        exp_twist = ExpInvolution(theta=theta, body=twist, ty_total=ty)
+        composed = Seq(exp_twist, exp_twist)
+        result = compile(composed)
+        U = result.circuit.get_unitary()
+
+        SWAP = np.array([[1,0,0,0],[0,0,1,0],[0,1,0,0],[0,0,0,1]], dtype=complex)
+        match, phase = self.matrices_equal_up_to_phase(U, SWAP)
+        assert match, "Composition should equal SWAP up to phase"
+        assert abs(abs(phase) - 1.0) < 1e-9, "Phase should have magnitude 1"
+
+    def test_composition_law_pi_4(self):
+        """exp_i(π/4) ; exp_i(π/4) = exp_i(π/2) (verified by unitary)."""
+        import numpy as np
+        ty = Ten(Q(), Q())
+        twist = TwistTen(Q(), Q())
+        theta = math.pi / 4
+
+        # Compile composition
+        exp_twist = ExpInvolution(theta=theta, body=twist, ty_total=ty)
+        composed = Seq(exp_twist, exp_twist)
+        U_composed = compile(composed).circuit.get_unitary()
+
+        # Compile direct exp_i(2θ)
+        exp_double = ExpInvolution(theta=2*theta, body=twist, ty_total=ty)
+        U_double = compile(exp_double).circuit.get_unitary()
+
+        match, _ = self.matrices_equal_up_to_phase(U_composed, U_double)
+        assert match, "exp(θ);exp(θ) should equal exp(2θ)"
+
+    @pytest.mark.parametrize("theta", [math.pi/8, math.pi/6, math.pi/4, math.pi/3])
+    def test_composition_law_various_angles(self, theta):
+        """Test composition law for various angles (verified by unitary)."""
+        import numpy as np
+        ty = Ten(Q(), Q())
+        twist = TwistTen(Q(), Q())
+
+        exp_twist = ExpInvolution(theta=theta, body=twist, ty_total=ty)
+        composed = Seq(exp_twist, exp_twist)
+        U_composed = compile(composed).circuit.get_unitary()
+
+        exp_double = ExpInvolution(theta=2*theta, body=twist, ty_total=ty)
+        U_double = compile(exp_double).circuit.get_unitary()
+
+        match, _ = self.matrices_equal_up_to_phase(U_composed, U_double)
+        assert match, f"Composition law failed for θ={theta}"

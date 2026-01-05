@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """Demo: exp_i(π/4, Twist) ; exp_i(π/4, Twist) = i·Twist
 
-This demo verifies the identity for exponentials of involutions:
-    exp(iθP) ; exp(iθP) = exp(2iθP)
-
-For θ = π/4 and P = Twist (swap):
-    exp(iπ/4 · Twist) ; exp(iπ/4 · Twist) = exp(iπ/2 · Twist) = i·Twist
-
-Since global phase doesn't affect measurement, this equals Twist up to phase.
+This is an INFRASTRUCTURE TEST that verifies the identity by:
+1. Compiling the terms to circuits
+2. Extracting actual unitaries from compiled circuits
+3. Comparing them mathematically
 
 Run with:
     cd quant_proto_phase01
@@ -30,13 +27,23 @@ def print_section(title: str) -> None:
     print(f" {title}")
     print('='*60)
 
-def circuit_to_unitary(circuit) -> np.ndarray:
-    """Extract unitary matrix from pytket circuit."""
-    from pytket.extensions.qiskit import tk_to_qiskit
-    from qiskit.quantum_info import Operator
+def matrices_equal_up_to_phase(A: np.ndarray, B: np.ndarray, tol: float = 1e-10) -> tuple[bool, complex]:
+    """Check if A = e^{iφ} · B for some phase φ.
 
-    qc = tk_to_qiskit(circuit)
-    return Operator(qc).data
+    Returns (is_equal, phase_factor).
+    """
+    # Find first non-zero entry in B
+    for i in range(B.shape[0]):
+        for j in range(B.shape[1]):
+            if np.abs(B[i, j]) > tol:
+                # Compute phase from this entry
+                if np.abs(A[i, j]) < tol:
+                    return False, 0
+                phase = A[i, j] / B[i, j]
+                # Check if A = phase * B
+                diff = np.abs(A - phase * B).max()
+                return diff < tol, phase
+    return False, 0
 
 def print_matrix(name: str, m: np.ndarray) -> None:
     """Pretty print a matrix."""
@@ -47,185 +54,143 @@ def print_matrix(name: str, m: np.ndarray) -> None:
 
 def main():
     print("=" * 60)
-    print(" Exponential of Involution Demo")
-    print(" exp_i(π/4, Twist) ; exp_i(π/4, Twist) = i·Twist")
+    print(" Exponential of Involution: INFRASTRUCTURE TEST")
+    print(" Verifies: exp_i(π/4, Twist) ; exp_i(π/4, Twist) = i·Twist")
     print("=" * 60)
 
     # Type: Q ⊗ Q
     ty = Ten(Q(), Q())
 
     # =================================================================
-    print_section("1. The Involution: Twist (TwistTen)")
+    print_section("1. Compile TwistTen and extract unitary")
     # =================================================================
 
     twist = TwistTen(Q(), Q())
-    print(f"\nTerm: TwistTen(Q, Q)")
-    print(f"Type: Q ⊗ Q → Q ⊗ Q")
+    result_twist = compile(twist, materialize=True)  # materialize to get actual SWAP
 
-    result_twist = compile(twist)
-    print(f"\nCompiled circuit:")
-    print(f"  Gates: {result_twist.circuit.n_gates}")
-    print(f"  Permutation: {result_twist.perm.new_to_old}")
+    print(f"Term: TwistTen(Q, Q)")
+    print(f"Gates: {result_twist.circuit.n_gates}")
 
-    # The SWAP matrix
+    # Extract unitary from compiled circuit
+    U_twist = result_twist.circuit.get_unitary()
+    print_matrix("U_twist (from compiled circuit)", U_twist)
+
+    # The expected SWAP matrix
     SWAP = np.array([
         [1, 0, 0, 0],
         [0, 0, 1, 0],
         [0, 1, 0, 0],
         [0, 0, 0, 1]
     ], dtype=complex)
-    print_matrix("SWAP (Twist) matrix", SWAP)
+
+    # VERIFY: compiled twist = SWAP
+    match, phase = matrices_equal_up_to_phase(U_twist, SWAP)
+    print(f"\n✓ VERIFY: U_twist = SWAP? {match} (phase={phase:.4f})")
+    assert match, "TwistTen should compile to SWAP!"
 
     # =================================================================
-    print_section("2. Single exp_i(π/4, Twist)")
+    print_section("2. Compile exp_i(π/4, Twist) and extract unitary")
     # =================================================================
 
     theta = pi / 4
     exp_twist = ExpInvolution(theta=theta, body=twist, ty_total=ty)
-    print(f"\nTerm: ExpInvolution(π/4, TwistTen(Q,Q))")
-    print(f"Type: Q ⊗ Q → Q ⊗ Q")
+    result_single = compile(exp_twist)
 
-    result_single = compile(exp_twist, explain=True)
-    print(f"\nCompiled circuit:")
-    print(f"  Gates: {result_single.circuit.n_gates}")
-    print(f"  Commands:")
+    print(f"Term: ExpInvolution(π/4, TwistTen(Q,Q))")
+    print(f"Gates: {result_single.circuit.n_gates}")
+    print("Commands:")
     for cmd in result_single.circuit.get_commands():
-        print(f"    {cmd}")
+        print(f"  {cmd}")
+
+    # Extract unitary
+    U_exp_single = result_single.circuit.get_unitary()
+    print_matrix("U_exp_single (from compiled circuit)", U_exp_single)
 
     # Expected: exp(iπ/4 · SWAP) = cos(π/4)·I + i·sin(π/4)·SWAP
     I4 = np.eye(4, dtype=complex)
     expected_single = np.cos(theta) * I4 + 1j * np.sin(theta) * SWAP
     print_matrix("Expected exp(iπ/4 · SWAP)", expected_single)
 
-    # Get actual unitary
-    try:
-        actual_single = circuit_to_unitary(result_single.circuit)
-        print_matrix("Actual circuit unitary", actual_single)
-
-        # Check if they match (up to global phase)
-        diff = np.abs(np.abs(actual_single) - np.abs(expected_single)).max()
-        print(f"\nMax magnitude difference: {diff:.10f}")
-    except ImportError:
-        print("\n(qiskit not available for unitary extraction)")
+    # VERIFY: compiled circuit = expected
+    match, phase = matrices_equal_up_to_phase(U_exp_single, expected_single)
+    print(f"\n✓ VERIFY: U_exp_single = exp(iπ/4·SWAP)? {match} (phase={phase:.4f})")
+    assert match, "exp_i(π/4, twist) should equal exp(iπ/4·SWAP)!"
 
     # =================================================================
-    print_section("3. Composition: exp_i(π/4, Twist) ; exp_i(π/4, Twist)")
+    print_section("3. Compile composition and extract unitary")
     # =================================================================
 
-    # Compose two exp_i(π/4, Twist)
     composed = Seq(exp_twist, exp_twist)
-    print(f"\nTerm: Seq(ExpInvolution(π/4, twist), ExpInvolution(π/4, twist))")
-    print(f"Type: Q ⊗ Q → Q ⊗ Q")
+    result_composed = compile(composed)
 
-    result_composed = compile(composed, explain=True)
-    print(f"\nCompiled circuit:")
-    print(f"  Gates: {result_composed.circuit.n_gates}")
-    print(f"  Commands:")
+    print(f"Term: exp_i(π/4, twist) ; exp_i(π/4, twist)")
+    print(f"Gates: {result_composed.circuit.n_gates}")
+    print("Commands:")
     for cmd in result_composed.circuit.get_commands():
-        print(f"    {cmd}")
+        print(f"  {cmd}")
 
-    # Expected: exp(iπ/2 · SWAP) = cos(π/2)·I + i·sin(π/2)·SWAP = i·SWAP
-    expected_composed = np.cos(2*theta) * I4 + 1j * np.sin(2*theta) * SWAP
-    print_matrix("Expected exp(iπ/2 · SWAP) = i·SWAP", expected_composed)
+    # Extract unitary
+    U_composed = result_composed.circuit.get_unitary()
+    print_matrix("U_composed (from compiled circuit)", U_composed)
 
-    try:
-        actual_composed = circuit_to_unitary(result_composed.circuit)
-        print_matrix("Actual circuit unitary", actual_composed)
+    # Expected: exp(iπ/2 · SWAP) = i·SWAP
+    expected_composed = 1j * SWAP
+    print_matrix("Expected i·SWAP", expected_composed)
 
-        # Check if actual ≈ i·SWAP (up to global phase)
-        # i·SWAP normalized
-        i_swap = 1j * SWAP
-
-        # To compare up to global phase, check if |actual| = |expected|
-        # or check if actual = e^{iφ} · expected for some φ
-
-        # Find the global phase
-        nonzero_idx = np.abs(actual_composed) > 0.01
-        if np.any(nonzero_idx):
-            ratio = actual_composed[nonzero_idx][0] / i_swap[nonzero_idx][0]
-            phase = np.angle(ratio)
-            print(f"\nGlobal phase difference: e^{{i·{phase:.4f}}} = e^{{i·{phase/pi:.4f}π}}")
-
-            # Remove global phase and compare
-            adjusted = actual_composed * np.exp(-1j * phase)
-            diff = np.abs(adjusted - i_swap).max()
-            print(f"After phase adjustment, max diff from i·SWAP: {diff:.10f}")
-    except ImportError:
-        pass
+    # VERIFY: compiled composition = i·SWAP
+    match, phase = matrices_equal_up_to_phase(U_composed, expected_composed)
+    print(f"\n✓ VERIFY: U_composed = i·SWAP? {match} (phase={phase:.4f})")
+    assert match, "exp_i(π/4,twist);exp_i(π/4,twist) should equal i·SWAP!"
 
     # =================================================================
-    print_section("4. Mathematical Verification")
+    print_section("4. VERIFY: composed = SWAP up to global phase")
     # =================================================================
 
+    # The key test: U_composed should equal SWAP up to global phase
+    match, phase = matrices_equal_up_to_phase(U_composed, SWAP)
+    print(f"U_composed = phase × SWAP? {match}")
+    print(f"Phase factor: {phase:.4f} = {np.abs(phase):.4f} × e^(i × {np.angle(phase)/pi:.4f}π)")
+
+    # Phase should have magnitude 1 (pure phase)
+    phase_is_unit = np.abs(np.abs(phase) - 1.0) < 1e-10
+    print(f"Phase has magnitude 1? {phase_is_unit}")
+
+    assert match, "Composed circuit should equal SWAP up to phase!"
+    assert phase_is_unit, f"Phase should have magnitude 1, got |{phase}| = {np.abs(phase)}"
+
+    # =================================================================
+    print_section("5. VERIFY: composition law exp;exp = exp(2θ)")
+    # =================================================================
+
+    # The real test: exp_i(π/4, twist) ; exp_i(π/4, twist) should equal exp_i(π/2, twist)
+    # Compile exp_i(π/2, twist) directly
+    exp_half_pi = ExpInvolution(theta=pi/2, body=twist, ty_total=ty)
+    result_half_pi = compile(exp_half_pi)
+
+    print(f"Term: exp_i(π/2, twist)")
+    print(f"Gates: {result_half_pi.circuit.n_gates}")
+
+    U_half_pi = result_half_pi.circuit.get_unitary()
+    print_matrix("U_exp_half_pi (from compiled circuit)", U_half_pi)
+
+    # VERIFY: composition equals direct exp_i(π/2)
+    match, phase = matrices_equal_up_to_phase(U_composed, U_half_pi)
+    print(f"\n✓ VERIFY: (exp_i(π/4);exp_i(π/4)) = exp_i(π/2)? {match} (phase={phase:.4f})")
+    assert match, "Composition should equal exp_i(2θ)!"
+
+    print("\n" + "="*60)
+    print(" ✓ ALL INFRASTRUCTURE TESTS PASSED")
+    print("="*60)
     print("""
-The identity follows from:
+Verified by extracting unitaries from compiled circuits:
 
-    exp(iθP) = cos(θ)·I + i·sin(θ)·P    (for involution P² = I)
+  1. TwistTen(Q,Q) compiles to SWAP ✓
+  2. exp_i(π/4, twist) compiles to exp(iπ/4·SWAP) (up to phase) ✓
+  3. exp_i(π/4, twist) ; exp_i(π/4, twist) = SWAP (up to phase) ✓
+  4. exp_i(π/4, twist) ; exp_i(π/4, twist) = exp_i(π/2, twist) ✓
 
-Therefore:
-    exp(iθP) · exp(iθP) = [cos(θ)·I + i·sin(θ)·P]²
-                        = cos²(θ)·I + 2i·cos(θ)·sin(θ)·P + i²·sin²(θ)·P²
-                        = cos²(θ)·I + i·sin(2θ)·P - sin²(θ)·I   (using P² = I)
-                        = [cos²(θ) - sin²(θ)]·I + i·sin(2θ)·P
-                        = cos(2θ)·I + i·sin(2θ)·P
-                        = exp(2iθP)
-
-For θ = π/4:
-    exp(iπ/4·P) · exp(iπ/4·P) = exp(iπ/2·P)
-                               = cos(π/2)·I + i·sin(π/2)·P
-                               = 0·I + i·1·P
-                               = i·P
-
-So: exp_i(π/4, Twist) ; exp_i(π/4, Twist) = i·Twist
-
-Up to global phase (which is unobservable), this equals Twist!
+The composition law exp_i(θ,P) ; exp_i(θ,P) = exp_i(2θ,P) is verified!
 """)
-
-    # =================================================================
-    print_section("5. Verification: (exp;exp) vs Twist")
-    # =================================================================
-
-    try:
-        # The key insight: i·SWAP has the same action as SWAP up to global phase
-        # Let's verify the eigenvalue structure
-
-        print("Eigenvalue analysis:")
-        print("\nSWAP eigenvalues:")
-        swap_eigs = np.linalg.eigvals(SWAP)
-        for e in sorted(swap_eigs, key=lambda x: x.real):
-            print(f"  {e.real:+.4f}{e.imag:+.4f}i")
-
-        print("\ni·SWAP eigenvalues:")
-        i_swap_eigs = np.linalg.eigvals(1j * SWAP)
-        for e in sorted(i_swap_eigs, key=lambda x: x.real):
-            print(f"  {e.real:+.4f}{e.imag:+.4f}i")
-
-        print("\nThe eigenvalues of i·SWAP are just i times those of SWAP.")
-        print("This confirms that i·SWAP = i · SWAP (global phase times SWAP).")
-        print("\nIn quantum mechanics, global phase is unobservable,")
-        print("so exp_i(π/4, Twist) ; exp_i(π/4, Twist) ≡ Twist")
-    except Exception as e:
-        print(f"(eigenvalue analysis skipped: {e})")
-
-    # =================================================================
-    print_section("6. Circuit Summary")
-    # =================================================================
-
-    print(f"""
-┌─────────────────────────────────────────────────────────────┐
-│  Term                              │ Gates │ Result         │
-├─────────────────────────────────────────────────────────────┤
-│  TwistTen(Q,Q)                     │   0   │ Permutation    │
-│  exp_i(π/4, Twist)                 │   {result_single.circuit.n_gates}   │ ExpSwap gate   │
-│  exp_i(π/4, Twist) ; exp_i(π/4, Twist) │   {result_composed.circuit.n_gates}   │ Two ExpSwaps   │
-└─────────────────────────────────────────────────────────────┘
-
-Key result:
-  Two ExpSwap(π/4) gates compose to give exp(iπ/2·SWAP) = i·SWAP
-  This equals SWAP up to global phase, confirming the involution identity.
-""")
-
-    print("\n✓ Demo complete!")
     return 0
 
 if __name__ == "__main__":
