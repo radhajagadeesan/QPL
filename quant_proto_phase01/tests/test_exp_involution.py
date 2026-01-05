@@ -369,3 +369,73 @@ class TestExpInvolutionCompositionLaw:
 
         match, _ = self.matrices_equal_up_to_phase(U_composed, U_double)
         assert match, f"Composition law failed for θ={theta}"
+
+
+class TestPauliConjugation:
+    """Test exp_i(π/4, X) ; Z ; exp_i(-π/4, X) = Y on qubit as I+I."""
+
+    @staticmethod
+    def extract_logical_submatrix(U):
+        """Extract 2x2 logical qubit from 4x4 physical (one-hot encoding)."""
+        import numpy as np
+        # |0⟩_L = |10⟩_P (idx 2), |1⟩_L = |01⟩_P (idx 1)
+        return np.array([[U[2,2], U[2,1]], [U[1,2], U[1,1]]])
+
+    @staticmethod
+    def matrices_equal_up_to_phase(A, B, tol=1e-9):
+        import numpy as np
+        for i in range(B.shape[0]):
+            for j in range(B.shape[1]):
+                if abs(B[i,j]) > tol:
+                    if abs(A[i,j]) < tol:
+                        return False, 0
+                    phase = A[i,j] / B[i,j]
+                    diff = abs(A - phase * B).max()
+                    return diff < tol, phase
+        return False, 0
+
+    def test_twist_plus_is_pauli_x(self):
+        """TwistPlus(I,I) = Pauli-X on logical qubit."""
+        import numpy as np
+        from lang.types import Unit, Plus
+        ty = Plus(Unit(), Unit())
+        X = TwistPlus(Unit(), Unit())
+        U_full = compile(X, materialize=True).circuit.get_unitary()
+        U = self.extract_logical_submatrix(U_full)
+        expected = np.array([[0,1],[1,0]], dtype=complex)
+        match, _ = self.matrices_equal_up_to_phase(U, expected)
+        assert match, "TwistPlus(I,I) should be Pauli-X"
+
+    def test_z_gate_on_wire1_is_pauli_z(self):
+        """Z[1] on I+I = Pauli-Z on logical qubit."""
+        import numpy as np
+        from lang.types import Unit, Plus
+        from lang.terms import Z
+        ty = Plus(Unit(), Unit())
+        Z_gate = Z(1, ty)
+        U_full = compile(Z_gate).circuit.get_unitary()
+        U = self.extract_logical_submatrix(U_full)
+        expected = np.array([[1,0],[0,-1]], dtype=complex)
+        match, _ = self.matrices_equal_up_to_phase(U, expected)
+        assert match, "Z[1] should be Pauli-Z"
+
+    def test_conjugation_equals_y(self):
+        """exp_i(π/4, X) ; Z ; exp_i(-π/4, X) = Y (verified by unitary)."""
+        import numpy as np
+        from lang.types import Unit, Plus
+        from lang.terms import Z, S, Sdg
+        ty = Plus(Unit(), Unit())
+        X = TwistPlus(Unit(), Unit())
+
+        exp_X_pos = ExpInvolution(theta=math.pi/4, body=X, ty_total=ty)
+        exp_X_neg = ExpInvolution(theta=-math.pi/4, body=X, ty_total=ty)
+        Z_gate = Z(1, ty)
+
+        conjugation = Seq(exp_X_pos, Z_gate, exp_X_neg)
+        U_conj_full = compile(conjugation, materialize=True).circuit.get_unitary()
+        U_conj = self.extract_logical_submatrix(U_conj_full)
+
+        # Expected Pauli-Y
+        expected_Y = np.array([[0, -1j], [1j, 0]], dtype=complex)
+        match, phase = self.matrices_equal_up_to_phase(U_conj, expected_Y)
+        assert match, f"Conjugation should equal Y, phase={phase}"

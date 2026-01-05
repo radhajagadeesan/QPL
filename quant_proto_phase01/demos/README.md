@@ -10,6 +10,7 @@ Demonstrations of Granthi language features and compilation.
 |------|------|-------------|
 | QSwitch | `qswitch_demo.py` | Higher-order quantum switch combinator |
 | ExpInvolution | `exp_twist_demo.py` | Exponentials of structural involutions |
+| Pauli Conjugation | `pauli_conjugation_demo.py` | Qubit as I+I, Pauli identity verification |
 
 ---
 
@@ -76,6 +77,48 @@ PYTHONPATH=src python demos/exp_twist_demo.py
 1. Compiling each term to pytket circuit
 2. Extracting actual unitary via `circuit.get_unitary()`
 3. Comparing matrices mathematically (up to global phase)
+
+---
+
+## Pauli Conjugation Demo
+
+Verifies the Pauli identity using qubit represented as `I + I` (one-hot encoding):
+
+```
+exp_i(π/4, X) ; Z ; exp_i(-π/4, X) = Y
+```
+
+Where:
+- Qubit = `I + I` (2 one-hot tag wires)
+- X = `twist+[I,I]` (structural swap)
+- Z = `Z[1]` (Z gate on wire 1)
+- Y = `twist ; S[1] ; Sdg[0]` (swap + phases)
+
+| Format | File | Requirements |
+|--------|------|--------------|
+| Static output | `pauli_conjugation_demo_output.md` | None (just read) |
+| Python script | `pauli_conjugation_demo.py` | Python + pytket |
+
+**Run:**
+```bash
+cd quant_proto_phase01
+PYTHONPATH=src python demos/pauli_conjugation_demo.py
+```
+
+**What it verifies:**
+
+| Term | Gates | Logical Unitary |
+|------|-------|-----------------|
+| `twist+[I,I]` | 1 | Pauli-X |
+| `Z[1]` | 1 | Pauli-Z |
+| `twist ; S[1] ; Sdg[0]` | 3 | Pauli-Y |
+| `exp_i(π/4,X) ; Z ; exp_i(-π/4,X)` | 7 | = Y (up to phase) |
+
+**Key insight:** The one-hot encoding of `I + I` maps:
+- Logical |0⟩ → physical |10⟩
+- Logical |1⟩ → physical |01⟩
+
+This allows Pauli matrices to be implemented as structural operations (X) or gates on specific wires (Z, Y).
 
 ---
 
