@@ -69,11 +69,30 @@ def matrices_equal_up_to_phase(A: np.ndarray, B: np.ndarray, tol: float = 1e-9):
     return False, 0
 
 
-def print_matrix(name: str, m: np.ndarray) -> None:
+def print_matrix(name: str, m: np.ndarray, labels: list = None) -> None:
     print(f"\n{name}:")
-    for row in m:
+    if labels and len(labels) == m.shape[0]:
+        # Print header
+        header = "       " + "  ".join(f"{l:>12}" for l in labels)
+        print(header)
+    for i, row in enumerate(m):
         formatted = [f"{x.real:+.4f}{x.imag:+.4f}i" for x in row]
-        print("  [" + ", ".join(formatted) + "]")
+        prefix = f"  {labels[i]:>4} " if labels else "  "
+        print(prefix + "[" + ", ".join(formatted) + "]")
+
+
+def print_physical_and_logical(name: str, U_full: np.ndarray) -> np.ndarray:
+    """Print both the 4x4 physical and 2x2 logical matrices."""
+    # Physical 4x4
+    phys_labels = ["|00⟩", "|01⟩", "|10⟩", "|11⟩"]
+    print_matrix(f"{name} (physical 4×4)", U_full, phys_labels)
+
+    # Logical 2x2
+    U_logical = extract_logical_submatrix(U_full)
+    log_labels = ["|0⟩_L", "|1⟩_L"]
+    print_matrix(f"{name} (logical 2×2)", U_logical, log_labels)
+
+    return U_logical
 
 
 def main():
@@ -103,8 +122,7 @@ Qubit as I + I (one-hot encoding):
     print(f"Permutation: {result_X.perm.new_to_old}")
 
     U_X_full = result_X.circuit.get_unitary()
-    U_X = extract_logical_submatrix(U_X_full)
-    print_matrix("X (logical 2x2)", U_X)
+    U_X = print_physical_and_logical("X", U_X_full)
 
     # Expected Pauli-X
     expected_X = np.array([[0, 1], [1, 0]], dtype=complex)
@@ -123,8 +141,7 @@ Qubit as I + I (one-hot encoding):
     print(f"Gates: {result_Z.circuit.n_gates}")
 
     U_Z_full = result_Z.circuit.get_unitary()
-    U_Z = extract_logical_submatrix(U_Z_full)
-    print_matrix("Z (logical 2x2)", U_Z)
+    U_Z = print_physical_and_logical("Z", U_Z_full)
 
     # Expected Pauli-Z
     expected_Z = np.array([[1, 0], [0, -1]], dtype=complex)
@@ -147,8 +164,7 @@ Qubit as I + I (one-hot encoding):
         print(f"  {cmd}")
 
     U_Y_full = result_Y.circuit.get_unitary()
-    U_Y = extract_logical_submatrix(U_Y_full)
-    print_matrix("Y (logical 2x2)", U_Y)
+    U_Y = print_physical_and_logical("Y", U_Y_full)
 
     # Expected Pauli-Y
     expected_Y = np.array([[0, -1j], [1j, 0]], dtype=complex)
@@ -170,8 +186,7 @@ Qubit as I + I (one-hot encoding):
         print(f"  {cmd}")
 
     U_exp_pos_full = result_exp_pos.circuit.get_unitary()
-    U_exp_pos = extract_logical_submatrix(U_exp_pos_full)
-    print_matrix("exp_i(π/4, X) (logical 2x2)", U_exp_pos)
+    U_exp_pos = print_physical_and_logical("exp_i(π/4, X)", U_exp_pos_full)
 
     # Expected: cos(π/4)I + i·sin(π/4)X = (1/√2)(I + iX)
     expected_exp_pos = np.cos(pi/4) * np.eye(2) + 1j * np.sin(pi/4) * expected_X
@@ -190,8 +205,7 @@ Qubit as I + I (one-hot encoding):
     print(f"Gates: {result_exp_neg.circuit.n_gates}")
 
     U_exp_neg_full = result_exp_neg.circuit.get_unitary()
-    U_exp_neg = extract_logical_submatrix(U_exp_neg_full)
-    print_matrix("exp_i(-π/4, X) (logical 2x2)", U_exp_neg)
+    U_exp_neg = print_physical_and_logical("exp_i(-π/4, X)", U_exp_neg_full)
 
     # =================================================================
     print_section("6. Build conjugation: exp_i(π/4,X) ; Z ; exp_i(-π/4,X)")
@@ -207,15 +221,15 @@ Qubit as I + I (one-hot encoding):
         print(f"  {cmd}")
 
     U_conj_full = result_conj.circuit.get_unitary()
-    U_conj = extract_logical_submatrix(U_conj_full)
-    print_matrix("Conjugation (logical 2x2)", U_conj)
+    U_conj = print_physical_and_logical("Conjugation", U_conj_full)
 
     # =================================================================
     print_section("7. VERIFY: Conjugation = Y")
     # =================================================================
 
-    print_matrix("Conjugation result", U_conj)
-    print_matrix("Expected Y", expected_Y)
+    log_labels = ["|0⟩_L", "|1⟩_L"]
+    print_matrix("Conjugation result (logical)", U_conj, log_labels)
+    print_matrix("Expected Pauli-Y", expected_Y, log_labels)
 
     match, phase = matrices_equal_up_to_phase(U_conj, expected_Y)
     print(f"\nConjugation = Y (up to phase)? {match}")
