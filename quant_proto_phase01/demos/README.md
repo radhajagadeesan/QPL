@@ -1,8 +1,21 @@
-# QSwitch Demos
+# Granthi Demos
 
-Demonstrations of QSwitch, a higher-order quantum programming combinator.
+Demonstrations of Granthi language features and compilation.
 
-## Quick Start
+---
+
+## Available Demos
+
+| Demo | File | Description |
+|------|------|-------------|
+| QSwitch | `qswitch_demo.py` | Higher-order quantum switch combinator |
+| ExpInvolution | `exp_twist_demo.py` | Exponentials of structural involutions |
+
+---
+
+## QSwitch Demo
+
+Demonstrates QSwitch, a higher-order quantum programming combinator.
 
 | Format | File | Requirements |
 |--------|------|--------------|
@@ -12,21 +25,78 @@ Demonstrations of QSwitch, a higher-order quantum programming combinator.
 | Video script | `qswitch_demo_video.py` | Python + pytket |
 | Detailed walkthrough | `quantum_switch_demo.py` | Python + pytket |
 
+**Run:**
+```bash
+cd quant_proto_phase01
+PYTHONPATH=src python demos/qswitch_demo.py
+```
+
+**What it shows:**
+1. QSwitch definition with higher-order type signature
+2. Abstract circuit: `anti-controlled-g ; f ; controlled-g`
+3. Instantiation: QSwitch(H, S) substitution
+4. Compiled circuit: 5 gates on 2 qubits
+5. GOI form: 10 gates on 4 qubits (doubled conjugation)
+
 ---
 
-## 1. Static Output (`qswitch_demo_output.md`)
+## ExpInvolution Demo
 
-For those who just want to see the results without running code.
+Infrastructure test verifying the composition law for exponentials of involutions:
 
-**View:** Open in any markdown viewer or text editor.
+```
+exp_i(θ, P) ; exp_i(θ, P) = exp_i(2θ, P)
+```
+
+For θ = π/4 and P = Twist (SWAP):
+```
+exp_i(π/4, twist) ; exp_i(π/4, twist) = exp_i(π/2, twist) = i·SWAP
+```
+
+| Format | File | Requirements |
+|--------|------|--------------|
+| Static output | `exp_twist_demo_output.md` | None (just read) |
+| Python script | `exp_twist_demo.py` | Python + pytket |
+
+**Run:**
+```bash
+cd quant_proto_phase01
+PYTHONPATH=src python demos/exp_twist_demo.py
+```
+
+**What it verifies (by extracting unitaries from compiled circuits):**
+
+| Term | Gates | Unitary |
+|------|-------|---------|
+| `TwistTen(Q,Q)` | 0 | SWAP (permutation only) |
+| `exp_i(π/4, twist)` | 3 | XXPhase, YYPhase, ZZPhase |
+| `exp_i(π/4, twist) ; exp_i(π/4, twist)` | 6 | = exp_i(π/2, twist) |
+
+**Key result:** The composition of two exp_i(π/4) equals exp_i(π/2), verified by:
+1. Compiling each term to pytket circuit
+2. Extracting actual unitary via `circuit.get_unitary()`
+3. Comparing matrices mathematically (up to global phase)
 
 ---
 
-## 2. HTML Animation (`qswitch_demo.html`)
+## Running Demos
 
-Interactive browser-based demo with play/pause controls.
+All demos require:
+```bash
+pip install pytket
+```
 
-**View:** Open in any web browser (works offline).
+Run from the `quant_proto_phase01` directory:
+```bash
+cd quant_proto_phase01
+PYTHONPATH=src python demos/<demo_name>.py
+```
+
+---
+
+## HTML Animation (QSwitch)
+
+Open `qswitch_demo.html` in any browser for an interactive demo.
 
 Controls:
 - **▶ Play Demo** — animated line-by-line output
@@ -35,69 +105,18 @@ Controls:
 
 ---
 
-## 3. Runnable Script (`qswitch_demo.py`)
+## Video Recording (QSwitch)
 
-For those with the infrastructure installed.
+For creating video demos with visual timing:
 
-**Requirements:**
-```bash
-pip install pytket
-```
-
-**Run:**
-```bash
-cd quant_proto_phase01
-PYTHONPATH=src python demos/qswitch_demo.py
-```
-
----
-
-## 4. Video Recording Script (`qswitch_demo_video.py`)
-
-For creating video demos with visual timing.
-
-**Direct run:**
 ```bash
 cd quant_proto_phase01
 PYTHONPATH=src python demos/qswitch_demo_video.py
 ```
 
-**With asciinema:**
+With asciinema:
 ```bash
 pip install asciinema
-cd quant_proto_phase01
 asciinema rec -c "PYTHONPATH=src python demos/qswitch_demo_video.py" qswitch_demo.cast
 asciinema play qswitch_demo.cast
-```
-
----
-
-## 5. Detailed Walkthrough (`quantum_switch_demo.py`)
-
-Educational demo showing the full pipeline from surface syntax to circuit.
-
-**Run:**
-```bash
-cd quant_proto_phase01
-PYTHONPATH=src python demos/quantum_switch_demo.py
-```
-
----
-
-## What the Demo Shows
-
-1. **Part 1: QSwitch Definition** — Higher-order type signature
-2. **Part 2: Abstract Circuit** — `anti-controlled-g ; f ; controlled-g`
-3. **Part 3: Instantiation** — QSwitch(H, S) substitution
-4. **Part 4: Compiled Circuit** — 5 gates on 2 qubits
-5. **Part 5: GOI Form** — 10 gates on 4 qubits (doubled conjugation)
-
-**Key insight:** QSwitch elaborates to controlled gates:
-```
-X[0]; C-g[0,1]; X[0]; f[1]; C-g[0,1]
-```
-
-For QSwitch(H, S):
-```
-X[0]; CS[0,1]; X[0]; H[1]; CS[0,1]
 ```
