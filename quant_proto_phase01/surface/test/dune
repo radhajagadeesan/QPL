@@ -5,3 +5,7 @@
 (test
  (name test_bridge)
  (libraries qpl_surface))
+
+(test
+ (name test_exp_twist)
+ (libraries qpl_surface))
