@@ -486,6 +486,39 @@ class ExpInvolution:
             object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
 
 
+# -- Qubit encoding isomorphism (Q ↔ I + I with ancilla)
+
+@dataclass(frozen=True, slots=True)
+class EncodeQubit:
+    """Encode a primitive qubit into one-hot sum type: Q → I + I.
+
+    Allocates an ancilla |0⟩ internally. Circuit: CX[0,1]; X[0]
+
+    Maps:
+        |0⟩ → |10⟩  (logical |0⟩_L)
+        |1⟩ → |01⟩  (logical |1⟩_L)
+
+    Preserves superposition: α|0⟩ + β|1⟩ → α|10⟩ + β|01⟩
+    """
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class DecodeQubit:
+    """Decode one-hot sum type back to primitive qubit: I + I → Q.
+
+    Deallocates ancilla (returns to |0⟩). Circuit: X[0]; CX[0,1]
+
+    Maps:
+        |10⟩ → |0⟩  (logical |0⟩_L → |0⟩)
+        |01⟩ → |1⟩  (logical |1⟩_L → |1⟩)
+
+    Partial function: undefined on invalid states |00⟩, |11⟩.
+    Preserves superposition: α|10⟩ + β|01⟩ → α|0⟩ + β|1⟩
+    """
+    pass
+
+
 Term = Union[
     Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
@@ -504,6 +537,8 @@ Term = Union[
     FunVar, Lam, Apply,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
+    # Qubit encoding isomorphism
+    EncodeQubit, DecodeQubit,
 ]
 
 

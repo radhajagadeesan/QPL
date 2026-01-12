@@ -26,6 +26,8 @@ from lang.terms import (
     FunVar, Lam, Apply,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
+    # Qubit encoding isomorphism
+    EncodeQubit, DecodeQubit,
 )
 from lang.types import width
 from typing_.check import type_of, assert_well_typed, TypeCheckError
@@ -92,6 +94,19 @@ def _contains_feedback(t: Term) -> bool:
         return _contains_feedback(t.f) or _contains_feedback(t.g)
     if isinstance(t, TenTerm):
         return _contains_feedback(t.f) or _contains_feedback(t.g)
+    return False
+
+
+def _contains_encode_decode(t: Term) -> bool:
+    """Check if term contains EncodeQubit or DecodeQubit anywhere."""
+    if isinstance(t, (EncodeQubit, DecodeQubit)):
+        return True
+    if isinstance(t, Seq):
+        return _contains_encode_decode(t.f) or _contains_encode_decode(t.g)
+    if isinstance(t, TenTerm):
+        return _contains_encode_decode(t.f) or _contains_encode_decode(t.g)
+    if isinstance(t, Feedback):
+        return _contains_encode_decode(t.body)
     return False
 
 
@@ -205,13 +220,18 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
 
     assert_well_typed(term)
     dom, cod = type_of(term)
-    n = width(dom)
 
-    # For terms with distributivity, the syntactic types have different naive widths
-    # but the physical layout is the same under the sharing model.
-    # We trust that distributivity preserves physical width.
-    if not _contains_dist(term) and width(cod) != n:
-        raise TypeCheckError("Compilation currently requires width(dom)==width(cod).")
+    # For terms with encode/decode, we always need 2 wires (Q=1, I+I=2).
+    # Even if roundtrip Q→Q has width 1, internally we need 2 wires.
+    if _contains_encode_decode(term):
+        n = 2  # encode/decode always operate on 2 wires
+    else:
+        n = width(dom)
+        # For terms with distributivity, the syntactic types have different naive widths
+        # but the physical layout is the same under the sharing model.
+        # We trust that distributivity preserves physical width.
+        if not _contains_dist(term) and width(cod) != n:
+            raise TypeCheckError("Compilation currently requires width(dom)==width(cod).")
 
     circ = Circuit(n)
     p = identity(n)
@@ -530,6 +550,29 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
 
             if explain:
                 log.append(f"ExpInvolution theta={t.theta} body_perm={body_perm.new_to_old} swaps={swaps}")
+            return
+
+        # Qubit encoding isomorphism: Q ↔ I + I
+        if isinstance(t, EncodeQubit):
+            # encode : Q → I + I
+            # Circuit: CX[0,1]; X[0]
+            # Wire 0 is input Q, wire 1 is ancilla (assumed |0⟩)
+            # Output: wire 0 = t₀, wire 1 = t₁ of I+I
+            emit_CX(0, 1, offset)
+            emit_X(0, offset)
+            if explain:
+                log.append(f"EncodeQubit: CX(0,1); X(0) at offset {offset}")
+            return
+
+        if isinstance(t, DecodeQubit):
+            # decode : I + I → Q
+            # Circuit: X[0]; CX[0,1]
+            # Input: wires 0,1 are I+I (t₀, t₁)
+            # Output: wire 0 is Q, wire 1 is ancilla (returned to |0⟩)
+            emit_X(0, offset)
+            emit_CX(0, 1, offset)
+            if explain:
+                log.append(f"DecodeQubit: X(0); CX(0,1) at offset {offset}")
             return
 
         # Higher-order constructs (GOI apply)

@@ -23,6 +23,8 @@ from lang.terms import (
     CH, CS, CSdg,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
+    # Qubit encoding isomorphism
+    EncodeQubit, DecodeQubit,
 )
 
 
@@ -198,6 +200,17 @@ def type_of(t: Term) -> DomCod:
             )
         # ExpInvolution preserves the type (since exp(iθP) : A → A when P : A → A)
         return (body_dom, body_cod)
+
+    # Qubit encoding isomorphism: Q ↔ I + I (with implicit ancilla)
+    if isinstance(t, EncodeQubit):
+        from lang.types import Q, Unit
+        # encode : Q → I + I
+        return (Q(), Plus(Unit(), Unit()))
+
+    if isinstance(t, DecodeQubit):
+        from lang.types import Q, Unit
+        # decode : I + I → Q
+        return (Plus(Unit(), Unit()), Q())
 
     raise TypeCheckError(f"Unknown term node: {t!r}")
 

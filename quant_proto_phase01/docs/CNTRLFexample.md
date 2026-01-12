@@ -221,7 +221,56 @@ The control structure is **compiled into the wire layout**, not implemented with
 
 ---
 
-## 8. Limitations
+## 8. Qubit Encoding Isomorphism
+
+The language provides explicit terms to convert between Q and I+I:
+
+```
+encode : Q → I + I    (allocates ancilla |0⟩)
+decode : I + I → Q    (deallocates ancilla)
+```
+
+### Circuits
+
+**Encode** (`CX[0,1]; X[0]`):
+```
+|0⟩ ⊗ |0⟩ → |10⟩  (logical |0⟩_L)
+|1⟩ ⊗ |0⟩ → |01⟩  (logical |1⟩_L)
+```
+
+**Decode** (`X[0]; CX[0,1]`):
+```
+|10⟩ → |0⟩ ⊗ |0⟩
+|01⟩ → |1⟩ ⊗ |0⟩
+```
+
+### Roundtrips
+
+Both roundtrips are identity:
+- `encode ; decode = id` on Q ⊗ |0⟩
+- `decode ; encode = id` on valid I+I states
+
+### Usage
+
+Convert Q to I+I to use free structural control, then convert back:
+
+```python
+from lang.terms import EncodeQubit, DecodeQubit, Seq, TwistPlus
+from lang.types import Unit
+
+# Apply structural X (twist+) to a Q qubit
+structural_X_on_Q = Seq(
+    EncodeQubit(),           # Q → I+I
+    TwistPlus(Unit(), Unit()),  # structural X (free!)
+    DecodeQubit()            # I+I → Q
+)
+```
+
+This applies logical X using only structural permutations plus 4 gates for encode/decode.
+
+---
+
+## 9. Limitations
 
 This only works when the controlled operation is **structural** (a permutation):
 - twist⊗, twist+ ✓

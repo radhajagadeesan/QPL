@@ -142,6 +142,33 @@ exp(iθ · SWAP) = cos(θ)·I + i·sin(θ)·SWAP
 3. Decompose π into disjoint transpositions (a₁,b₁), (a₂,b₂), ...
 4. Emit `ExpSwap(θ, aₖ, bₖ)` for each transposition
 
+### Qubit Encoding Isomorphism
+
+| Term | Type | Description |
+|------|------|-------------|
+| `EncodeQubit()` | Q → I + I | Encode primitive qubit to one-hot |
+| `DecodeQubit()` | I + I → Q | Decode one-hot back to primitive qubit |
+
+**Signatures:**
+```python
+EncodeQubit() -> Term
+# Returns: term of type Q → (I ⊕ I)
+
+DecodeQubit() -> Term
+# Returns: term of type (I ⊕ I) → Q
+```
+
+**Circuits:**
+- `encode`: CX[0,1]; X[0] — maps |0⟩⊗|0⟩ → |10⟩, |1⟩⊗|0⟩ → |01⟩
+- `decode`: X[0]; CX[0,1] — maps |10⟩ → |0⟩⊗|0⟩, |01⟩ → |1⟩⊗|0⟩
+
+**Properties:**
+- `encode ; decode = id` on Q ⊗ |0⟩ subspace
+- `decode ; encode = id` on valid I+I states (|01⟩, |10⟩)
+- Superposition preserved through roundtrip
+
+**Note:** The ancilla (wire 1) must be |0⟩ for encode, and is returned to |0⟩ by decode.
+
 ### Higher-Order Terms
 
 | Term | Description |

@@ -172,6 +172,25 @@ The compiler:
 2. Decomposes P into disjoint transpositions
 3. Emits `ExpSwap` gates for each transposition
 
+### Qubit Encoding Isomorphism
+
+Convert between primitive qubit Q and encoded qubit I + I:
+
+| Primitive | Type | Description |
+|-----------|------|-------------|
+| `encode` | Q → I + I | Encode primitive qubit to one-hot (allocates ancilla) |
+| `decode` | I + I → Q | Decode one-hot back to primitive qubit (frees ancilla) |
+
+**Circuit implementations:**
+- `encode`: CX[0,1]; X[0]
+- `decode`: X[0]; CX[0,1]
+
+**Roundtrips are identity:**
+- `encode ; decode = id` on Q
+- `decode ; encode = id` on valid I + I states
+
+This enables using structural operations (which are free on I + I) on primitive qubits.
+
 ### Binding Forms
 
 ```ocaml
