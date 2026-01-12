@@ -334,4 +334,5 @@ Shows both 4×4 physical unitaries and 2×2 logical qubit submatrices.
 
 - `API_REFERENCE.md` — Complete type and term reference
 - `COMPILER_API_GUIDE.md` — Python API for compiler embedding
+- `CNTRLFexample.md` — Controlled operations with structural f (layout, logical H, free control)
 - `demos/README.md` — Demo instructions
