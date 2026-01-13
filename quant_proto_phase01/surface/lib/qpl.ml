@@ -8,6 +8,7 @@ module Rep = Rep
 module Datatype = Datatype
 module Emit = Emit
 module Bridge = Bridge
+module Staging = Staging
 
 (** Example: Bool datatype registration *)
 module Bool = Datatype.Make2(struct
@@ -75,4 +76,5 @@ let info () =
   print_endline "  Rep      - Type representations (⊗, +)";
   print_endline "  Datatype - Datatype registration functors";
   print_endline "  Emit     - Python code generation";
-  print_endline "  Bridge   - Python compiler integration"
+  print_endline "  Bridge   - Python compiler integration";
+  print_endline "  Staging  - Meta-level combinators (iterate, fold, pow2)"

@@ -486,6 +486,36 @@ class ExpInvolution:
             object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
 
 
+# -- Case/Copairing (branching on sum types)
+
+@dataclass(frozen=True, slots=True)
+class Case:
+    """Case expression (copairing): [f, g] : (A + B) → C.
+
+    Given:
+        left  : A → C
+        right : B → C
+
+    Produces a term of type (A + B) → C that:
+    - Applies `left` when the input is in the left summand
+    - Applies `right` when the input is in the right summand
+
+    When the input is in superposition, this compiles to controlled gates:
+    - Anti-controlled (on tag=0): apply gates from `left` branch
+    - Controlled (on tag=1): apply gates from `right` branch
+
+    Type parameters:
+        ty_left:  A (left summand)
+        ty_right: B (right summand)
+
+    The result type C is inferred from the branches (they must match).
+    """
+    ty_left: Ty   # A
+    ty_right: Ty  # B
+    left: "Term"  # f : A → C
+    right: "Term" # g : B → C
+
+
 # -- Qubit encoding isomorphism (Q ↔ I + I with ancilla)
 
 @dataclass(frozen=True, slots=True)
@@ -535,6 +565,8 @@ Term = Union[
     CH, CS, CSdg,
     # Higher-order constructs (GOI apply)
     FunVar, Lam, Apply,
+    # Case/copairing (branching on sum types)
+    Case,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
     # Qubit encoding isomorphism

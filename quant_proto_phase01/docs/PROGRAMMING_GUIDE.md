@@ -349,9 +349,67 @@ Shows both 4×4 physical unitaries and 2×2 logical qubit submatrices.
 
 ---
 
+## OCaml Staging (Meta-Level Programming)
+
+Granthi supports a two-level architecture where **OCaml** serves as a staging/meta-language for generating object-language programs:
+
+### Key Insight
+
+OCaml provides unrestricted classical computation (copying, iteration, recursion) at the **meta-level**. The generated programs live in a **linear λ-calculus** where linearity is enforced.
+
+This means combinators like `iterate`, `fold`, and `pow2` are OCaml functions that *generate* object-language terms.
+
+### Staging Combinators
+
+| Combinator | Type | Description |
+|------------|------|-------------|
+| `iterate n f` | `int -> tm -> tm` | Generates f ; f ; ... ; f (n times) |
+| `fold ty [f1;f2;...]` | `ty -> tm list -> tm` | Generates f1 ; f2 ; ... ; fn |
+| `pow2 f` | `tm -> tm` | Generates f ; f |
+| `power_of_2 n f` | `int -> tm -> tm` | Generates f^(2^n) via repeated squaring |
+| `indexed_fold n ty gen` | `int -> ty -> (int -> tm) -> tm` | Generates gen(0) ; gen(1) ; ... ; gen(n-1) |
+
+### Examples
+
+```ocaml
+open Qpl_surface.Staging
+
+(* iterate: Apply Hadamard 3 times *)
+let h3 = iterate 3 (h 0 q)
+(* Produces: H ; H ; H *)
+
+(* fold: Compose a sequence of different gates *)
+let hst = fold q [h 0 q; s 0 q; t 0 q]
+(* Produces: H ; S ; T *)
+
+(* indexed_fold: Generate stage-dependent rotations *)
+let rz_sequence = indexed_fold 4 q (fun k ->
+  rz (Float.pi /. Float.pow 2.0 (Float.of_int k)) 0 q
+)
+(* Produces: Rz[π] ; Rz[π/2] ; Rz[π/4] ; Rz[π/8] *)
+
+(* power_of_2: Efficient repeated squaring *)
+let h8 = power_of_2 3 (h 0 q)
+(* Produces: H^8 = H ; H ; H ; H ; H ; H ; H ; H *)
+```
+
+### Building and Running
+
+```bash
+cd surface
+eval $(opam env)
+dune build examples/staging_demo.exe
+./_build/default/examples/staging_demo.exe
+```
+
+See `surface/examples/staging_demo.ml` for complete examples.
+
+---
+
 ## Further Reading
 
 - `API_REFERENCE.md` — Complete type and term reference
 - `COMPILER_API_GUIDE.md` — Python API for compiler embedding
 - `CNTRLFexample.md` — Controlled operations with structural f (layout, logical H, free control)
 - `demos/README.md` — Demo instructions
+- `RadhaMSG/ocaml_staging_plan_optionA.md` — Design document for OCaml staging

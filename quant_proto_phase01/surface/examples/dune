@@ -1,0 +1,9 @@
+; Example executables for QPL surface language
+
+(executable
+ (name algorithmic_snippets)
+ (libraries qpl_surface))
+
+(executable
+ (name staging_demo)
+ (libraries qpl_surface))

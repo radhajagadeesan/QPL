@@ -21,6 +21,8 @@ from lang.terms import (
     Rz, Rx, Ry, Phase, CRz,
     # Controlled single-qubit gates
     CH, CS, CSdg,
+    # Case/copairing
+    Case,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
     # Qubit encoding isomorphism
@@ -211,6 +213,41 @@ def type_of(t: Term) -> DomCod:
         from lang.types import Q, Unit
         # decode : I + I → Q
         return (Plus(Unit(), Unit()), Q())
+
+    # Case/copairing: [f, g] : (A + B) → C
+    if isinstance(t, Case):
+        # left  : A → C
+        # right : B → C
+        # Result: (A + B) → C
+        left_dom, left_cod = type_of(t.left)
+        right_dom, right_cod = type_of(t.right)
+
+        # Check branches have matching codomains (by width)
+        if width(left_cod) != width(right_cod):
+            raise TypeCheckError(
+                f"Case branches have different codomain widths:\n"
+                f"  left  : {pretty(left_dom)} → {pretty(left_cod)} (cod width {width(left_cod)})\n"
+                f"  right : {pretty(right_dom)} → {pretty(right_cod)} (cod width {width(right_cod)})"
+            )
+
+        # Check that branch domains match declared types (by width)
+        if width(left_dom) != width(t.ty_left):
+            raise TypeCheckError(
+                f"Case left branch domain mismatch:\n"
+                f"  declared ty_left = {pretty(t.ty_left)} (width {width(t.ty_left)})\n"
+                f"  actual left dom  = {pretty(left_dom)} (width {width(left_dom)})"
+            )
+        if width(right_dom) != width(t.ty_right):
+            raise TypeCheckError(
+                f"Case right branch domain mismatch:\n"
+                f"  declared ty_right = {pretty(t.ty_right)} (width {width(t.ty_right)})\n"
+                f"  actual right dom  = {pretty(right_dom)} (width {width(right_dom)})"
+            )
+
+        # Result type: (A + B) → C
+        dom = Plus(t.ty_left, t.ty_right)
+        cod = left_cod  # Both branches have same codomain (checked above)
+        return (dom, cod)
 
     raise TypeCheckError(f"Unknown term node: {t!r}")
 
