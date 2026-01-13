@@ -5,5 +5,5 @@
  (libraries qpl_surface))
 
 (executable
- (name staging_demo)
+ (name linear_demo)
  (libraries qpl_surface))

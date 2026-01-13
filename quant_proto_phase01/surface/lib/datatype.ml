@@ -20,6 +20,14 @@ type 'arity datatype = {
   constructors : ctor_info list;
 }
 
+(** Module type for datatype specification (arity 0 - no type parameters) *)
+module type SPEC0 = sig
+  type t
+  val name : string
+  val rep : Rep.t
+  val constructors : (string * Rep.t) list
+end
+
 (** Module type for datatype specification (arity 1) *)
 module type SPEC1 = sig
   type 'a t
@@ -72,6 +80,50 @@ let find_ctor_index ctors name =
     | c :: rest -> if c.name = name then Some idx else aux (idx + 1) rest
   in
   aux 0 ctors
+
+(** Functor to register a datatype with arity 0 (no type parameters) *)
+module Make0 (S : SPEC0) : REGISTERED = struct
+  let ctors =
+    List.map (fun (name, payload) -> { name; payload }) S.constructors
+
+  let info = {
+    dt_name = S.name;
+    arity = 0;
+    rep = S.rep;
+    constructors = ctors;
+  }
+
+  let rep = S.rep
+
+  let constructor name =
+    List.find_opt (fun c -> c.name = name) ctors
+
+  let emit_rep () =
+    Emit.rep_to_python S.rep
+
+  let emit_pack ctor_name =
+    match find_ctor_index ctors ctor_name with
+    | Some idx ->
+      Emit.pack_to_python ~dt_name:S.name ~ctor_name ~ctor_idx:idx
+    | None -> failwith (Printf.sprintf "Unknown constructor: %s" ctor_name)
+
+  let emit_case branches =
+    let n = List.length ctors in
+    if List.length branches <> n then
+      failwith (Printf.sprintf "case requires exactly %d branches" n);
+    if n = 2 then begin
+      let c0 = List.nth ctors 0 in
+      let c1 = List.nth ctors 1 in
+      Emit.case_2_to_python
+        ~dt_name:S.name
+        ~c0_name:c0.name ~c0_payload:c0.payload
+        ~c1_name:c1.name ~c1_payload:c1.payload
+        ~branches
+    end
+    else
+      let ctor_order = List.map (fun c -> c.name) ctors in
+      Emit.case_n_to_python ~dt_name:S.name ~n ~branches ~ctor_order
+end
 
 (** Functor to register a datatype with arity 1 *)
 module Make1 (S : SPEC1) : REGISTERED = struct
