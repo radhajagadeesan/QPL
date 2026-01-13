@@ -56,14 +56,13 @@ let invol_twist_plus a b = Bridge.TTwistPlus (a, b)
 let exp_i theta invol = Bridge.TExpInvolution (theta, invol)
 
 (* Meta-level combinators *)
-let rec iterate n f =
+let rec iterate n ty f =
   if n <= 0 then
-    (* Need type for identity - extract from term if possible *)
-    Bridge.TId (Rep.var 0)  (* Placeholder - works for Q *)
+    Bridge.TId ty  (* identity on the correct type *)
   else if n = 1 then
     f
   else
-    seq f (iterate (n - 1) f)
+    seq f (iterate (n - 1) ty f)
 
 let fold ty fs =
   match fs with

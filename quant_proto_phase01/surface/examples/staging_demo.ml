@@ -19,18 +19,18 @@ open Staging
 (* ================================================================== *)
 
 (**
-   iterate n f = f ; f ; ... ; f   (n times)
+   iterate n ty f = f ; f ; ... ; f   (n times)
 
    This is a META-LEVEL combinator: the iteration happens in OCaml,
    producing an OBJECT-LEVEL term (sequence of f's).
 
-   Usage: iterate 3 (h 0 q) produces H ; H ; H
+   Usage: iterate 3 q (h 0 q) produces H ; H ; H
 *)
 
 let iterate_demo () =
   (* Apply Hadamard 3 times *)
-  let h3 = iterate 3 (h 0 q) in
-  print_endline "iterate 3 (H[0]) = H ; H ; H";
+  let h3 = iterate 3 q (h 0 q) in
+  print_endline "iterate 3 q (H[0]) = H ; H ; H";
   print_endline ("  Term: " ^ Bridge.term_to_json (to_bridge h3));
   print_endline ""
 

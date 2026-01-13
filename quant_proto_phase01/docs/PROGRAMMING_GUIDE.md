@@ -363,7 +363,7 @@ This means combinators like `iterate`, `fold`, and `pow2` are OCaml functions th
 
 | Combinator | Type | Description |
 |------------|------|-------------|
-| `iterate n f` | `int -> tm -> tm` | Generates f ; f ; ... ; f (n times) |
+| `iterate n ty f` | `int -> ty -> tm -> tm` | Generates f ; f ; ... ; f (n times) |
 | `fold ty [f1;f2;...]` | `ty -> tm list -> tm` | Generates f1 ; f2 ; ... ; fn |
 | `pow2 f` | `tm -> tm` | Generates f ; f |
 | `power_of_2 n f` | `int -> tm -> tm` | Generates f^(2^n) via repeated squaring |
@@ -375,7 +375,7 @@ This means combinators like `iterate`, `fold`, and `pow2` are OCaml functions th
 open Qpl_surface.Staging
 
 (* iterate: Apply Hadamard 3 times *)
-let h3 = iterate 3 (h 0 q)
+let h3 = iterate 3 q (h 0 q)
 (* Produces: H ; H ; H *)
 
 (* fold: Compose a sequence of different gates *)

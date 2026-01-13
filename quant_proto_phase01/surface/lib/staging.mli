@@ -137,9 +137,9 @@ val exp_i : float -> 'a invol -> ('a -> 'a) tm
     The iteration/recursion happens at the meta-level, producing
     well-typed object terms. *)
 
-(** [iterate n f] generates f^n = f ; f ; ... ; f (n times).
-    Returns identity if n = 0. *)
-val iterate : int -> ('a -> 'a) tm -> ('a -> 'a) tm
+(** [iterate n ty f] generates f^n = f ; f ; ... ; f (n times).
+    Returns identity on ty if n = 0. *)
+val iterate : int -> 'a ty -> ('a -> 'a) tm -> ('a -> 'a) tm
 
 (** [fold fs] generates f₁ ; f₂ ; ... ; fₙ.
     Returns identity if list is empty. *)
