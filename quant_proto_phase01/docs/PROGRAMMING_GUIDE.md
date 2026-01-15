@@ -349,48 +349,49 @@ Shows both 4×4 physical unitaries and 2×2 logical qubit submatrices.
 
 ---
 
-## OCaml Staging (Meta-Level Programming)
+## OCaml Linear DSL (Meta-Level Programming)
 
-Granthi supports a two-level architecture where **OCaml** serves as a staging/meta-language for generating object-language programs:
+Granthi supports a two-level architecture where **OCaml** serves as a staging/meta-language for generating object-language programs. The `Linear` module provides a **GADT-enforced** linear DSL where linearity is checked at OCaml compile time.
 
 ### Key Insight
 
-OCaml provides unrestricted classical computation (copying, iteration, recursion) at the **meta-level**. The generated programs live in a **linear λ-calculus** where linearity is enforced.
+OCaml provides unrestricted classical computation (copying, iteration, recursion) at the **meta-level**. The generated programs live in a **linear λ-calculus** where linearity is enforced by OCaml's type system via GADTs.
 
-This means combinators like `iterate`, `fold`, and `pow2` are OCaml functions that *generate* object-language terms.
+Programs have type `('g, 'a) prog` where:
+- `'g` is the linear context (tracked at the type level)
+- `'a` is the object-language type
 
-### Staging Combinators
+### Meta-Level Combinators
 
-| Combinator | Type | Description |
-|------------|------|-------------|
-| `iterate n ty f` | `int -> ty -> tm -> tm` | Generates f ; f ; ... ; f (n times) |
-| `fold ty [f1;f2;...]` | `ty -> tm list -> tm` | Generates f1 ; f2 ; ... ; fn |
-| `pow2 f` | `tm -> tm` | Generates f ; f |
-| `power_of_2 n f` | `int -> tm -> tm` | Generates f^(2^n) via repeated squaring |
-| `indexed_fold n ty gen` | `int -> ty -> (int -> tm) -> tm` | Generates gen(0) ; gen(1) ; ... ; gen(n-1) |
+| Combinator | Description |
+|------------|-------------|
+| `iterate n ty f` | Generates f ; f ; ... ; f (n times) |
+| `fold ty [f1;f2;...]` | Generates f1 ; f2 ; ... ; fn |
+| `pow2 n ty f` | Generates f^(2^n) via repeated squaring |
+| `indexed_fold n ty gen` | Generates gen(0) ; gen(1) ; ... ; gen(n-1) |
 
 ### Examples
 
 ```ocaml
-open Qpl_surface.Staging
+open Qpl_surface.Linear
 
 (* iterate: Apply Hadamard 3 times *)
-let h3 = iterate 3 q (h 0 q)
+let h3 = iterate 3 q gate_h
 (* Produces: H ; H ; H *)
 
 (* fold: Compose a sequence of different gates *)
-let hst = fold q [h 0 q; s 0 q; t 0 q]
-(* Produces: H ; S ; T *)
+let hsh = fold q [gate_h; gate_s; gate_h]
+(* Produces: H ; S ; H *)
 
 (* indexed_fold: Generate stage-dependent rotations *)
 let rz_sequence = indexed_fold 4 q (fun k ->
-  rz (Float.pi /. Float.pow 2.0 (Float.of_int k)) 0 q
+  gate_rz (Float.pi /. float_of_int (k + 1))
 )
-(* Produces: Rz[π] ; Rz[π/2] ; Rz[π/4] ; Rz[π/8] *)
+(* Produces: Rz[π] ; Rz[π/2] ; Rz[π/3] ; Rz[π/4] *)
 
-(* power_of_2: Efficient repeated squaring *)
-let h8 = power_of_2 3 (h 0 q)
-(* Produces: H^8 = H ; H ; H ; H ; H ; H ; H ; H *)
+(* pow2: Efficient repeated squaring *)
+let h8 = pow2 3 q gate_h
+(* Produces: H^8 *)
 ```
 
 ### Building and Running
@@ -398,11 +399,108 @@ let h8 = power_of_2 3 (h 0 q)
 ```bash
 cd surface
 eval $(opam env)
-dune build examples/staging_demo.exe
-./_build/default/examples/staging_demo.exe
+dune build examples/linear_demo.exe
+dune exec examples/linear_demo.exe
 ```
 
-See `surface/examples/staging_demo.ml` for complete examples.
+See `surface/examples/linear_demo.ml` for complete examples.
+
+---
+
+## Datatype Declarations
+
+Granthi supports **finite linear datatypes** that elaborate to `I^{⊕k}` (k-ary monoidal sums of unit). These datatypes:
+
+- Have a **compile-time fixed arity** k
+- Provide **no constructors, case analysis, or observation**
+- Declare **operations as primitive constants**
+- Enable **coherent control** without observation
+
+### Datatype Syntax
+
+```ocaml
+open Qpl_surface.Linear
+
+let bool = datatype
+  ~name:"Bool"
+  ~arity:2
+  ~labels:["false"; "true"]
+  ~ops:[
+    ("H", lolli self self);
+    ("X", lolli self self);
+  ]
+```
+
+This declares:
+- Type `Bool` with 2 branches, elaborating to `I ⊕ I`
+- Operations `H : Bool ⊸ Bool` and `X : Bool ⊸ Bool`
+- No pattern matching or observation on Bool values
+
+### Operation Type Signatures
+
+Use `self` for self-reference, plus standard type constructors:
+
+| Constructor | Description |
+|-------------|-------------|
+| `self` | The datatype being declared |
+| `ty_one` | Unit type I |
+| `ty_q` | Qubit type Q |
+| `a **. b` | Tensor product A ⊗ B |
+| `a ++. b` | Sum A ⊕ B |
+| `lolli a b` | Linear arrow A ⊸ B |
+| `of_ty t` | Embed existing type witness |
+
+### Using Datatypes
+
+```ocaml
+(* Access the type representation *)
+let bool_ty = rep_ty bool  (* I ⊕ I *)
+
+(* Use operations *)
+let circuit = seq0 (op bool "H") (op bool "X")
+
+(* Coherent control combinator *)
+let controlled = control bool q [| gate_h; gate_x |]
+(* Type: Bool ⊗ Q ⊸ Bool ⊗ Q *)
+(* Applies H when false, X when true - coherently *)
+```
+
+### Example: Cyclic Group Z_n
+
+```ocaml
+(* Create Z_n datatype *)
+let z_n n =
+  datatype
+    ~name:(Printf.sprintf "Z%d" n)
+    ~arity:n
+    ~labels:(List.init n string_of_int)
+    ~ops:[
+      ("mul", lolli (self **. self) (self **. self));
+      ("inv", lolli self self);
+    ]
+
+let z4 = z_n 4  (* Z_4 = I ⊕ I ⊕ I ⊕ I *)
+
+(* Phase rotations P_g = Rz(2πg/n) for g ∈ Z_n *)
+let phase_rotation n g =
+  gate_rz (2.0 *. Float.pi *. float_of_int g /. float_of_int n)
+
+(* Coherent selector: λg. case g of 0 => P_0 | ... | (n-1) => P_{n-1} *)
+(* This is NOT observational - it's coherent selection *)
+let z4_phases = Array.init 4 (phase_rotation 4)
+
+(* Control combinator: A ⊗ Z_4 ⊸ A ⊗ Z_4 *)
+let z4_controlled = control z4 q z4_phases
+```
+
+### Key Properties
+
+1. **No observation**: Datatypes provide no way to inspect which branch a value is in
+2. **Operations are primitives**: `mul`, `inv`, etc. are opaque to the surface language
+3. **Coherent control**: The `control` combinator applies operations indexed by datatype value, coherently
+4. **Elaborates to I^{⊕k}**: The type `Bool` becomes `I ⊕ I`, `Z_4` becomes `I ⊕ I ⊕ I ⊕ I`
+
+See `surface/examples/datatype_demo.ml` for complete examples.
 
 ---
 
