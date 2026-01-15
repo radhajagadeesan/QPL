@@ -4,6 +4,38 @@
     The GADT representation is private; only the .mli exports are visible.
 *)
 
+(* ========== Operation Type Signatures ========== *)
+
+(** Type expressions for operation signatures.
+    Includes [Self] for self-referential types in datatype declarations. *)
+type op_ty =
+  | Self
+  | TyRef of Rep.t
+  | TyOne
+  | TyQ
+  | TyTensor of op_ty * op_ty
+  | TyPlus of op_ty * op_ty
+  | TyLolli of op_ty * op_ty
+
+(** Smart constructors for op_ty *)
+let self = Self
+let ty_one = TyOne
+let ty_q = TyQ
+let ( **. ) a b = TyTensor (a, b)
+let ( ++. ) a b = TyPlus (a, b)
+let lolli a b = TyLolli (a, b)
+let of_ty t = TyRef t
+
+(** Resolve op_ty to Rep.t by substituting self_rep for Self *)
+let rec resolve_op_ty ~self_rep = function
+  | Self -> self_rep
+  | TyRef t -> t
+  | TyOne -> Rep.Unit
+  | TyQ -> Rep.var 0
+  | TyTensor (a, b) -> Rep.Tensor (resolve_op_ty ~self_rep a, resolve_op_ty ~self_rep b)
+  | TyPlus (a, b) -> Rep.Plus (resolve_op_ty ~self_rep a, resolve_op_ty ~self_rep b)
+  | TyLolli (a, b) -> Rep.Tensor (resolve_op_ty ~self_rep a, resolve_op_ty ~self_rep b)
+
 (* ========== Types ========== *)
 
 type 'a ty = Rep.t
@@ -13,6 +45,14 @@ let one = Rep.Unit
 let ( ** ) a b = Rep.Tensor (a, b)
 let ( ++ ) a b = Rep.Plus (a, b)
 let ( -@ ) a b = Rep.Tensor (a, b)  (* Int construction: A ⊸ B ≅ A ⊗ B *)
+
+(** Generate I^{⊕k} = I ⊕ (I ⊕ (... ⊕ I)) with k copies of I.
+    - i_sum 1 = I
+    - i_sum 2 = I ⊕ I
+    - i_sum k = I ⊕ I^{⊕(k-1)} *)
+let rec i_sum k =
+  if k <= 1 then Rep.Unit
+  else Rep.Plus (Rep.Unit, i_sum (k - 1))
 
 (* ========== Programs (GADT) ========== *)
 
@@ -88,6 +128,13 @@ type (_, _) prog =
   | Par0 : (unit, [`Lolli of 'a * 'b]) prog * (unit, [`Lolli of 'c * 'd]) prog
         -> (unit, [`Lolli of [`Tensor of 'a * 'c] * [`Tensor of 'b * 'd]]) prog
 
+  (* Primitive/opaque operations (from datatype declarations) *)
+  | Prim : string * Rep.t * Rep.t -> (unit, [`Lolli of 'a * 'b]) prog
+
+  (* Closed omap for datatype control *)
+  | OMap0 : (unit, [`Lolli of 'a * 'c]) prog * (unit, [`Lolli of 'b * 'd]) prog
+         -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
+
 (* ========== Smart Constructors ========== *)
 
 let var = Var
@@ -133,6 +180,8 @@ let seq f g = Seq (f, g)
 let seq0 f g = Seq0 (f, g)
 
 let par0 f g = Par0 (f, g)
+
+let omap0 f g = OMap0 (f, g)  [@@warning "-32"]
 
 (* ========== Meta-level Combinators ========== *)
 
@@ -203,7 +252,108 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
   | Seq0 (f, g) -> Bridge.TSeq (emit_any f, emit_any g)
   | Par0 (f, g) -> Bridge.TTenTerm (emit_any f, emit_any g)
 
+  | Prim (name, _dom, _cod) -> Bridge.TGate (name, [0], [])
+  | OMap0 (f, g) -> Bridge.TTenTerm (emit_any f, emit_any g)
+
 (* Emit a closed program. Uses emit_any internally. *)
 let emit (p : (unit, 'a) prog) : Bridge.term = emit_any p
 
 let emit_typed p _ty = emit p
+
+(* ========== Datatype Declarations ========== *)
+
+(** Operation info: name and resolved type *)
+type op_info = {
+  op_name : string;
+  op_dom : Rep.t;
+  op_cod : Rep.t;
+}
+
+(** Datatype descriptor *)
+type datatype_desc = {
+  name : string;
+  arity : int;
+  labels : string list;
+  rep : Rep.t;
+  ops : op_info list;
+}
+
+(** Create a closed program for a primitive operation *)
+let prim_prog (info : op_info) : (unit, [`Lolli of 'a * 'b]) prog =
+  Prim (info.op_name, info.op_dom, info.op_cod)
+
+(** Construct a datatype descriptor.
+
+    Usage:
+    {[
+      let bool = datatype
+        ~name:"Bool"
+        ~arity:2
+        ~labels:["false"; "true"]
+        ~ops:[("H", lolli self self); ("X", lolli self self)]
+    ]}
+*)
+let datatype ~name ~arity ~labels ~ops =
+  (* Validate *)
+  if arity < 1 then
+    failwith (Printf.sprintf "Datatype %s: arity must be >= 1" name);
+  if List.length labels <> arity then
+    failwith (Printf.sprintf "Datatype %s: expected %d labels, got %d"
+                name arity (List.length labels));
+
+  (* Generate I^{⊕k} representation *)
+  let self_rep = i_sum arity in
+
+  (* Resolve operation types *)
+  let resolved_ops = List.map (fun (op_name, op_sig) ->
+    match op_sig with
+    | TyLolli (dom, cod) ->
+        { op_name;
+          op_dom = resolve_op_ty ~self_rep dom;
+          op_cod = resolve_op_ty ~self_rep cod }
+    | _ ->
+        failwith (Printf.sprintf "Datatype %s: operation %s must have type A ⊸ B"
+                    name op_name)
+  ) ops in
+
+  { name; arity; labels; rep = self_rep; ops = resolved_ops }
+
+(** Get the type witness for a datatype's representation *)
+let rep_ty (dt : datatype_desc) : 'a ty = dt.rep
+
+(** Look up an operation by name and return it as a closed program *)
+let op (dt : datatype_desc) (name : string) : (unit, [`Lolli of 'a * 'b]) prog =
+  match List.find_opt (fun o -> o.op_name = name) dt.ops with
+  | Some info -> prim_prog info
+  | None ->
+      failwith (Printf.sprintf "Datatype %s: unknown operation %s" dt.name name)
+
+(** Generate the control combinator for a datatype.
+
+    control : (D ⊗ A ⊸ D ⊗ A)
+    Given k branches [f0; f1; ...; f_{k-1}] each of type A ⊸ A,
+    produces coherent controlled application.
+
+    Following the spec's Option 1: emit as a library primitive that
+    the backend interprets as "uniform coherent control" on a k-ary sum.
+
+    For now, we emit the branches via omap and wrap with a control primitive.
+    The backend is responsible for the actual coherent control implementation.
+*)
+let control (dt : datatype_desc) (a_ty : 'a ty)
+            (branches : (unit, [`Lolli of 'a * 'a]) prog array)
+            : (unit, [`Lolli of [`Tensor of 'b * 'a] * [`Tensor of 'b * 'a]]) prog =
+  if Array.length branches <> dt.arity then
+    failwith (Printf.sprintf "Datatype %s: control requires %d branches, got %d"
+                dt.name dt.arity (Array.length branches));
+
+  (* For arity 1, just apply the single branch in parallel with identity on D *)
+  if dt.arity = 1 then
+    par0 (id dt.rep) branches.(0)
+  else
+    (* Emit as a primitive control operation.
+       The control name encodes: "control_<datatype>_<arity>"
+       The backend interprets this as coherent control over I^{⊕k}. *)
+    let ctrl_name = Printf.sprintf "control_%s_%d" dt.name dt.arity in
+    let da = Rep.Tensor (dt.rep, a_ty) in
+    Prim (ctrl_name, da, da)

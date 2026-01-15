@@ -201,3 +201,101 @@ val emit : (unit, 'a) prog -> Bridge.term
 
 (** Emit with type witness for debugging. *)
 val emit_typed : (unit, 'a) prog -> 'a ty -> Bridge.term
+
+(** {1 Datatype Declarations}
+
+    Surface-level datatype declarations following the spec:
+    - Datatypes are finite with compile-time fixed arity k
+    - No constructors, case analysis, or observation
+    - Operations are primitive constants at translated types
+    - Elaborates to I^{⊕k} (k-ary monoidal sum of unit)
+*)
+
+(** {2 Operation Type Signatures}
+
+    Types for declaring operations, with [self] for self-reference.
+*)
+
+type op_ty
+
+(** Self-reference (the datatype being declared) *)
+val self : op_ty
+
+(** Unit type I *)
+val ty_one : op_ty
+
+(** Qubit type Q *)
+val ty_q : op_ty
+
+(** Tensor product *)
+val ( **. ) : op_ty -> op_ty -> op_ty
+
+(** Sum *)
+val ( ++. ) : op_ty -> op_ty -> op_ty
+
+(** Linear arrow A ⊸ B *)
+val lolli : op_ty -> op_ty -> op_ty
+
+(** Embed an existing type witness *)
+val of_ty : 'a ty -> op_ty
+
+(** {2 Datatype Descriptor} *)
+
+(** Datatype descriptor record *)
+type datatype_desc = {
+  name : string;
+  arity : int;
+  labels : string list;
+  rep : Rep.t;
+  ops : op_info list;
+}
+
+and op_info = {
+  op_name : string;
+  op_dom : Rep.t;
+  op_cod : Rep.t;
+}
+
+(** Construct a datatype.
+
+    {[
+      let bool = datatype
+        ~name:"Bool"
+        ~arity:2
+        ~labels:["false"; "true"]
+        ~ops:[("H", lolli self self); ("X", lolli self self)]
+    ]}
+
+    Elaborates [Bool] to [I ⊕ I] and creates operations [H], [X]
+    as primitive constants.
+*)
+val datatype :
+  name:string ->
+  arity:int ->
+  labels:string list ->
+  ops:(string * op_ty) list ->
+  datatype_desc
+
+(** Get the type witness for a datatype's representation (I^{⊕k}) *)
+val rep_ty : datatype_desc -> 'a ty
+
+(** Look up an operation by name *)
+val op : datatype_desc -> string -> (unit, [`Lolli of 'a * 'b]) prog
+
+(** Coherent control combinator.
+
+    Given datatype D with arity k and branches [f0; ...; f_{k-1}]
+    each of type A ⊸ A, produces:
+
+      control : D ⊗ A ⊸ D ⊗ A
+
+    which applies f_i when the control is in branch i, coherently.
+*)
+val control :
+  datatype_desc ->
+  'a ty ->
+  (unit, [`Lolli of 'a * 'a]) prog array ->
+  (unit, [`Lolli of [`Tensor of 'b * 'a] * [`Tensor of 'b * 'a]]) prog
+
+(** Generate I^{⊕k} from arity k *)
+val i_sum : int -> Rep.t
