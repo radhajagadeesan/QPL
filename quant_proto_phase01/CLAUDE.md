@@ -3,9 +3,23 @@
 ## Development Workflow
 
 - Always run `PYTHONPATH=src pytest` after code changes
-- Keep `docs/` in sync with any API changes (PROGRAMMING_GUIDE.md, COMPILER_API_GUIDE.md, API_REFERENCE.md)
-- Update `demos/README.md` when adding new demos
 - Run demos with `PYTHONPATH=src python demos/<demo>.py`
+
+## Documentation (IMPORTANT)
+
+**Always keep `docs/` up to date when making changes.** Update documentation in the same commit as code changes, not as a separate afterthought.
+
+Documentation files to maintain:
+- `docs/PROGRAMMING_GUIDE.md` - User-facing guide covering all language features
+- `docs/COMPILER_API_GUIDE.md` - Compiler and compilation API
+- `docs/API_REFERENCE.md` - API reference
+- `demos/README.md` - Update when adding new demos
+
+Update docs when:
+- Adding new language features (types, terms, combinators)
+- Adding new OCaml surface language features
+- Changing existing APIs or behavior
+- Adding new examples or demos
 
 ## Project Structure
 
