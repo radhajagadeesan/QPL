@@ -153,7 +153,7 @@ CX[1,0] ; H[1] ; CX[1,0]
 
 ```python
 from lang.types import Unit, Plus
-from lang.term import Seq, CX, H
+from lang.terms import Seq, CX, H
 
 ty = Plus(Unit(), Unit())  # I + I
 H_logical = Seq(CX(1, 0, ty), H(1, ty), CX(1, 0, ty))
@@ -177,7 +177,7 @@ Total:   (I+I) ⊗ (Q⊗Q)  (4 wires)
 
 ```python
 from lang.types import Unit, Plus, Ten, Q
-from lang.term import Seq, CX, H, TwistTensor, DistR, UndistR
+from lang.terms import Seq, CX, H, TwistTen, DistR
 
 # Types
 ctrl = Plus(Unit(), Unit())      # I + I
@@ -194,11 +194,11 @@ dist = DistR(ctrl, data)  # → (Q⊗Q) + (Q⊗Q)
 # twist⊗ on right branch wires is a structural SWAP
 controlled_swap = ...  # permutation on right branch wires
 
-# Step 4: Undistribute (FREE - permutation)
-undist = UndistR(ctrl, data)
+# Step 4: Undistribute (FREE - inverse permutation)
+# Note: UndistR is DistR's inverse permutation, applied via wire routing
 
-# Full circuit
-circuit = Seq(H_logical, dist, controlled_swap, undist)
+# Full circuit (conceptual - undist is inverse permutation)
+# circuit = Seq(H_logical, dist, controlled_swap, inverse_dist)
 ```
 
 ### Gate Count

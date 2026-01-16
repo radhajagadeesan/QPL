@@ -1,5 +1,8 @@
 # QSwitch Demo - Expected Output
 
+> **Note:** This file documents the expected output in readable Markdown format.
+> Run `qswitch_demo.py` or `qswitch_demo_video.py` for console output.
+
 ## 1. QSwitch Definition
 
 ```

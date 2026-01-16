@@ -55,3 +55,6 @@ NSFDOCS/
 
 # Package zip
 granthi_package.zip
+
+# Audit reports (local only)
+audit-reports/

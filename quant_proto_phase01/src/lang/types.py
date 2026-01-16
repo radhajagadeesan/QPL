@@ -83,6 +83,9 @@ class Plus:
 
 Ty = Union[Unit, Q, Ten, Plus]
 
+# Alias for documentation: I is the traditional name for the unit type
+I = Unit
+
 
 def width(ty: Ty) -> int:
     """Number of physical wires represented by ty.

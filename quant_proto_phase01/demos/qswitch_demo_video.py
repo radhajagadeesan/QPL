@@ -9,8 +9,10 @@ Record with: asciinema rec qswitch_demo.cast
 Run with:    PYTHONPATH=src python demos/qswitch_demo_video.py
 
 Or just run directly for a slower, more visual demo.
+Use --fast to skip all delays (for automated testing).
 """
 
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -18,18 +20,23 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-# Timing for video
+# Timing for video (can be overridden by --fast)
 PAUSE_SHORT = 1.0
 PAUSE_MEDIUM = 2.0
 PAUSE_LONG = 3.0
+TYPEWRITE_DELAY = 0.03
 
 
-def pause(duration=PAUSE_SHORT):
+def pause(duration=None):
+    if duration is None:
+        duration = PAUSE_SHORT
     time.sleep(duration)
 
 
-def typewrite(text, delay=0.03):
+def typewrite(text, delay=None):
     """Simulate typing effect."""
+    if delay is None:
+        delay = TYPEWRITE_DELAY
     for char in text:
         print(char, end='', flush=True)
         time.sleep(delay)
@@ -225,4 +232,15 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="QSwitch Demo - Video Recording Script")
+    parser.add_argument("--fast", action="store_true", help="Skip all delays (for automated testing)")
+    args = parser.parse_args()
+
+    if args.fast:
+        # Override timing globals for fast mode
+        PAUSE_SHORT = 0
+        PAUSE_MEDIUM = 0
+        PAUSE_LONG = 0
+        TYPEWRITE_DELAY = 0
+
     main()

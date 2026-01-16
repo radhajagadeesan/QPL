@@ -142,11 +142,11 @@ bell_state = Seq(H(0), CX(0, 1))
 result = compile(bell_state)
 print(f"Gates: {result.circuit.n_gates}")  # Output: 2
 
-# Example 2: Structural swap (with tag flip)
+# Example 2: Structural swap (one-hot encoding)
 swap = TwistPlus(Q(), Q())
 result = compile(swap)
-print(f"Permutation: {result.perm.new_to_old}")  # Output: [0, 2, 1]
-print(f"Gates: {result.circuit.n_gates}")         # Output: 1 (X gate for tag flip)
+print(f"Permutation: {result.perm.new_to_old}")  # Output: [1, 0, 3, 2]
+print(f"Gates: {result.circuit.n_gates}")         # Output: 0 (pure permutation)
 ```
 
 ### 3.2 Your First Program (Surface Language)
@@ -582,8 +582,8 @@ term = TwistTen(Q(), Q())
 from lang.terms import TwistPlus
 
 term = TwistPlus(Q(), Q())
-# Compiles to: perm = [0, 2, 1], gates = 1 (X gate for tag flip)
-# Tagged layout: Q + Q has width 3 (1 tag + 1 + 1)
+# Compiles to: perm = [1, 0, 3, 2], gates = 0 (pure permutation)
+# One-hot layout: Q + Q has width 4 (2 tags + 1 + 1)
 ```
 
 ### 7.2 Quantum Circuits

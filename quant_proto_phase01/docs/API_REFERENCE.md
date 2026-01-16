@@ -351,4 +351,4 @@ result = compile(term)
 
 ## Test Coverage
 
-1169+ tests across all phases.
+1211+ tests across all phases.

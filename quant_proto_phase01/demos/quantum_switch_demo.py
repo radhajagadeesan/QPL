@@ -85,10 +85,11 @@ TYPE LAYOUT:
 
   Input/Output: (I + I) ⊗ Q
 
-  Wire 0: tag qubit (control) — encodes Left vs Right
-  Wire 1: target qubit — where H and S are applied
+  Wire 0: tag qubit 1 (one-hot: Left)
+  Wire 1: tag qubit 2 (one-hot: Right)
+  Wire 2: target qubit — where H and S are applied
 
-  width((I + I) ⊗ Q) = 1 + 1 = 2 wires
+  width((I + I) ⊗ Q) = 2 (tags) + 1 (Q) = 3 wires
 """)
 
     # =========================================================================
@@ -213,8 +214,9 @@ INTERFACE STRUCTURE:
     BitQ = Ten(Bit, Q())        # (I + I) ⊗ Q
 
     print("Wire layout: (I + I) ⊗ Q")
-    print(f"  Wire 0: control (tag qubit)")
-    print(f"  Wire 1: target qubit")
+    print(f"  Wire 0: tag qubit 1 (one-hot Left)")
+    print(f"  Wire 1: tag qubit 2 (one-hot Right)")
+    print(f"  Wire 2: target qubit")
     print(f"  Total width: {width(BitQ)}")
 
     section("Individual operations")
@@ -298,7 +300,7 @@ CIRCUIT EXPLANATION:
 │                                                                         │
 │        ↓ compile (emit gates, track permutation)                        │
 │                                                                         │
-│  3. CIRCUIT         pytket.Circuit with 6 gates                         │
+│  3. CIRCUIT         pytket.Circuit with 4 gates                         │
 │     (Executable)    + identity permutation [0, 1]                       │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘

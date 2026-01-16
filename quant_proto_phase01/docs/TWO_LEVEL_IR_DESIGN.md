@@ -496,7 +496,7 @@ We get a clean conceptual model:
 | 4C | Complete | Tagged layout, distributivity |
 | 5 | Complete | One-hot encoding, higher-order, exp involutions |
 
-**Test coverage:** 1169+ tests passing
+**Test coverage:** 1211+ tests passing
 
 ---
 
