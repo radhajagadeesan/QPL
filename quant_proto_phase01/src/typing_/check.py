@@ -218,18 +218,11 @@ def type_of(t: Term) -> DomCod:
     # Case/copairing: [f, g] : (A + B) → C
     if isinstance(t, Case):
         # left  : A → C
-        # right : B → C
-        # Result: (A + B) → C
+        # right : B → D
+        # Result: (A + B) → (C + D)
+        # The tag is preserved — Case is a diagonal map on the sum.
         left_dom, left_cod = type_of(t.left)
         right_dom, right_cod = type_of(t.right)
-
-        # Check branches have matching codomains (by width)
-        if width(left_cod) != width(right_cod):
-            raise TypeCheckError(
-                f"Case branches have different codomain widths:\n"
-                f"  left  : {pretty(left_dom)} → {pretty(left_cod)} (cod width {width(left_cod)})\n"
-                f"  right : {pretty(right_dom)} → {pretty(right_cod)} (cod width {width(right_cod)})"
-            )
 
         # Check that branch domains match declared types (by width)
         if width(left_dom) != width(t.ty_left):
@@ -245,9 +238,9 @@ def type_of(t: Term) -> DomCod:
                 f"  actual right dom  = {pretty(right_dom)} (width {width(right_dom)})"
             )
 
-        # Result type: (A + B) → C
+        # Result type: (A + B) → (C + D), tag preserved
         dom = Plus(t.ty_left, t.ty_right)
-        cod = left_cod  # Both branches have same codomain (checked above)
+        cod = Plus(left_cod, right_cod)
         return (dom, cod)
 
     # Compact-closed: Cup and Cap

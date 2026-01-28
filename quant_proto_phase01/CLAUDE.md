@@ -61,3 +61,88 @@ cd surface && dune test
   - `Cap(A)` : A* ⊗ A → I (pure wiring, 0 gates)
   - `Dual(A)` type tracks polarity; `width(Dual(A)) = width(A)`
   - `compile_higher_order()` is deprecated; use `compile()` directly
+## Compilation Pipeline: OCaml → Python → Circuit
+
+### Two-Stage Architecture
+
+```
+OCaml Surface Language          Python Core Compiler
+─────────────────────           ────────────────────
+surface/lib/elaborate.ml   →    src/compile/to_pytket.py
+                           │
+  1. β-reduce first-order  │    Direct recursive descent:
+     App(Lam(x,A,e), v)   │    - Accumulate WirePerm (no SWAPs)
+     → e[v/x]             │    - Emit gates to pytket Circuit
+  2. Substitute Let        │    - Offset semantics for TenTerm
+     Let(x,e1,e2) → e2    │    - No intermediate representation
+  3. Elaborate LetTen      │
+     → Seq + wire offsets  │    Output: Compiled(circuit, perm)
+  4. Transform Case        │
+     → controlled gates    │
+  5. Keep higher-order     │
+     Lam/Apply for cup/cap │
+```
+
+### What OCaml Elaboration Does (source → core IR)
+
+The OCaml elaborator normalizes the source language down to a first-order core IR
+of structural ops + gates. **All binding, branching, and application are eliminated.**
+
+| Surface Construct | Elaboration | What Python Receives |
+|---|---|---|
+| `Var x` (simple type) | Becomes `Id(ty)` | `Id` |
+| `Var x` (arrow type) | Becomes `FunVar(x,a,b)` | `FunVar` |
+| `Let(x, e1, e2)` | Substitution: `e2[e1/x]` | *gone* |
+| `LetTen(x1,x2, A,B, e1, e2)` | `Seq(e1', e2')` + wire offset tracking | `Seq` |
+| `App(Lam(x,A,e), v)` (first-order) | β-reduce: `e[v/x]` | *gone* |
+| `App(f, arg)` (higher-order) | Kept as `Apply(f', arg')` | `Apply` |
+| `Lam(x, A→B, body)` | Kept as `Lam(x,a,b,body')` | `Lam` |
+| `Case(e, branches)` (quantum) | Anti-ctrl + ctrl gate sequences | controlled gates (`CH`, `CS`, etc.) |
+| `Ctor(name, payload)` | Transparent (becomes payload) | *gone* |
+| `TyArrow(A,B)` | Encoded as `A ⊗ B` (self-dual) | `Ten(A,B)` |
+| `TyNamed("Bool",...)` | Expanded to underlying Plus structure | `Plus(...)` |
+
+### Quantum Case Elaboration (Anti-Control Pattern)
+
+Both OCaml and Python use the same pattern for case on sum types:
+
+```
+case ctrl of Left => body_L | Right => body_R
+
+Elaborates/compiles to:
+  X[tag]                    ← flip tag (0→1)
+  Controlled-body_L[tag,…]  ← fires when tag=1 (original 0)
+  X[tag]                    ← flip back (1→0)
+  Controlled-body_R[tag,…]  ← fires when tag=1 (original 1)
+
+Gate mapping: H→CH, S→CS, X→CX, CX→CCX, Rz→CRz, etc.
+```
+
+Tag qubit passes through unchanged. Branches operate on payload wires only.
+On superposition inputs, both branches execute coherently.
+
+### Python-Only Term Types
+
+These exist for direct Python-API usage. The OCaml pipeline does not generate them:
+
+- `Case(ty_left, ty_right, left, right)` — Python-side case (OCaml elaborates case away into controlled gates before bridging)
+- `Cup(ty)`, `Cap(ty)` — compact-closed structure (OCaml compiles Lam/Apply directly)
+- `Feedback(k, body)` — explicit GOI loops
+- `EncodeQubit()`, `DecodeQubit()` — qubit ↔ one-hot encoding
+- `ExpSwap`, `ExpInvolution` — exponentials of structural involutions
+
+### Key Differences: OCaml vs Python
+
+1. **Normalization**: OCaml does β-reduction, let-elimination, case→controlled gates.
+   Python does NO normalization — it receives already-normalized terms.
+
+2. **Variables**: OCaml has `Var`, `Let`, `LetTen`, pattern matching.
+   Python has none — all bindings are eliminated during elaboration.
+
+3. **Types**: OCaml has `TyArrow`, `TyNamed`, `TyVar`.
+   Python has only `Q`, `Unit`, `Ten`, `Plus`, `Dual`.
+
+4. **Wire tracking**: OCaml tracks variable→wire via `TyEnv` during elaboration.
+   Python tracks wire positions via `WirePerm` composition during compilation.
+
+5. **Bridge**: OCaml serializes Core IR → JSON → Python `bridge.py` → `lang/terms.py` → `compile()`

@@ -26,6 +26,8 @@ from lang.terms import (
     Cup, Cap,
     # Higher-order constructs
     FunVar, Lam, Apply,
+    # Case/copairing
+    Case,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
     # Qubit encoding isomorphism
@@ -575,6 +577,69 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
             emit_CX(0, 1, offset)
             if explain:
                 log.append(f"DecodeQubit: X(0); CX(0,1) at offset {offset}")
+            return
+
+        # Case/copairing: [f, g] : (A + B) → (C + D)
+        # Layout: [tag | payload]. Tag controls which branch runs on payload.
+        # Width is preserved. Each gate becomes controlled on the tag qubit.
+        if isinstance(t, Case):
+            from lang.types import Plus, tag_width as tw
+            from pytket.circuit import OpType
+            sum_ty = Plus(t.ty_left, t.ty_right)
+            k = tw(sum_ty)  # tag qubits (1 for binary)
+            tag_phys = p.apply_new_to_old(offset)
+
+            # Map gate types to their controlled versions
+            _ctrl_gate = {
+                OpType.H: OpType.CH,
+                OpType.S: OpType.CS,
+                OpType.Sdg: OpType.CSdg,
+                OpType.X: OpType.CX,
+                OpType.Y: OpType.CY,
+                OpType.Z: OpType.CZ,
+                OpType.Rz: OpType.CRz,
+                OpType.Rx: OpType.CRx,
+                OpType.Ry: OpType.CRy,
+                OpType.CX: OpType.CCX,
+            }
+
+            def _emit_controlled(cmds, tag_q, payload_base):
+                """Emit each gate controlled on tag_q, with wires offset to payload."""
+                for cmd in cmds:
+                    phys_qubits = [p.apply_new_to_old(q.index[0] + payload_base)
+                                   for q in cmd.qubits]
+                    ctrl_op = _ctrl_gate.get(cmd.op.type)
+                    if ctrl_op is not None:
+                        circ.add_gate(ctrl_op, cmd.op.params,
+                                      [tag_q] + phys_qubits)
+                    else:
+                        raise NotImplementedError(
+                            f"No controlled version for gate {cmd.op.type.name} in Case")
+
+            # Compile branches to sub-circuits
+            left_dom, _ = type_of(t.left)
+            left_w = width(left_dom)
+            left_cmds = list(compile(t.left, materialize=True).circuit.get_commands()) if left_w > 0 else []
+
+            right_dom, _ = type_of(t.right)
+            right_w = width(right_dom)
+            right_cmds = list(compile(t.right, materialize=True).circuit.get_commands()) if right_w > 0 else []
+
+            payload_base = offset + k
+
+            # Left branch: anti-controlled (tag=0) → X; ctrl-gates; X
+            if left_cmds:
+                circ.X(tag_phys)
+                _emit_controlled(left_cmds, tag_phys, payload_base)
+                circ.X(tag_phys)
+
+            # Right branch: controlled (tag=1) → ctrl-gates directly
+            if right_cmds:
+                _emit_controlled(right_cmds, tag_phys, payload_base)
+
+            if explain:
+                log.append(f"Case: {len(left_cmds)} left gates (anti-ctrl), "
+                           f"{len(right_cmds)} right gates (ctrl) at offset {offset}")
             return
 
         # Compact-closed: Cup and Cap (pure wiring, zero gates)
