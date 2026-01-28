@@ -12,15 +12,30 @@ Complete reference for types, terms, and compilation functions.
 | `I()` | Unit type | 0 |
 | `Ten(a, b)` | Tensor product a ⊗ b | width(a) + width(b) |
 | `Plus(a, b)` | Sum type a + b (Option B) | ceil(log2(n)) + max(width(Aᵢ)) |
+| `Dual(a)` | Dual type a* | width(a) (self-dual) |
 
-### Function Types (Surface Language)
+### Dual Type
 
-Function types `A → B` exist in the **surface language** (OCaml `TyArrow`):
-- Represent morphisms from A to B
-- Used for lambda abstractions and higher-order programming
-- **No Python type constructor**—handled via higher-order terms
+`Dual(A)` represents the dual object A* in the compact-closed category.
+Since all our types are self-dual, `width(Dual(A)) = width(A)`.
 
-In Python, use `Lam`, `Apply`, `FunVar` for higher-order programming (see Higher-Order Terms).
+```python
+from lang.types import Dual, dual, Q, Ten
+
+Dual(Q())           # Q* — width 1
+dual(Q())           # Same as Dual(Q())
+dual(dual(Q()))     # Q — involutive: dual(dual(A)) = A
+```
+
+### Function Types
+
+Function types `A → B` are equivalent to `A* ⊗ B ≡ A ⊗ B` (self-dual).
+
+- In the **surface language** (OCaml): `TyArrow(A, B)`
+- In the **Python IR**: represented as `Ten(A, B)` wires
+- A function `Q → Q` is physically 2 wires (Q ⊗ Q)
+
+Functions are **not closures** — they are circuit fragments with exposed dual input wires.
 
 ### Option B: Flat Log-Tag Encoding
 
@@ -172,14 +187,35 @@ DecodeQubit() -> Term
 
 **Note:** The ancilla (wire 1) must be |0⟩ for encode, and is returned to |0⟩ by decode.
 
+### Compact-Closed Structure (Cups and Caps)
+
+| Term | Type | Description |
+|------|------|-------------|
+| `Cup(ty)` | I → A ⊗ A* | Cup (unit introduction) — pure wiring, 0 gates |
+| `Cap(ty)` | A* ⊗ A → I | Cap (counit / evaluation) — pure wiring, 0 gates |
+
+Cups and caps are the compact-closed structure enabling higher-order programming.
+Since all types are self-dual (A* = A), cup/cap are pure wire allocation/identification.
+
+```python
+from lang.terms import Cup, Cap
+from lang.types import Q
+
+Cup(Q())   # η_Q : I → Q ⊗ Q*  (allocate 2 wires)
+Cap(Q())   # ε_Q : Q* ⊗ Q → I  (connect/identify 2 wires)
+```
+
 ### Higher-Order Terms
 
 | Term | Description |
 |------|-------------|
+| `FunVar(name, dom, cod)` | Function variable — identity on A ⊗ B wires |
+| `Lam(name, dom, cod, body)` | Lambda abstraction — cup creates function wires |
+| `Apply(f, arg)` | Function application — cap connects wires |
 | `Feedback(k, body)` | Loop k wires back (GOI trace) |
-| `FunVar(name, dom, cod)` | Function variable |
-| `Lam(name, dom, cod, body)` | Lambda abstraction |
-| `Apply(f, arg)` | Function application |
+
+Higher-order terms are compiled directly via cup/cap wiring — no GOI needed.
+A function `A → B` is physically `A ⊗ B` wires. Lambda exposes wires, application connects them.
 
 ---
 
@@ -217,14 +253,18 @@ else:
     print("Extracted:", result.circuit)
 ```
 
-### compile_higher_order()
+### compile_higher_order() *(deprecated)*
 
-Higher-order compilation via GOI.
+**Deprecated.** Use `compile()` instead — higher-order terms (Cup, Cap, FunVar, Lam, Apply) are now compiled directly via cup/cap wiring without GOI.
 
 ```python
+# Old (deprecated):
 from compile.to_pytket import compile_higher_order
+result = compile_higher_order(term)  # emits DeprecationWarning
 
-result = compile_higher_order(term, explain=False)
+# New (preferred):
+from compile.to_pytket import compile
+result = compile(term)  # handles Cup, Cap, Lam, Apply directly
 ```
 
 ---

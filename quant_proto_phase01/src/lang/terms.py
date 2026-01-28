@@ -407,13 +407,42 @@ class CRz:
             object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
 
 
-# -- Higher-order constructs (GOI apply)
+# -- Compact-closed structure (cups and caps)
+
+@dataclass(frozen=True, slots=True)
+class Cup:
+    """Cup (unit introduction): η_A : I → A ⊗ A*.
+
+    Creates a pair of wires: one for A, one for its dual A*.
+    Pure wiring — emits zero gates.
+
+    Since all our types are self-dual (A* = A physically),
+    this allocates 2·width(A) wires.
+    """
+    ty: Ty  # A
+
+
+@dataclass(frozen=True, slots=True)
+class Cap:
+    """Cap (counit / evaluation): ε_A : A* ⊗ A → I.
+
+    Connects dual wires to their matching wires (wire identification).
+    Pure wiring — emits zero gates.
+
+    Since all our types are self-dual (A* = A physically),
+    this consumes 2·width(A) wires.
+    """
+    ty: Ty  # A
+
+
+# -- Higher-order constructs (compiled via cup/cap wiring)
 
 @dataclass(frozen=True, slots=True)
 class FunVar:
     """Function variable: x : A → B.
 
-    In GOI, represented as an endomorphism on A* ⊗ B.
+    Represents a wire bundle of width(A) + width(B).
+    A function A → B is physically A* ⊗ B ≡ A ⊗ B wires.
     """
     name: str
     dom: Ty  # A
@@ -424,7 +453,8 @@ class FunVar:
 class Lam:
     """Lambda abstraction: λx:A→B. body.
 
-    The argument x has function type A → B.
+    Compiled via cup: creates A⊗B wires for the function variable x,
+    then compiles body which uses those wires.
     """
     name: str
     dom: Ty  # A (domain of x)
@@ -436,7 +466,8 @@ class Lam:
 class Apply:
     """Function application: f arg.
 
-    Compiled via GOI: tensor the endomorphisms, then feedback.
+    Compiled via cap: connects function's domain wires to argument wires.
+    Pure wiring — the cap identifies dual wires.
     """
     f: "Term"
     arg: "Term"
@@ -563,7 +594,9 @@ Term = Union[
     Rz, Rx, Ry, Phase, CRz,
     # Controlled single-qubit gates (for quantum case expressions)
     CH, CS, CSdg,
-    # Higher-order constructs (GOI apply)
+    # Compact-closed structure (cups and caps)
+    Cup, Cap,
+    # Higher-order constructs (compiled via cup/cap wiring)
     FunVar, Lam, Apply,
     # Case/copairing (branching on sum types)
     Case,

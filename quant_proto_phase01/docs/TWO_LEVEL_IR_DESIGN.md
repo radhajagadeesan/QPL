@@ -266,7 +266,25 @@ Permutation: [1, 0, 2]
 
 ---
 
-#### 3. Gate Atoms
+#### 3. Compact-Closed Structure (Cups and Caps)
+
+**Location:** `src/lang/terms.py`
+
+The language is a linear λ-calculus with compact-closed structure:
+
+- **`Cup(A)`**: η_A : I → A ⊗ A* — creates a pair of dual wires (pure wiring, 0 gates)
+- **`Cap(A)`**: ε_A : A* ⊗ A → I — connects/identifies dual wires (pure wiring, 0 gates)
+
+Since all types are self-dual (A* = A), function types `A ⊸ B ≡ A* ⊗ B ≡ A ⊗ B`.
+Lambda abstraction introduces a cup, application introduces a cap.
+Higher-order programs compile directly to acyclic circuits without GOI.
+
+**Dual type** `Dual(A)` tracks input/output polarity for clarity, but
+`width(Dual(A)) = width(A)` since all types are self-dual.
+
+---
+
+#### 4. Gate Atoms
 
 **Location:** `src/lang/terms.py`
 

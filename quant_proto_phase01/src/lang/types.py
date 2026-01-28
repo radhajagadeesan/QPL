@@ -77,7 +77,24 @@ class Plus:
         return f"({self.left} ⊕ {self.right})"
 
 
-Ty = Union[Unit, Q, Ten, Plus]
+@dataclass(frozen=True, slots=True)
+class Dual:
+    """Dual type A* (the dual of A).
+
+    In a compact-closed category, A* is the dual object.
+    For our self-dual types, A* = A physically (same width),
+    but we track Dual explicitly for documentation, debugging,
+    and to distinguish input/output boundaries in function types.
+
+    The key identity: A ⊸ B ≡ A* ⊗ B.
+    """
+    ty: "Ty"
+
+    def __str__(self) -> str:
+        return f"{self.ty}*"
+
+
+Ty = Union[Unit, Q, Ten, Plus, Dual]
 
 # Alias for documentation: I is the traditional name for the unit type
 I = Unit
@@ -101,6 +118,8 @@ def width(ty: Ty) -> int:
     if isinstance(ty, Plus):
         summands = flatten_plus(ty)
         return tag_width(ty) + payload_width(ty)
+    if isinstance(ty, Dual):
+        return width(ty.ty)
     raise TypeError(f"Unknown Ty node: {ty!r}")
 
 
@@ -116,6 +135,8 @@ def tag_width(ty: Ty) -> int:
         if n <= 1:
             return 0
         return math.ceil(math.log2(n))
+    if isinstance(ty, Dual):
+        return tag_width(ty.ty)
     return 0
 
 
@@ -130,6 +151,8 @@ def payload_width(ty: Ty) -> int:
         if not summands:
             return 0
         return max(width(s) for s in summands)
+    if isinstance(ty, Dual):
+        return payload_width(ty.ty)
     return width(ty)
 
 
@@ -148,6 +171,8 @@ def data_width(ty: Ty) -> int:
         return data_width(ty.left) + data_width(ty.right)
     if isinstance(ty, Plus):
         return payload_width(ty)
+    if isinstance(ty, Dual):
+        return data_width(ty.ty)
     raise TypeError(f"Unknown Ty node: {ty!r}")
 
 
@@ -165,7 +190,19 @@ def tag_count(ty: Ty) -> int:
         return tag_count(ty.left) + tag_count(ty.right)
     if isinstance(ty, Plus):
         return tag_width(ty)
+    if isinstance(ty, Dual):
+        return tag_count(ty.ty)
     raise TypeError(f"Unknown Ty node: {ty!r}")
+
+
+def dual(ty: Ty) -> Ty:
+    """Construct the dual type A*.
+
+    Involutive: dual(dual(A)) = A.
+    """
+    if isinstance(ty, Dual):
+        return ty.ty
+    return Dual(ty)
 
 
 def pretty(ty: Ty) -> str:

@@ -55,3 +55,9 @@ cd surface && dune test
   - DistL is identity; DistR moves tag bits to front
 - ExpInvolution requires involutive body (P² = id)
 - Use `materialize=True` in compile() when SWAP gates must be emitted
+- Higher-order terms use **cup/cap wiring** (no GOI):
+  - `A ⊸ B ≡ A* ⊗ B ≡ A ⊗ B` (self-dual types)
+  - `Cup(A)` : I → A ⊗ A* (pure wiring, 0 gates)
+  - `Cap(A)` : A* ⊗ A → I (pure wiring, 0 gates)
+  - `Dual(A)` type tracks polarity; `width(Dual(A)) = width(A)`
+  - `compile_higher_order()` is deprecated; use `compile()` directly

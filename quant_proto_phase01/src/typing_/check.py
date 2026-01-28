@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Tuple
 
-from lang.types import Ty, Ten, Plus, width, pretty
+from lang.types import Ty, Q as Q_ty, Ten, Plus, Dual, Unit, width, pretty, dual
 from lang.terms import (
     Term,
     Id, Seq, TenTerm,
@@ -21,6 +21,10 @@ from lang.terms import (
     Rz, Rx, Ry, Phase, CRz,
     # Controlled single-qubit gates
     CH, CS, CSdg,
+    # Compact-closed structure
+    Cup, Cap,
+    # Higher-order constructs
+    FunVar, Lam, Apply,
     # Case/copairing
     Case,
     # Exponentials of structural involutions
@@ -105,14 +109,13 @@ def type_of(t: Term) -> DomCod:
         # We return a "synthetic" type based on width
         # For Phase 3, we use a width-based approach:
         # dom/cod of Feedback is (body_width - k) wires
-        from lang.types import Q
         external_width = body_width - k
         if external_width == 0:
             raise TypeCheckError("Feedback cannot have zero external wires")
         # Build type as Q^external_width
-        ext_ty = Q()
+        ext_ty = Q_ty()
         for _ in range(external_width - 1):
-            ext_ty = Ten(ext_ty, Q())
+            ext_ty = Ten(ext_ty, Q_ty())
         return (ext_ty, ext_ty)
 
     # Phase 0 single-wire gates
@@ -205,14 +208,12 @@ def type_of(t: Term) -> DomCod:
 
     # Qubit encoding isomorphism: Q ↔ I + I (with implicit ancilla)
     if isinstance(t, EncodeQubit):
-        from lang.types import Q, Unit
         # encode : Q → I + I
-        return (Q(), Plus(Unit(), Unit()))
+        return (Q_ty(), Plus(Unit(), Unit()))
 
     if isinstance(t, DecodeQubit):
-        from lang.types import Q, Unit
         # decode : I + I → Q
-        return (Plus(Unit(), Unit()), Q())
+        return (Plus(Unit(), Unit()), Q_ty())
 
     # Case/copairing: [f, g] : (A + B) → C
     if isinstance(t, Case):
@@ -248,6 +249,35 @@ def type_of(t: Term) -> DomCod:
         dom = Plus(t.ty_left, t.ty_right)
         cod = left_cod  # Both branches have same codomain (checked above)
         return (dom, cod)
+
+    # Compact-closed: Cup and Cap
+    if isinstance(t, Cup):
+        # η_A : I → A ⊗ A*
+        return (Unit(), Ten(t.ty, dual(t.ty)))
+
+    if isinstance(t, Cap):
+        # ε_A : A* ⊗ A → I
+        return (Ten(dual(t.ty), t.ty), Unit())
+
+    # Higher-order: FunVar, Lam, Apply
+    if isinstance(t, FunVar):
+        # A function variable x : A → B occupies A ⊗ B wires (since A ⊸ B ≡ A* ⊗ B ≡ A ⊗ B).
+        # As a term, it's identity on those wires.
+        fn_ty = Ten(t.dom, t.cod)
+        return (fn_ty, fn_ty)
+
+    if isinstance(t, Lam):
+        # λx:(A→B). body
+        # body : (context ⊗ (A ⊗ B)) → result
+        # The lambda exposes function wires via cup.
+        body_dom, body_cod = type_of(t.body)
+        return (body_dom, body_cod)
+
+    if isinstance(t, Apply):
+        # f arg: f produces function output, arg provides input, cap connects.
+        f_dom, f_cod = type_of(t.f)
+        arg_dom, arg_cod = type_of(t.arg)
+        return (Ten(f_dom, arg_dom), Ten(f_cod, arg_cod))
 
     raise TypeCheckError(f"Unknown term node: {t!r}")
 

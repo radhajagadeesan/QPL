@@ -22,7 +22,9 @@ from lang.terms import (
     Rz, Rx, Ry, Phase, CRz,
     # Controlled single-qubit gates
     CH, CS, CSdg,
-    # Higher-order constructs (GOI apply)
+    # Compact-closed structure
+    Cup, Cap,
+    # Higher-order constructs
     FunVar, Lam, Apply,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
@@ -575,24 +577,41 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
                 log.append(f"DecodeQubit: X(0); CX(0,1) at offset {offset}")
             return
 
-        # Higher-order constructs (GOI apply)
-        # These require special handling via GOI infrastructure
+        # Compact-closed: Cup and Cap (pure wiring, zero gates)
+        if isinstance(t, Cup):
+            # η_A : I → A ⊗ A* — allocates 2·width(A) wires, no gates
+            if explain:
+                log.append(f"Cup({t.ty}): pure wiring, 0 gates at offset {offset}")
+            return
+
+        if isinstance(t, Cap):
+            # ε_A : A* ⊗ A → I — wire identification, no gates
+            if explain:
+                log.append(f"Cap({t.ty}): pure wiring, 0 gates at offset {offset}")
+            return
+
+        # Higher-order constructs (compiled via cup/cap wiring)
         if isinstance(t, FunVar):
-            raise NotImplementedError(
-                f"FunVar '{t.name}' encountered in first-order compilation. "
-                "Higher-order terms require GOI compilation path."
-            )
+            # Identity on function wires (A ⊗ B)
+            if explain:
+                log.append(f"FunVar '{t.name}': identity on {width(t.dom) + width(t.cod)} wires at offset {offset}")
+            return
+
         if isinstance(t, Lam):
-            raise NotImplementedError(
-                f"Lam '{t.name}' encountered in first-order compilation. "
-                "Higher-order terms require GOI compilation path."
-            )
+            # Lambda: compile body directly. Cup wiring is structural.
+            go(t.body, offset)
+            if explain:
+                log.append(f"Lam '{t.name}': compiled body at offset {offset}")
+            return
+
         if isinstance(t, Apply):
-            raise NotImplementedError(
-                "Apply encountered in first-order compilation. "
-                "Higher-order terms require GOI compilation path. "
-                "Use compile_higher_order() for terms with FunVar/Lam/Apply."
-            )
+            # Apply: compile f and arg in parallel (f ⊗ arg), cap connects wires.
+            f_dom, _ = type_of(t.f)
+            go(t.f, offset)
+            go(t.arg, offset + width(f_dom))
+            if explain:
+                log.append(f"Apply: compiled f and arg at offset {offset}")
+            return
 
         raise TypeError(f"Unknown term node: {t!r}")
 
@@ -1053,17 +1072,20 @@ def compile_higher_order(
     materialize: bool = False,
     explain: bool = False
 ) -> CompiledGOI:
-    """Compile higher-order terms (with Apply) using GOI infrastructure.
+    """DEPRECATED: Use compile() instead. Higher-order terms are now compiled
+    directly via cup/cap wiring without GOI.
 
-    This handles terms like:
-    - Apply(H, S) for composition H ; S
-    - Lam(..., Apply(f, g)) for function definitions
-
-    The compilation uses:
-    - make_unitary_value: Encode gates as (U† ⊗ U) on A* ⊗ A
-    - goi_seq: Compose via tensor + feedback
-    - execute_trace: Collapse internal wires to get final circuit
+    This function is retained for backward compatibility and delegates to
+    the GOI infrastructure. New code should use compile() which handles
+    Cup, Cap, FunVar, Lam, and Apply directly.
     """
+    import warnings
+    warnings.warn(
+        "compile_higher_order() is deprecated. Use compile() instead. "
+        "Higher-order terms are now compiled directly via cup/cap wiring.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     from compile.goi import (
         make_unitary_value, goi_seq, execute_trace,
         GateAtom, GOIArtifact
