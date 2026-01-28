@@ -1,19 +1,14 @@
 # tests/test_21_structural_sum.py
 """Structural compilation tests (sum only): twist/assoc for ⊕.
 
-One-Hot Leaf-Tag Layout Model:
+Option B Flat Log-Tag Layout Model:
   For n-ary sum A₁ ⊕ ... ⊕ Aₙ, the layout is:
-    [t₁ | t₂ | ... | tₙ | A₁_wires | A₂_wires | ... | Aₙ_wires]
-  width(A ⊕ B) = 2 + width(A) + width(B)  (2 one-hot tags for 2 summands)
+    [tag_bits | shared_payload]
+  width(A ⊕ B) = ceil(log2(n)) + max(width(Aᵢ))
 
-  Key invariant: ALL structural operations on sums are PURE PERMUTATIONS.
-  No X gates are ever needed!
-
-  TwistPlus: A ⊕ B → B ⊕ A
-    - Swaps tags and data blocks
-    - NO X gates (one-hot encoding)
-
-  AssocPlusL/R: identity (same physical layout after flattening)
+  Structural operations are tracked as symbolic tag permutations.
+  TwistPlus emits X gates for binary tag flips.
+  AssocPlusL/R: identity (same physical layout after flattening).
 """
 
 from lang.types import Q, Ten
@@ -22,69 +17,62 @@ from compile.to_pytket import compile
 from core.perm import identity
 
 
-def test_twist_plus_is_pure_permutation():
-    """TwistPlus on A ⊕ B → B ⊕ A with one-hot leaf-tag encoding.
+def test_twist_plus_is_tag_flip():
+    """TwistPlus on A ⊕ B → B ⊕ A with flat log-tag encoding.
 
     For A = Q() (width 1), B = Q() ⊗ Q() (width 2):
-    - A ⊕ B has width = 2 + 1 + 2 = 5 (2 one-hot tags + data)
-    - Layout: [t_A | t_B | A | B_0 | B_1]
-    - After TwistPlus: [t_B | t_A | B_0 | B_1 | A]
-
-    With one-hot encoding, this is a PURE PERMUTATION - no X gates!
+    - A ⊕ B has width = 1 tag + max(1, 2) = 3
+    - Layout: [tag | payload₀ | payload₁]
+    - TwistPlus flips the tag bit (X gate) and leaves payload as identity.
     """
     a = Q()              # width 1
     b = Ten(Q(), Q())    # width 2
     out = compile(TwistPlus(a, b))
 
-    # With one-hot layout: 2 tags + 1 (a) + 2 (b) = 5 wires
-    assert out.circuit.n_qubits == 5
+    # With Option B: 1 tag + max(1,2) = 3 wires
+    assert out.circuit.n_qubits == 3
 
-    # NO X gates needed - pure permutation!
+    # One X gate on the tag wire (tag flip)
     commands = out.circuit.get_commands()
-    assert len(commands) == 0
+    assert len(commands) == 1
+    assert str(commands[0]).startswith("X")
 
-    # Permutation swaps tag block and data block
-    # [0=t_A, 1=t_B, 2=A, 3=B0, 4=B1] -> [0=t_B, 1=t_A, 2=B0, 3=B1, 4=A]
-    # new_to_old: [1, 0, 3, 4, 2]
-    expected_perm = [1, 0, 3, 4, 2]
-    assert out.perm.new_to_old == expected_perm
+    # Wire permutation is identity (shared payload unchanged)
+    assert out.perm.new_to_old == [0, 1, 2]
 
 
 def test_assoc_plus_is_identity():
-    """AssocPlus with one-hot leaf-tag encoding is IDENTITY.
+    """AssocPlus with flat log-tag encoding is IDENTITY.
 
     For A = B = C = Q():
-    - (A ⊕ B) ⊕ C flattens to [A, B, C]: 3 one-hot tags + 3 data = 6 wires
-    - A ⊕ (B ⊕ C) flattens to [A, B, C]: 3 one-hot tags + 3 data = 6 wires
+    - (A ⊕ B) ⊕ C flattens to [A, B, C]: ceil(log2(3))=2 tag bits + max(1)=1 = 3 wires
+    - A ⊕ (B ⊕ C) flattens to [A, B, C]: same layout
 
-    Both have the SAME physical layout: [t_A | t_B | t_C | A | B | C]
-
-    AssocPlusL and AssocPlusR are both IDENTITY permutations!
+    AssocPlusL and AssocPlusR are both IDENTITY!
     """
     a = b = c = Q()
     out = compile(AssocPlusL(a, b, c))
 
-    # 3 tags + 3 data = 6 wires
-    assert out.circuit.n_qubits == 6
+    # ceil(log2(3))=2 tag bits + max(1,1,1)=1 payload = 3 wires
+    assert out.circuit.n_qubits == 3
 
-    # No gates at all - pure identity permutation!
+    # No gates at all - identity
     assert len(out.circuit.get_commands()) == 0
 
     # Identity permutation
-    expected_perm = [0, 1, 2, 3, 4, 5]
+    expected_perm = [0, 1, 2]
     assert out.perm.new_to_old == expected_perm
 
     out2 = compile(AssocPlusR(a, b, c))
-    # Also identity
     assert out2.perm.new_to_old == expected_perm
 
 
 def test_seq_of_twists_is_identity():
-    """TwistPlus ∘ TwistPlus = identity (involution).
+    """TwistPlus ; TwistPlus = identity (involution).
 
-    Two consecutive TwistPlus operations should cancel out:
-    - Wire permutation is involutive (with one-hot encoding)
-    - NO X gates needed at all!
+    Two consecutive TwistPlus operations cancel:
+    - Each emits an X gate on the tag wire
+    - X·X = I, so net effect is identity
     """
     a = Q()
     b = Ten(Q(), Q())
@@ -92,12 +80,12 @@ def test_seq_of_twists_is_identity():
     t2 = TwistPlus(b, a)  # B ⊕ A → A ⊕ B
     out = compile(Seq(t1, t2))
 
-    # 5 wires total (2 tags + 1 + 2) with one-hot encoding
-    assert out.circuit.n_qubits == 5
+    # 1 tag + max(1,2) = 3 wires
+    assert out.circuit.n_qubits == 3
 
-    # NO X gates with one-hot encoding!
+    # Two X gates (they cancel physically: X·X = I)
     commands = out.circuit.get_commands()
-    assert len(commands) == 0
+    assert len(commands) == 2
 
-    # Permutation should be identity (two swaps cancel)
-    assert out.perm.new_to_old == identity(5).new_to_old
+    # Wire permutation should be identity (tag flips cancel in perm layer)
+    assert out.perm.new_to_old == identity(3).new_to_old

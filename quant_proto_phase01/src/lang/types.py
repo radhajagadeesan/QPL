@@ -5,30 +5,25 @@ Purpose
 -------
 We represent wire bundles using a *shape tree* built from two monoidals:
   - Tensor  (⊗): parallel composition of bundles
-  - Plus    (⊕): tagged sum with shared data wires
+  - Plus    (⊕): tagged sum with shared payload
 
-One-Hot Leaf-Tag Sum Layout
----------------------------
+Option B: Flat Log-Tag Sum Layout
+----------------------------------
 For an n-ary sum A₁ ⊕ A₂ ⊕ ... ⊕ Aₙ (represented as nested binary Plus),
-the wire layout uses **one-hot encoding**:
+the wire layout uses a **flat log-sized tag register + shared payload**:
 
-  [t₁ | t₂ | ... | tₙ | A₁_wires | A₂_wires | ... | Aₙ_wires]
+  ⟦A₁ ⊕ ... ⊕ Aₙ⟧ = Q^{⊗k} ⊗ W
+  k = ceil(log2(n))
+  |W| = max_i(width(Aᵢ))
 
-where:
-  - t₁...tₙ are one-hot tag wires (exactly one is 1)
-  - Aᵢ_wires are the data wires for each summand
-  - width(sum) = n + sum(width(Aᵢ))
+Layout: [tag₀ | tag₁ | ... | tag_{k-1} | payload₀ | ... | payload_{W-1}]
 
-Key invariant:
-  ALL structural operations on sums compile to pure wire permutations.
-  No tag bit flips (X gates) are ever required.
+The k-qubit tag register stores an index i ∈ {0,...,n-1} selecting a summand.
+W is a shared payload register; unused payload wires are always |0⟩.
+Tag values ≥ n are unreachable and must never be produced.
 
-This encoding enables:
-  - TwistPlus: pure permutation (swap tags and payloads)
-  - AssocPlusL/R: identity (same physical layout after flattening)
-  - DistL: identity on wires (with shared tensor semantics)
-  - DistR: pure permutation (move tags to front)
-  - Involutions: all structural involutions are WirePerms with π² = id
+Structural operations on sums compile to symbolic tag permutations
+(tracked in TaggedPerm) and are lowered to gates only at emission time.
 
 Stability
 ---------
@@ -39,6 +34,7 @@ Other modules may assume:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import List, Union
 
@@ -90,9 +86,9 @@ I = Unit
 def width(ty: Ty) -> int:
     """Number of physical wires represented by ty.
 
-    For Plus types with n leaf summands, uses one-hot encoding:
-      n tag wires + sum of summand widths.
-    Layout for A₁ ⊕ ... ⊕ Aₙ: [t₁ | ... | tₙ | A₁_wires | ... | Aₙ_wires]
+    For Plus types with n leaf summands, uses flat log-tag encoding:
+      ceil(log2(n)) tag qubits + max(width(Aᵢ)) shared payload.
+    Layout: [tag_bits | shared_payload]
     Note: summands may themselves contain Plus, which get their own tags.
     Unit type has width 0.
     """
@@ -103,20 +99,44 @@ def width(ty: Ty) -> int:
     if isinstance(ty, Ten):
         return width(ty.left) + width(ty.right)
     if isinstance(ty, Plus):
-        # One-hot leaf-tag encoding: n tags for n summands + their widths
-        # Note: summands are non-Plus types (flattened), but may contain
-        # nested Plus (e.g., Ten(A, Plus(B, C))) which get their own tags.
         summands = flatten_plus(ty)
-        n_tags = len(summands)
-        payload = sum(width(s) for s in summands)
-        return n_tags + payload
+        return tag_width(ty) + payload_width(ty)
     raise TypeError(f"Unknown Ty node: {ty!r}")
+
+
+def tag_width(ty: Ty) -> int:
+    """Number of tag qubits for a Plus type.
+
+    For n leaf summands: ceil(log2(n)).
+    For n=1: 0 (degenerate, no tag needed).
+    For non-Plus types: 0.
+    """
+    if isinstance(ty, Plus):
+        n = len(flatten_plus(ty))
+        if n <= 1:
+            return 0
+        return math.ceil(math.log2(n))
+    return 0
+
+
+def payload_width(ty: Ty) -> int:
+    """Width of the shared payload register for a Plus type.
+
+    For n summands: max(width(Aᵢ)).
+    For non-Plus types: same as width.
+    """
+    if isinstance(ty, Plus):
+        summands = flatten_plus(ty)
+        if not summands:
+            return 0
+        return max(width(s) for s in summands)
+    return width(ty)
 
 
 def data_width(ty: Ty) -> int:
     """Number of data wires (excluding tag qubits) for ty.
 
-    For Plus types, this is width(left) + width(right) without the tag.
+    For Plus types, this is the shared payload width.
     Useful for computing data-only permutations.
     Unit type has data_width 0.
     """
@@ -127,12 +147,16 @@ def data_width(ty: Ty) -> int:
     if isinstance(ty, Ten):
         return data_width(ty.left) + data_width(ty.right)
     if isinstance(ty, Plus):
-        return data_width(ty.left) + data_width(ty.right)
+        return payload_width(ty)
     raise TypeError(f"Unknown Ty node: {ty!r}")
 
 
 def tag_count(ty: Ty) -> int:
-    """Number of tag qubits in ty (one-hot: n tags for n leaf summands)."""
+    """Number of tag qubits in ty.
+
+    For Plus types: ceil(log2(n)) where n is number of leaf summands.
+    For Tensor types: sum of tag counts of children.
+    """
     if isinstance(ty, Unit):
         return 0
     if isinstance(ty, Q):
@@ -140,8 +164,7 @@ def tag_count(ty: Ty) -> int:
     if isinstance(ty, Ten):
         return tag_count(ty.left) + tag_count(ty.right)
     if isinstance(ty, Plus):
-        # One-hot encoding: n tags for n leaf summands
-        return len(flatten_plus(ty))
+        return tag_width(ty)
     raise TypeError(f"Unknown Ty node: {ty!r}")
 
 

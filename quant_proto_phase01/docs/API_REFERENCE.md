@@ -11,7 +11,7 @@ Complete reference for types, terms, and compilation functions.
 | `Q()` | Single qubit | 1 |
 | `I()` | Unit type | 0 |
 | `Ten(a, b)` | Tensor product a ⊗ b | width(a) + width(b) |
-| `Plus(a, b)` | Sum type a + b (one-hot) | 2 + width(a) + width(b) |
+| `Plus(a, b)` | Sum type a + b (Option B) | ceil(log2(n)) + max(width(Aᵢ)) |
 
 ### Function Types (Surface Language)
 
@@ -22,19 +22,21 @@ Function types `A → B` exist in the **surface language** (OCaml `TyArrow`):
 
 In Python, use `Lam`, `Apply`, `FunVar` for higher-order programming (see Higher-Order Terms).
 
-### One-Hot Encoding
+### Option B: Flat Log-Tag Encoding
 
-Sum types use one-hot leaf-tag encoding:
-- Binary `Plus(A, B)` has 2 tag wires + payloads
-- Nested sums flatten: `Plus(Plus(Q,Q), Q)` = 3 tags + 3 data = 6 wires
-- Wire layout: `[t₁ | t₂ | ... | tₙ | A₁ | A₂ | ... | Aₙ]`
-- Invariant: exactly one tag wire is |1⟩
+Sum types use a flat log-sized tag register + shared payload:
+- `Plus(A, B)` has ceil(log2(n)) tag qubits + max(width(Aᵢ)) shared payload
+- Nested sums flatten: `Plus(Plus(Q,Q), Q)` = ceil(log2(3))=2 tags + max(1)=1 = 3 wires
+- Wire layout: `[tag₀ | ... | tag_{k-1} | payload₀ | ... | payload_{W-1}]`
+- Invariant: tag encodes index i < n; unused payload wires are |0⟩
 
 **Functions:**
 ```python
-from lang.types import Q, I, Ten, Plus, width
+from lang.types import Q, I, Ten, Plus, width, tag_width, payload_width
 
-width(ty: Ty) -> int       # Number of physical wires
+width(ty: Ty) -> int           # Number of physical wires
+tag_width(ty: Ty) -> int       # Number of tag qubits (0 for non-Plus)
+payload_width(ty: Ty) -> int   # Shared payload width (= width for non-Plus)
 ```
 
 ---
@@ -51,7 +53,8 @@ width(ty: Ty) -> int       # Number of physical wires
 
 ### Structural Isomorphisms
 
-All compile to **pure wire permutations** (no gates).
+Tensor structurals compile to **pure wire permutations** (no gates).
+Sum structurals compile to **symbolic tag permutations** (lowered to gates late).
 
 | Term | Type Signature |
 |------|----------------|
@@ -341,11 +344,12 @@ result = compile(term)
 
 ## Invariants
 
-1. **Structural = pure permutation** — no gates, only wire reordering (one-hot encoding)
-2. **No SWAPs by default** — only with `materialize=True`
-3. **Gates are reindexed** — through `WirePerm.apply_new_to_old()`
-4. **Deterministic** — same AST → identical circuit
-5. **Involution certification** — ExpInvolution verifies π² = id at compile time
+1. **Tensor structurals = pure permutation** — no gates, only wire reordering
+2. **Sum structurals = symbolic tag rewrites** — tracked in TaggedPerm, lowered late
+3. **No SWAPs by default** — only with `materialize=True`
+4. **Gates are reindexed** — through `WirePerm.apply_new_to_old()`
+5. **Deterministic** — same AST → identical circuit
+6. **Involution certification** — ExpInvolution verifies π² = id at compile time
 
 ---
 

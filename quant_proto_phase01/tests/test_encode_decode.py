@@ -20,7 +20,7 @@ class TestTypeRules:
         assert dom == Q()
         assert cod == Plus(Unit(), Unit())
         assert width(dom) == 1
-        assert width(cod) == 2
+        assert width(cod) == 1
 
     def test_decode_type(self):
         """decode : I + I → Q"""
@@ -28,7 +28,7 @@ class TestTypeRules:
         dom, cod = type_of(dec)
         assert dom == Plus(Unit(), Unit())
         assert cod == Q()
-        assert width(dom) == 2
+        assert width(dom) == 1
         assert width(cod) == 1
 
     def test_roundtrip_encode_decode_type(self):

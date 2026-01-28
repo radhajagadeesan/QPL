@@ -1,15 +1,15 @@
 # tests/test_22_distributivity.py
-"""Distributivity tests with one-hot leaf-tag encoding.
+"""Distributivity tests with flat log-tag encoding.
 
-One-Hot Distributivity:
+Option B Distributivity:
   DistL: (A ⊕ B) ⊗ C → (A ⊗ C) ⊕ (B ⊗ C)
-    - Physical layout: [t_A | t_B | A | B | C] (same for both types)
+    - Physical layout: [tag_bits | payload | C_wires] (same for both types)
     - DistL is IDENTITY on wires
 
   DistR: A ⊗ (B ⊕ C) → (A ⊗ B) ⊕ (A ⊗ C)
-    - Input layout:  [A | t_B | t_C | B | C]
-    - Output layout: [t_B | t_C | A | B | C]
-    - DistR moves all tags from after A to before A
+    - Input layout:  [A_wires | tag_bits | payload_BC]
+    - Output layout: [tag_bits | A_wires | payload_BC]
+    - DistR moves tag bits from after A to before A
 """
 
 from lang.types import Q, Ten
@@ -22,50 +22,44 @@ def test_distL_is_identity():
     """DistL: (A ⊕ B) ⊗ C → (A ⊗ C) ⊕ (B ⊗ C) is identity on wires.
 
     For A = Q(), B = Q() ⊗ Q(), C = Q():
-    - Domain: (Q ⊕ (Q⊗Q)) ⊗ Q
-    - (Q ⊕ (Q⊗Q)) has 2 summands: 2 tags + 1 + 2 = 5
-    - Width = 5 + 1 = 6 [t_A | t_B | A | B0 | B1 | C]
-
-    The physical layout is unchanged by distributivity - only the type changes.
+    - (Q ⊕ (Q⊗Q)) has 1 tag + max(1, 2) = 3 wires
+    - Width = 3 + 1 = 4: [tag | payload₀ | payload₁ | C]
     """
     a = Q()
     b = Ten(Q(), Q())
     c = Q()
     out = compile(DistL(a, b, c))
 
-    # Width: 2 tags + 1 (a) + 2 (b) + 1 (c) = 6
-    assert out.circuit.n_qubits == 6
+    # Width: 1 tag + max(1,2)=2 payload + 1 C = 4
+    assert out.circuit.n_qubits == 4
 
-    # No gates (pure permutation, which is identity)
+    # No gates (pure identity)
     assert len(out.circuit.get_commands()) == 0
 
     # Permutation is identity
-    assert out.perm.new_to_old == identity(6).new_to_old
+    assert out.perm.new_to_old == identity(4).new_to_old
 
 
 def test_distR_moves_tags():
     """DistR: A ⊗ (B ⊕ C) → (A ⊗ B) ⊕ (A ⊗ C) moves tags to front.
 
     For A = Q(), B = Q(), C = Q() ⊗ Q():
-    - Domain: Q ⊗ (Q ⊕ (Q⊗Q))
-    - (Q ⊕ (Q⊗Q)) has 2 summands: 2 tags + 1 + 2 = 5
-    - Width = 1 + 5 = 6 [A | t_B | t_C | B | C0 | C1]
-    - Codomain layout: [t_B | t_C | A | B | C0 | C1]
-
-    DistR permutes the 2 tags from positions 1,2 to positions 0,1.
+    - (Q ⊕ (Q⊗Q)) has 1 tag + max(1, 2) = 3 wires
+    - Domain: Q ⊗ (Q ⊕ (Q⊗Q)) = 1 + 3 = 4 wires: [A | tag | p₀ | p₁]
+    - Codomain: [tag | A | p₀ | p₁]
     """
     a = Q()
     b = Q()
     c = Ten(Q(), Q())
     out = compile(DistR(a, b, c))
 
-    # Width: 1 (a) + 2 tags + 1 (b) + 2 (c) = 6
-    assert out.circuit.n_qubits == 6
+    # Width: 1 A + 1 tag + max(1,2)=2 payload = 4
+    assert out.circuit.n_qubits == 4
 
     # No tag flips (just wire rearrangement)
     assert len(out.circuit.get_commands()) == 0
 
-    # Permutation: [A, t_B, t_C, B, C0, C1] -> [t_B, t_C, A, B, C0, C1]
-    # new_to_old: [1, 2, 0, 3, 4, 5]
-    expected_perm = [1, 2, 0, 3, 4, 5]
+    # Permutation: [A, tag, p0, p1] -> [tag, A, p0, p1]
+    # new_to_old: [1, 0, 2, 3]
+    expected_perm = [1, 0, 2, 3]
     assert out.perm.new_to_old == expected_perm

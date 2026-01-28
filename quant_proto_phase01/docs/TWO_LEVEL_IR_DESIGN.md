@@ -60,7 +60,7 @@ IR1 is the *workhorse IR* of the compiler. It represents quantum programs as **f
 
 **Location:** `src/lang/types.py`
 
-Types determine **wire layouts**. We use **one-hot leaf-tag encoding** for sums.
+Types determine **wire layouts**. We use **Option B: flat log-tag encoding** for sums.
 
 ---
 
@@ -91,36 +91,37 @@ Layout: [ q₀ | q₁ | q₂ ]
 
 ---
 
-##### Sum (`+`) — One-Hot Leaf Tags
+##### Sum (`+`) — Option B: Flat Log-Tag + Shared Payload
 
 ```
-A + B  ≡  [ tag_A | tag_B | A_wires | B_wires ]
-width(A + B) = 2 + width(A) + width(B)
+A₁ + A₂ + ... + Aₙ  ≡  [ tag_bits | shared_payload ]
+k = ceil(log2(n))
+width(sum) = k + max(width(Aᵢ))
 ```
 
-**Invariant:** Exactly one tag wire is |1⟩, the rest are |0⟩.
+**Invariant:** Tag register stores index i ∈ {0,...,n-1}. Unused payload wires are |0⟩.
 
 **Example: Q + Q**
 ```
 Type:   Q + Q
-Width:  4
-Layout: [ t₁ | t₂ | q_L | q_R ]
-        ─────────────────────────
-         0    1     2     3
+Width:  2  (1 tag bit + 1 shared payload)
+Layout: [ tag | payload ]
+        ─────────────
+         0      1
 
-State |Left(ψ)⟩:  t₁=|1⟩, t₂=|0⟩, q_L=|ψ⟩, q_R=|0⟩
-State |Right(φ)⟩: t₁=|0⟩, t₂=|1⟩, q_L=|0⟩, q_R=|φ⟩
+State |Left(ψ)⟩:  tag=|0⟩, payload=|ψ⟩
+State |Right(φ)⟩: tag=|1⟩, payload=|φ⟩
 ```
 
-**Example: (Q + Q) + Q (nested sum flattens)**
+**Example: (Q + Q) + Q (nested sum flattens to 3-ary)**
 ```
 Type:   (Q + Q) + Q
-Width:  6  (3 leaf tags + 3 payloads)
-Layout: [ t₁ | t₂ | t₃ | q₁ | q₂ | q₃ ]
-        ─────────────────────────────────
-         0    1    2    3    4    5
+Width:  3  (ceil(log2(3))=2 tag bits + max(1)=1 payload)
+Layout: [ tag₀ | tag₁ | payload ]
+        ─────────────────────────
+         0      1       2
 
-This is an n-ary sum with 3 summands, using one-hot encoding.
+Tag values: 0=first Q, 1=second Q, 2=third Q. Code 3 is unreachable.
 ```
 
 ---
@@ -128,32 +129,32 @@ This is an n-ary sum with 3 summands, using one-hot encoding.
 ##### Mixed: A ⊗ (B + C)
 
 ```
-A ⊗ (B + C)  ≡  [ A_wires | tag_B | tag_C | B_wires | C_wires ]
-width = width(A) + 2 + width(B) + width(C)
+A ⊗ (B + C)  ≡  [ A_wires | tag_bits | shared_payload ]
+width = width(A) + ceil(log2(n)) + max(width(Bᵢ))
 ```
 
 **Example: Q ⊗ (Q + Q)**
 ```
 Type:   Q ⊗ (Q + Q)
-Width:  5
-Layout: [ q_A | t₁ | t₂ | q_B | q_C ]
-        ─────────────────────────────
-          0    1    2    3     4
+Width:  3
+Layout: [ q_A | tag | payload ]
+        ────────────────────
+          0     1      2
 
 The A component occupies wire 0.
-The sum (Q + Q) occupies wires 1-4 (2 tags + 2 payloads).
+The sum (Q + Q) occupies wires 1-2 (1 tag + 1 payload).
 ```
 
 **Example: (Q + Q) ⊗ Q**
 ```
 Type:   (Q + Q) ⊗ Q
-Width:  5
-Layout: [ t₁ | t₂ | q_L | q_R | q_C ]
-        ─────────────────────────────
-         0    1    2     3     4
+Width:  3
+Layout: [ tag | payload | q_C ]
+        ─────────────────────
+         0      1        2
 
-The sum (Q + Q) occupies wires 0-3.
-The C component occupies wire 4.
+The sum (Q + Q) occupies wires 0-1.
+The C component occupies wire 2.
 ```
 
 ---
@@ -191,18 +192,18 @@ Permutation: [1, 0]
 
 ##### TwistPlus: A + B → B + A
 
-Swaps both the tag wires AND the payload blocks.
+Flips the tag bit (symbolic tag permutation, lowered to X gate).
 
 **Example: TwistPlus(Q, Q)**
 ```
-Input:  [ t₁ | t₂ | q_L | q_R ]    Output: [ t₂ | t₁ | q_R | q_L ]
-          0    1    2     3                  0    1    2     3
+Input:  [ tag | payload ]    Output: [ tag⊕1 | payload ]
+          0      1                     0        1
 
-Permutation: [1, 0, 3, 2]
-             Swaps tags (0↔1) and payloads (2↔3)
+Wire permutation: identity [0, 1]
+Tag flip: X gate on wire 0
 ```
 
-This is **involutive**: applying it twice gives identity.
+This is **involutive**: applying it twice gives identity (X·X = I).
 
 ---
 
@@ -213,58 +214,55 @@ Tags are already at the front — this is **identity on wires**.
 **Example: DistL(Q, Q, Q)**
 ```
 Input type:  (Q + Q) ⊗ Q
-Input:       [ t₁ | t₂ | q_L | q_R | q_C ]
-               0    1    2     3     4
+Input:       [ tag | payload | q_C ]
+               0      1        2
 
 Output type: (Q ⊗ Q) + (Q ⊗ Q)
-Output:      [ t₁ | t₂ | q_L | q_R | q_C ]
-               0    1    2     3     4
+Output:      [ tag | payload | q_C ]
+               0      1        2
 
-Permutation: [0, 1, 2, 3, 4]  (identity)
+Permutation: [0, 1, 2]  (identity)
 ```
-
-The wire layout is already correct! The type changes but the physical wires don't move.
 
 ---
 
 ##### DistR: A ⊗ (B + C) → (A ⊗ B) + (A ⊗ C)
 
-Moves the tag wires from the middle to the front.
+Moves the tag bits from the middle to the front.
 
 **Example: DistR(Q, Q, Q)**
 ```
 Input type:  Q ⊗ (Q + Q)
-Input:       [ q_A | t₁ | t₂ | q_B | q_C ]
-               0     1    2    3     4
+Input:       [ q_A | tag | payload ]
+               0      1      2
 
 Output type: (Q ⊗ Q) + (Q ⊗ Q)
-Output:      [ t₁ | t₂ | q_A | q_B | q_C ]
-               0    1    2     3     4
+Output:      [ tag | q_A | payload ]
+               0      1      2
 
-Permutation: [1, 2, 0, 3, 4]
-             new wire 0 ← old wire 1 (first tag)
-             new wire 1 ← old wire 2 (second tag)
-             new wire 2 ← old wire 0 (A payload)
-             new wires 3,4 stay in place
+Permutation: [1, 0, 2]
+             new wire 0 ← old wire 1 (tag)
+             new wire 1 ← old wire 0 (A)
+             new wire 2 stays
 ```
-
-The tags move from positions [1,2] to positions [0,1].
 
 ---
 
 ##### Structural Operations Summary
 
-| Term | Type | Permutation | Gates |
-|------|------|-------------|-------|
-| `TwistTen(Q,Q)` | Q⊗Q → Q⊗Q | [1, 0] | 0 |
-| `TwistPlus(Q,Q)` | Q+Q → Q+Q | [1, 0, 3, 2] | 0 |
-| `AssocTenL(Q,Q,Q)` | (Q⊗Q)⊗Q → Q⊗(Q⊗Q) | [0, 1, 2] | 0 |
-| `AssocPlusL(Q,Q,Q)` | (Q+Q)+Q → Q+(Q+Q) | reorders tags+payloads | 0 |
-| `DistL(Q,Q,Q)` | (Q+Q)⊗Q → (Q⊗Q)+(Q⊗Q) | [0, 1, 2, 3, 4] | 0 |
-| `DistR(Q,Q,Q)` | Q⊗(Q+Q) → (Q⊗Q)+(Q⊗Q) | [1, 2, 0, 3, 4] | 0 |
+| Term | Type | Wire Perm | Tag Effect | Gates |
+|------|------|-----------|------------|-------|
+| `TwistTen(Q,Q)` | Q⊗Q → Q⊗Q | [1, 0] | — | 0 |
+| `TwistPlus(Q,Q)` | Q+Q → Q+Q | [0, 1] (identity) | X on tag | 1 |
+| `AssocTenL(Q,Q,Q)` | (Q⊗Q)⊗Q → Q⊗(Q⊗Q) | [0, 1, 2] | — | 0 |
+| `AssocPlusL(Q,Q,Q)` | (Q+Q)+Q → Q+(Q+Q) | identity | identity | 0 |
+| `DistL(Q,Q,Q)` | (Q+Q)⊗Q → (Q⊗Q)+(Q⊗Q) | [0, 1, 2] | — | 0 |
+| `DistR(Q,Q,Q)` | Q⊗(Q+Q) → (Q⊗Q)+(Q⊗Q) | [1, 0, 2] | — | 0 |
 
 **Key Invariant:**
-> With one-hot encoding, structural operations are **always** pure permutations. No X gates, no tag recoding, no gates on any wires.
+> With Option B encoding, structural tensor operations are pure wire permutations.
+> Structural sum operations use symbolic tag permutations (tracked in TaggedPerm),
+> lowered to gates only at emission time.
 
 ---
 
@@ -481,7 +479,7 @@ We get a clean conceptual model:
 |-------|------|
 | IR1 | Canonical flat target — always executable |
 | IR2 | Semantic overlay for feedback — explanatory |
-| One-hot sums | Belong in IR1 from the start |
+| Option B sums | Flat log-tag + shared payload, belong in IR1 |
 | GOI | Never computes; only explains routing |
 
 ---

@@ -47,7 +47,11 @@ cd surface && dune test
 
 ## Conventions
 
-- Structural operations (twist, assoc, dist) compile to pure wire permutations
-- Sum types use one-hot leaf-tag encoding
+- Structural operations (twist, assoc, dist) compile to symbolic tag permutations + wire permutations
+- Sum types use **Option B: flat log-sized tag register + shared payload** encoding
+  - `width(A ⊕ B) = ceil(log2(n)) + max(width(Aᵢ))` where n = number of leaf summands
+  - TwistPlus emits X gate (tag flip), tracked symbolically in TaggedPerm
+  - AssocPlus is identity (flattened layout)
+  - DistL is identity; DistR moves tag bits to front
 - ExpInvolution requires involutive body (P² = id)
 - Use `materialize=True` in compile() when SWAP gates must be emitted

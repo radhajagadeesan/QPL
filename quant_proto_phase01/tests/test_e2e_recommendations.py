@@ -177,16 +177,15 @@ class TestStructuralPurity:
         result = compile(prog, materialize=False)
         assert count_gates(result.circuit) == 0
 
-    def test_sum_swap_is_pure_permutation(self):
-        """TwistPlus is pure permutation with one-hot leaf-tag encoding.
+    def test_sum_swap_is_tag_flip(self):
+        """TwistPlus emits X gate for tag flip with Option B encoding.
 
-        With one-hot encoding, NO X gates are needed - all structural
-        operations on sums are pure wire permutations!
+        With Option B, TwistPlus flips the tag bit (X gate on wire 0).
         """
         prog = TwistPlus(Q(), Q())
         result = compile(prog, materialize=False)
-        # One-hot encoding: TwistPlus is a pure permutation, no gates
-        assert count_gates(result.circuit) == 0
+        # Option B: TwistPlus emits 1 X gate (tag flip)
+        assert count_gates(result.circuit) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -236,36 +235,36 @@ class TestDistributivityMacros:
     def test_dist_l_identity(self):
         """DistL: (A ⊕ B) ⊗ C → (A ⊗ C) ⊕ (B ⊗ C) is identity on wires.
 
-        With one-hot encoding:
-          (Q ⊕ Q) has 2 tags + 2 data = 4 wires
-          (Q ⊕ Q) ⊗ Q has 4 + 1 = 5 wires
+        With Option B:
+          (Q ⊕ Q) has 1 tag + max(1,1)=1 payload = 2 wires
+          (Q ⊕ Q) ⊗ Q has 2 + 1 = 3 wires
         """
         prog = DistL(Q(), Q(), Q())
         result = compile(prog)
 
-        # Width: 2 one-hot tags + Q + Q + Q = 5
-        assert result.circuit.n_qubits == 5
+        # Width: 1 tag + 1 payload + 1 Q = 3
+        assert result.circuit.n_qubits == 3
         # Identity on wires: no gates
         assert count_gates(result.circuit) == 0
 
     def test_dist_r_permutes_tags(self):
         """DistR: A ⊗ (B ⊕ C) → (A ⊗ B) ⊕ (A ⊗ C) moves tags to front.
 
-        With one-hot encoding:
-          Q ⊗ (Q ⊕ Q): Q has 1 wire, (Q ⊕ Q) has 2 tags + 2 data = 4
-          Total: 1 + 4 = 5 wires = [A | t_B | t_C | B | C]
-          After DistR: [t_B | t_C | A | B | C]
+        With Option B:
+          Q ⊗ (Q ⊕ Q): Q has 1 wire, (Q ⊕ Q) has 1 tag + 1 payload = 2
+          Total: 1 + 2 = 3 wires = [A | tag | payload]
+          After DistR: [tag | A | payload]
         """
         prog = DistR(Q(), Q(), Q())
         result = compile(prog)
 
-        # Width: Q + 2 tags + Q + Q = 5
-        assert result.circuit.n_qubits == 5
+        # Width: 1 Q + 1 tag + 1 payload = 3
+        assert result.circuit.n_qubits == 3
         # No gates (just permutation)
         assert count_gates(result.circuit) == 0
-        # Perm should move wire 1 (first tag) to position 0
+        # Perm should move wire 1 (tag) to position 0
         assert result.perm.new_to_old[0] == 1
-        assert result.perm.new_to_old[1] == 2  # second tag
+        assert result.perm.new_to_old[1] == 0  # A moves to position 1
 
     def test_distributivity_elaboration_succeeds(self):
         """Surface elaboration and compilation of distributivity succeeds."""
@@ -455,58 +454,58 @@ class TestMinimalHighValue:
 # Tagged Layout Model Coverage
 # ---------------------------------------------------------------------------
 
-class TestOneHotLayoutCoverage:
-    """Verify one-hot leaf-tag layout model changes are properly covered."""
+class TestOptionBLayoutCoverage:
+    """Verify Option B flat log-tag layout model changes are properly covered."""
 
-    def test_plus_width_with_one_hot_tags(self):
-        """Plus types include one-hot tags in width.
+    def test_plus_width_with_log_tags(self):
+        """Plus types use log-sized tag register.
 
-        With one-hot encoding: n summands = n tags.
-        Plus(Q(), Q()) has 2 summands, so 2 tags + 2 data = 4 wires.
+        With Option B: ceil(log2(n)) tag bits + max payload.
+        Plus(Q(), Q()) has 2 summands: 1 tag + max(1,1) = 2 wires.
         """
-        assert width(Plus(Q(), Q())) == 4  # 2 tags + 1 + 1
+        assert width(Plus(Q(), Q())) == 2  # 1 tag + 1 payload
 
     def test_nested_plus_width_flattened(self):
         """Nested Plus types flatten to single n-ary sum.
 
         (Q ⊕ Q) ⊕ Q flattens to [Q, Q, Q] = 3 summands.
-        Width = 3 tags + 3 data = 6 wires.
+        Width = ceil(log2(3))=2 tags + max(1,1,1)=1 = 3 wires.
         """
         ty = Plus(Plus(Q(), Q()), Q())
-        assert width(ty) == 6  # 3 tags + 3 data
+        assert width(ty) == 3  # 2 tags + 1 payload
 
-    def test_twist_plus_is_pure_permutation(self):
-        """TwistPlus is a pure permutation (no X gates).
+    def test_twist_plus_double_is_identity(self):
+        """Two TwistPlus operations cancel (involution).
 
-        With one-hot encoding, TwistPlus just permutes tags and data.
-        Two consecutive twists cancel to identity.
+        With Option B, TwistPlus emits X gate on tag wire.
+        Two X gates cancel: X·X = I.
         """
         prog = Seq(TwistPlus(Q(), Q()), TwistPlus(Q(), Q()))
         result = compile(prog, materialize=False)
-        # After two twists, should be identity
-        assert result.perm == identity(4)  # 2 tags + 2 data = 4 wires
-        # NO X gates needed with one-hot encoding!
-        assert count_gates(result.circuit) == 0
+        # After two twists, wire perm is identity
+        assert result.perm == identity(2)  # 1 tag + 1 payload = 2 wires
+        # Two X gates (they cancel physically but are both emitted)
+        assert count_gates(result.circuit) == 2
 
     def test_dist_l_preserves_physical_width(self):
-        """DistL preserves physical wire count (sharing model).
+        """DistL preserves physical wire count.
 
-        With one-hot encoding:
-          (Q ⊕ Q) ⊗ Q: 2 tags + 3 data = 5 wires
+        With Option B:
+          (Q ⊕ Q) ⊗ Q: (1 tag + 1 payload) + 1 = 3 wires
         """
         prog = DistL(Q(), Q(), Q())
         result = compile(prog)
-        assert result.circuit.n_qubits == 5
+        assert result.circuit.n_qubits == 3
 
     def test_dist_r_preserves_physical_width(self):
         """DistR preserves physical wire count.
 
-        With one-hot encoding:
-          Q ⊗ (Q ⊕ Q): 1 + (2 tags + 2 data) = 5 wires
+        With Option B:
+          Q ⊗ (Q ⊕ Q): 1 + (1 tag + 1 payload) = 3 wires
         """
         prog = DistR(Q(), Q(), Q())
         result = compile(prog)
-        assert result.circuit.n_qubits == 5
+        assert result.circuit.n_qubits == 3
 
 
 # ---------------------------------------------------------------------------
