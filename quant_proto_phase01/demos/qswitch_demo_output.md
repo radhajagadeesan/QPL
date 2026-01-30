@@ -1,111 +1,127 @@
-# QSwitch Demo - Expected Output
+# QSwitch Demo Output
 
-> **Note:** This file documents the expected output in readable Markdown format.
-> Run `qswitch_demo.py` or `qswitch_demo_video.py` for console output.
+Run with: `PYTHONPATH=src python demos/qswitch_demo.py`
 
-## 1. QSwitch Definition
+For full elaboration pipeline, run: `cd surface && dune exec demos/qswitch_demo.exe`
+
+---
+
+## Part 1: Source Definition
 
 ```
 QSwitch : (Q→Q) → (Q→Q) → (QBool ⊗ Q → QBool ⊗ Q)
 
-QSwitch(f, g)(ctrl, data) =
-  case ctrl of
-  | Zero => (ctrl, g;f data)   -- apply g then f
-  | One  => (ctrl, f;g data)   -- apply f then g
+In surface syntax (OCaml):
+
+  def QSwitch_HS : (I + I) ⊗ Q → (I + I) ⊗ Q =
+    λx. let (ctrl ⊗ tgt) : (I + I) ⊗ Q = x in
+      case ctrl of
+        | Left(u)  => S[1] ; H[1]    (* when ctrl=0: S then H *)
+        | Right(u) => H[1] ; S[1]    (* when ctrl=1: H then S *)
+
+Type layout:
+  Wire 0: tag qubit (control) — encodes Left (0) vs Right (1)
+  Wire 1: payload qubit — where gates are applied
 ```
 
-## 2. Abstract QSwitch(f, g) Circuit
+---
 
-The quantum case elaborates to controlled gates:
+## Part 2: Elaboration (OCaml → Core IR)
 
-```
-anti-controlled-g ; f ; controlled-g
-```
-
-Expanded circuit structure:
+The OCaml elaborator transforms case expressions into controlled gates:
 
 ```
-Circuit for QSwitch(f, g):
-  X q[0];        -- flip ctrl for anti-control
-  C-g q[0],q[1]; -- g if ctrl was 0 (now 1)
-  X q[0];        -- restore ctrl
-  f q[1];        -- f unconditionally
-  C-g q[0],q[1]; -- g if ctrl is 1
-
-Wire 0: ctrl (control qubit)
-Wire 1: data (target qubit)
+case ctrl of Left => body_L | Right => body_R
+─────────────────────────────────────────────
+Anti-controlled(body_L) ; Controlled(body_R)
 ```
 
-Verification:
-```
-ctrl=0: X flips to 1, C-g fires, X flips back, f applied, C-g doesn't fire
-        → data sees: g ; f ✓
-
-ctrl=1: X flips to 0, C-g doesn't fire, X flips back, f applied, C-g fires
-        → data sees: f ; g ✓
-```
-
-## 3. QSwitch(H, S) Instantiation
-
-Substituting f=H, g=S:
+For QSwitch(H, S):
 
 ```
-QSwitch(H, S)(ctrl, data) =
-  | Zero => (ctrl, S;H data)
-  | One  => (ctrl, H;S data)
+case ctrl of Left => S;H | Right => H;S
+─────────────────────────────────────────
+X[0]; CS[0,1]; CH[0,1]; X[0]; CH[0,1]; CS[0,1]
+     ───────────────────     ─────────────────
+     anti-ctrl (S;H)         ctrl (H;S)
 ```
 
-## 4. QSwitch(H, S) Circuit (First-Order, 2 qubits)
+Anti-control pattern: `X[tag] ; Controlled ; X[tag]`
+- Flips tag so |0⟩ becomes |1⟩
+- Controlled gates fire on |1⟩
+- Flips tag back
+
+---
+
+## Part 3: Compiled Circuit
 
 ```
-Circuit:
-  X q[0];
-  CS q[0], q[1];
-  X q[0];
-  H q[1];
-  CS q[0], q[1];
-
 Qubits: 2
-Gates:  5
-```
+Gates:  6
 
-Semantics:
-```
-  |0⟩|ψ⟩ → |0⟩(S;H)|ψ⟩
-  |1⟩|ψ⟩ → |1⟩(H;S)|ψ⟩
-```
-
-## 5. QSwitch(H, S) GOI Form (4 qubits)
-
-Higher-order representation `(QSwitch†) ⊗ QSwitch`:
-
-```
-Wire Layout:
-  Wire 0: ctrl*  (negative/dual)
-  Wire 1: data*  (negative/dual)
-  Wire 2: ctrl   (positive)
-  Wire 3: data   (positive)
-
-Circuit:
-  CSdg q[0], q[1];
-  X q[2];
+Circuit commands:
   X q[0];
-  H q[1];
-  CS q[2], q[3];
-  CSdg q[0], q[1];
-  X q[2];
-  H q[3];
+  CS q[0], q[1];
+  CH q[0], q[1];
   X q[0];
-  CS q[2], q[3];
-
-Qubits: 4
-Gates:  10
+  CH q[0], q[1];
+  CS q[0], q[1];
 ```
 
-## 6. Summary
+Diagram:
 
-| Form | Qubits | Gates | Description |
-|------|--------|-------|-------------|
-| QSwitch(f,g) abstract | 2 | 5 | X; C-g; X; f; C-g |
-| QSwitch(H,S) first-order | 2 | 5 | X; CS; X; H; CS |
-| QSwitch(H,S) GOI | 4 | 10 | Doubled conjugation form |
+```
+q[0] ──X───●───●───X───●───●──
+          │   │       │   │
+q[1] ─────CS──CH──────CH──CS──
+```
+
+---
+
+## Part 4: Semantics
+
+Execution trace:
+
+```
+When ctrl = |0⟩ (Left):
+  X[0] flips to |1⟩ → CS and CH fire → X[0] flips back to |0⟩
+  Target gets: S then H ✓
+  (Right branch gates don't fire because ctrl is |0⟩)
+
+When ctrl = |1⟩ (Right):
+  X[0] flips to |0⟩ → CS and CH don't fire → X[0] flips back to |1⟩
+  Then: CH and CS fire
+  Target gets: H then S ✓
+
+When ctrl = superposition:
+  Both branches execute coherently
+  |α|0⟩ + β|1⟩⟩|ψ⟩ → α|0⟩(S;H)|ψ⟩ + β|1⟩(H;S)|ψ⟩
+```
+
+The quantum switch applies operations in BOTH orders simultaneously!
+
+---
+
+## Summary
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  COMPILATION PIPELINE                                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  SOURCE        λx. let (ctrl ⊗ tgt) = x in                          │
+│  (AST)           case ctrl of Left => S;H | Right => H;S            │
+│                                                                     │
+│      ↓         elaborate() — β-reduce, substitute, case transform   │
+│                                                                     │
+│  CORE IR       X[0]; C0-S[1]; C0-H[1]; X[0]; C0-H[1]; C0-S[1]       │
+│                                                                     │
+│      ↓         compile() — emit gates, track permutation            │
+│                                                                     │
+│  CIRCUIT       X q[0]; CS q[0],q[1]; CH q[0],q[1]; ...              │
+│  (pytket)      6 gates, 2 qubits, identity permutation              │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Key insight:** case on superposition → controlled gates
