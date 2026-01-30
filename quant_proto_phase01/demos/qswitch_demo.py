@@ -1,105 +1,95 @@
 #!/usr/bin/env python3
 """
-QSwitch Demo - Runnable Script
+QSwitch Demo - End-to-End from Source to Gates
 
 Run with: PYTHONPATH=src python demos/qswitch_demo.py
 
-Requirements: pytket (pip install pytket)
+This demo shows the quantum switch circuit structure.
+For the full elaboration pipeline (source AST → Core IR → circuit),
+see the OCaml demo: surface/demos/qswitch_demo.ml
 """
 
 import sys
 from pathlib import Path
 
-# Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from lang.terms import H, S, Seq, CS, CSdg, X
+from lang.terms import H, S, Seq, CH, CS, X
 from lang.types import Q, Ten
 from compile.to_pytket import compile
 
 
 def section(title):
     print()
-    print("=" * 60)
-    print(title)
-    print("=" * 60)
+    print("=" * 70)
+    print(f"  {title}")
+    print("=" * 70)
     print()
 
 
-def subsection(title):
-    print(f"\n{title}")
-    print("-" * 40)
-
-
 def main():
-    section("QSwitch Demo")
+    section("QUANTUM SWITCH: Source to Gates")
 
     # =========================================================================
-    section("Part 1: QSwitch Definition")
+    section("Part 1: Source Definition")
     # =========================================================================
 
     print("""
 QSwitch : (Q→Q) → (Q→Q) → (QBool ⊗ Q → QBool ⊗ Q)
 
-QSwitch(f, g)(ctrl, data) =
-  case ctrl of
-  | Zero => (ctrl, g;f data)   -- apply g then f
-  | One  => (ctrl, f;g data)   -- apply f then g
+In surface syntax (OCaml):
+
+  def QSwitch_HS : (I + I) ⊗ Q → (I + I) ⊗ Q =
+    λx. let (ctrl ⊗ tgt) : (I + I) ⊗ Q = x in
+      case ctrl of
+        | Left(u)  => S[1] ; H[1]    (* when ctrl=0: S then H *)
+        | Right(u) => H[1] ; S[1]    (* when ctrl=1: H then S *)
+
+Type layout:
+  Wire 0: tag qubit (control) — encodes Left (0) vs Right (1)
+  Wire 1: payload qubit — where gates are applied
 """)
 
     # =========================================================================
-    section("Part 2: Abstract QSwitch(f, g) Circuit")
+    section("Part 2: Elaboration (OCaml → Core IR)")
     # =========================================================================
 
-    print("""The quantum case elaborates to controlled gates:
+    print("""
+The OCaml elaborator transforms case expressions into controlled gates:
 
-  anti-controlled-g ; f ; controlled-g
+  case ctrl of Left => body_L | Right => body_R
+  ─────────────────────────────────────────────
+  Anti-controlled(body_L) ; Controlled(body_R)
 
-Expanded circuit structure:
+For QSwitch(H, S):
 
-  X q[0];        -- flip ctrl for anti-control
-  C-g q[0],q[1]; -- g if ctrl was 0 (now 1)
-  X q[0];        -- restore ctrl
-  f q[1];        -- f unconditionally
-  C-g q[0],q[1]; -- g if ctrl is 1
+  case ctrl of Left => S;H | Right => H;S
+  ─────────────────────────────────────────
+  X[0]; CS[0,1]; CH[0,1]; X[0]; CH[0,1]; CS[0,1]
+       ───────────────────     ─────────────────
+       anti-ctrl (S;H)         ctrl (H;S)
 
-Wire 0: ctrl (control qubit)
-Wire 1: data (target qubit)
-""")
+Anti-control pattern: X[tag] ; Controlled ; X[tag]
+  - Flips tag so |0⟩ becomes |1⟩
+  - Controlled gates fire on |1⟩
+  - Flips tag back
 
-    subsection("Verification")
-    print("""ctrl=0: X flips to 1, C-g fires, X flips back, f applied, C-g doesn't fire
-        → data sees: g ; f ✓
-
-ctrl=1: X flips to 0, C-g doesn't fire, X flips back, f applied, C-g fires
-        → data sees: f ; g ✓
-""")
-
-    # =========================================================================
-    section("Part 3: QSwitch(H, S) Instantiation")
-    # =========================================================================
-
-    print("""Substituting f=H, g=S:
-
-QSwitch(H, S)(ctrl, data) =
-  | Zero => (ctrl, S;H data)
-  | One  => (ctrl, H;S data)
-
-Circuit: X; CS; X; H; CS
+Run `dune exec demos/qswitch_demo.exe` in surface/ for full elaboration trace.
 """)
 
     # =========================================================================
-    section("Part 4: QSwitch(H, S) Circuit (2 qubits)")
+    section("Part 3: Compiled Circuit")
     # =========================================================================
 
     ty = Ten(Q(), Q())
 
     qswitch_hs = Seq(
-        X(0, ty),
-        CS(0, 1, ty),
-        X(0, ty),
-        H(1, ty),
-        CS(0, 1, ty),
+        X(0, ty),        # flip tag for anti-control
+        CS(0, 1, ty),    # controlled-S (left branch, part 1)
+        CH(0, 1, ty),    # controlled-H (left branch, part 2)
+        X(0, ty),        # restore tag
+        CH(0, 1, ty),    # controlled-H (right branch, part 1)
+        CS(0, 1, ty),    # controlled-S (right branch, part 2)
     )
 
     result = compile(qswitch_hs)
@@ -107,66 +97,66 @@ Circuit: X; CS; X; H; CS
     print(f"Qubits: {result.circuit.n_qubits}")
     print(f"Gates:  {result.circuit.n_gates}")
     print()
-    print("Circuit:")
+    print("Circuit commands:")
     for cmd in result.circuit.get_commands():
         print(f"  {cmd}")
 
-    subsection("Semantics")
-    print("  |0⟩|ψ⟩ → |0⟩(S;H)|ψ⟩")
-    print("  |1⟩|ψ⟩ → |1⟩(H;S)|ψ⟩")
+    print("""
+Diagram:
+
+  q[0] ──X───●───●───X───●───●──
+            │   │       │   │
+  q[1] ─────CS──CH──────CH──CS──
+""")
 
     # =========================================================================
-    section("Part 5: QSwitch(H, S) GOI Form (4 qubits)")
+    section("Part 4: Semantics")
     # =========================================================================
 
-    print("GOI representation: (QSwitch†) ⊗ QSwitch")
-    print()
-    print("Wire layout:")
-    print("  Wire 0: ctrl*  (negative/dual)")
-    print("  Wire 1: data*  (negative/dual)")
-    print("  Wire 2: ctrl   (positive)")
-    print("  Wire 3: data   (positive)")
+    print("""
+Execution trace:
 
-    ty4 = Ten(Ten(Q(), Q()), Ten(Q(), Q()))
+  When ctrl = |0⟩ (Left):
+    X[0] flips to |1⟩ → CS and CH fire → X[0] flips back to |0⟩
+    Target gets: S then H ✓
+    (Right branch gates don't fire because ctrl is |0⟩)
 
-    # Negative: QSwitch† (reverse order, adjoint gates)
-    negative = Seq(
-        CSdg(0, 1, ty4),
-        H(1, ty4),
-        X(0, ty4),
-        CSdg(0, 1, ty4),
-        X(0, ty4),
-    )
+  When ctrl = |1⟩ (Right):
+    X[0] flips to |0⟩ → CS and CH don't fire → X[0] flips back to |1⟩
+    Then: CH and CS fire
+    Target gets: H then S ✓
 
-    # Positive: QSwitch
-    positive = Seq(
-        X(2, ty4),
-        CS(2, 3, ty4),
-        X(2, ty4),
-        H(3, ty4),
-        CS(2, 3, ty4),
-    )
+  When ctrl = superposition:
+    Both branches execute coherently
+    |α|0⟩ + β|1⟩⟩|ψ⟩ → α|0⟩(S;H)|ψ⟩ + β|1⟩(H;S)|ψ⟩
 
-    goi_qswitch = Seq(negative, positive)
-    result4 = compile(goi_qswitch)
-
-    subsection("Circuit")
-    print(f"Qubits: {result4.circuit.n_qubits}")
-    print(f"Gates:  {result4.circuit.n_gates}")
-    print()
-    for cmd in result4.circuit.get_commands():
-        print(f"  {cmd}")
+The quantum switch applies operations in BOTH orders simultaneously!
+""")
 
     # =========================================================================
     section("Summary")
     # =========================================================================
 
     print("""
-| Form                    | Qubits | Gates | Description           |
-|-------------------------|--------|-------|-----------------------|
-| QSwitch(f,g) abstract   | 2      | 5     | X; C-g; X; f; C-g     |
-| QSwitch(H,S) first-order| 2      | 5     | X; CS; X; H; CS       |
-| QSwitch(H,S) GOI        | 4      | 10    | Doubled conjugation   |
+┌─────────────────────────────────────────────────────────────────────┐
+│  COMPILATION PIPELINE                                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  SOURCE        λx. let (ctrl ⊗ tgt) = x in                          │
+│  (AST)           case ctrl of Left => S;H | Right => H;S            │
+│                                                                     │
+│      ↓         elaborate() — β-reduce, substitute, case transform   │
+│                                                                     │
+│  CORE IR       X[0]; C0-S[1]; C0-H[1]; X[0]; C0-H[1]; C0-S[1]       │
+│                                                                     │
+│      ↓         compile() — emit gates, track permutation            │
+│                                                                     │
+│  CIRCUIT       X q[0]; CS q[0],q[1]; CH q[0],q[1]; ...              │
+│  (pytket)      6 gates, 2 qubits, identity permutation              │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+
+Key insight: case on superposition → controlled gates
 """)
 
 
