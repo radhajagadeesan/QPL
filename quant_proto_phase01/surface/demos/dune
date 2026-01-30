@@ -1,3 +1,7 @@
 (executable
  (name qswitch_demo)
  (libraries qpl_surface str))
+
+(executable
+ (name qswitch_ho_demo)
+ (libraries qpl_surface str))
