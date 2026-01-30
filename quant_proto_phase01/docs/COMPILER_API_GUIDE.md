@@ -23,27 +23,29 @@ Both produce identical circuits via the same compilation pipeline.
 ## Core API: Types
 
 ```python
-from lang.types import Q, I, Ten, Plus, width
+from lang.types import Q, Unit, Ten, Plus, width
 
 q = Q()                 # Qubit (width 1)
-u = I()                 # Unit (width 0)
+u = Unit()              # Unit (width 0)
 qq = Ten(Q(), Q())      # Q ⊗ Q (width 2)
-s = Plus(Q(), Q())      # Q + Q (width 4: 2 tags + 2 data, one-hot encoding)
+s = Plus(Q(), Q())      # Q + Q (width 2: 1 tag bit + 1 shared payload)
 
 w = width(qq)           # Returns 2
-w = width(s)            # Returns 4
+w = width(s)            # Returns 2
 ```
 
 **Note:** Function types `A → B` exist in the surface language (OCaml) but not in the Python core API. In Python, higher-order programming uses the `Lam`, `Apply`, and `FunVar` terms directly. See [Higher-Order Terms](#higher-order-terms).
 
-### One-Hot Sum Encoding
+### Sum Encoding (Option B: Log-Tag + Shared Payload)
 
-Sum types use one-hot leaf-tag encoding:
-- Binary `Plus(A, B)` has width = 2 + width(A) + width(B)
-- Nested sums flatten: `Plus(Plus(Q,Q), Q)` has width 6 (3 tags + 3 data)
-- Wire layout: `[tags... | payloads...]`
+Sum types use flat log-sized tag register with shared payload:
+- Binary `Plus(A, B)` has width = 1 + max(width(A), width(B))
+- Nested sums flatten: `Plus(Plus(Q,Q), Q)` has width 3 (2 tag bits + 1 payload)
+- Wire layout: `[tag_bits... | shared_payload...]`
+- Tag register stores variant index (0, 1, ..., n-1)
 
-This makes all structural operations on sums compile to pure permutations.
+This makes tensor structurals (TwistTen, AssocTen) compile to pure permutations.
+Sum structurals (TwistPlus) emit X gates on tag bits.
 
 ---
 
@@ -264,28 +266,34 @@ result = execute_trace(composed)
 
 ## Involution Certification (exp_i)
 
-The compiler provides involution checking for `ExpInvolution`:
+The compiler provides involution checking for `ExpInvolution`. The body must be a
+**wire permutation involution** (structural operation that compiles to a self-inverse
+permutation with no gates).
 
 ```python
-from lang.terms import TwistPlus, ExpInvolution
-from lang.types import Q, Plus
+from lang.terms import TwistTen, ExpInvolution
+from lang.types import Q, Ten
 from compile.to_pytket import compile
 
-# TwistPlus is involutive: swap ∘ swap = id
-twist = TwistPlus(Q(), Q())
-ty = Plus(Q(), Q())
+# TwistTen (SWAP) is involutive: SWAP ∘ SWAP = id
+swap = TwistTen(Q(), Q())
+ty = Ten(Q(), Q())
 
-# Create exp(iθ · twist)
-term = ExpInvolution(theta=0.5, body=twist, ty_total=ty)
+# Create exp(iθ · SWAP)
+term = ExpInvolution(theta=0.5, body=swap, ty_total=ty)
 
 # Compile - verifies involution and emits ExpSwap atoms
-result = compile(term)
+result = compile(term, materialize=True)
+# Produces XXPhase, YYPhase, ZZPhase gates
 ```
 
-If the body is not involutive, compilation raises an error:
+If the body is not a wire-permutation involution, compilation raises an error:
 ```
 InvolutionError: ExpInvolution body must be involutive (π² ≠ id)
 ```
+
+**Note:** `TwistPlus` on sum types emits an X gate (tag flip), not a wire permutation.
+Use `TwistTen` on tensor types for ExpInvolution.
 
 ---
 
@@ -315,24 +323,25 @@ for cmd in result.circuit.get_commands():
 ## Example: QSwitch via Core API
 
 ```python
-from lang.terms import H, S, Seq, CS, X
+from lang.terms import H, S, Seq, CS, CH, X
 from lang.types import Q, Ten
 from compile.to_pytket import compile
 
 ty = Ten(Q(), Q())
 
-# QSwitch(H, S): X; CS; X; H; CS
-# Applies S;H if ctrl=0, H;S if ctrl=1
+# QSwitch(H, S): case ctrl of Left => S;H | Right => H;S
+# Anti-control pattern: X; controlled-gates; X for left branch
 qswitch_hs = Seq(
-    X(0, ty),
-    CS(0, 1, ty),
-    X(0, ty),
-    H(1, ty),
-    CS(0, 1, ty),
+    X(0, ty),         # flip tag for anti-control
+    CS(0, 1, ty),     # controlled-S (left branch)
+    CH(0, 1, ty),     # controlled-H (left branch)
+    X(0, ty),         # restore tag
+    CH(0, 1, ty),     # controlled-H (right branch)
+    CS(0, 1, ty),     # controlled-S (right branch)
 )
 
 result = compile(qswitch_hs)
-# 5 gates on 2 qubits
+# 6 gates on 2 qubits
 ```
 
 ---
@@ -340,17 +349,23 @@ result = compile(qswitch_hs)
 ## Example: Structural Operations
 
 ```python
-from lang.types import Q, Plus
-from lang.terms import TwistPlus, DistR
+from lang.types import Q, Ten, Plus
+from lang.terms import TwistTen, TwistPlus, DistR
 from compile.to_pytket import compile
 
 a, b, c = Q(), Q(), Q()
 
-# TwistPlus: Q + Q → Q + Q (pure permutation)
-twist = TwistPlus(a, b)
-result = compile(twist)
+# TwistTen: Q ⊗ Q → Q ⊗ Q (pure wire permutation)
+twist_ten = TwistTen(a, b)
+result = compile(twist_ten)
 assert result.circuit.n_gates == 0  # No gates!
-assert result.perm.new_to_old == [1, 0, 3, 2]  # Swaps tags and data
+assert result.perm.new_to_old == [1, 0]  # Swaps wires
+
+# TwistPlus: Q + Q → Q + Q (X gate on tag bit)
+twist_plus = TwistPlus(a, b)
+result = compile(twist_plus)
+assert result.circuit.n_gates == 1  # X gate on tag
+# Identity wire perm (tag flip is symbolic, lowered to X gate)
 
 # DistR: Q ⊗ (Q + Q) → (Q ⊗ Q) + (Q ⊗ Q) (pure permutation)
 dist = DistR(a, b, c)
