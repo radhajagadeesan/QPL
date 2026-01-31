@@ -375,6 +375,8 @@ Shows both 4×4 physical unitaries and 2×2 logical qubit submatrices.
 
 ## OCaml Linear DSL (Meta-Level Programming)
 
+> **See also:** [OCAML_DSL.md](OCAML_DSL.md) for comprehensive documentation of the OCaml surface language, staging architecture, and elaboration.
+
 Granthi supports a two-level architecture where **OCaml** serves as a staging/meta-language for generating object-language programs. The `Linear` module provides a **GADT-enforced** linear DSL where linearity is checked at OCaml compile time.
 
 ### Key Insight
@@ -530,8 +532,9 @@ See `surface/examples/datatype_demo.ml` for complete examples.
 
 ## Further Reading
 
+- `OCAML_DSL.md` — OCaml surface language, staging architecture, and elaboration
 - `API_REFERENCE.md` — Complete type and term reference
 - `COMPILER_API_GUIDE.md` — Python API for compiler embedding
-- `CNTRLFexample.md` — Controlled operations with structural f (layout, logical H, free control)
+- `STAGING_SOUNDNESS.md` — Formal soundness arguments for OCaml staging
+- `TWO_LEVEL_IR_DESIGN.md` — Wire layouts and IR architecture
 - `demos/README.md` — Demo instructions
-- `RadhaMSG/ocaml_staging_plan_optionA.md` — Design document for OCaml staging
