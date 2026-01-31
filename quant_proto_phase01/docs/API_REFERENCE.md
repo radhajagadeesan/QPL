@@ -93,6 +93,31 @@ Sum structurals compile to **symbolic tag permutations** (lowered to gates late)
 | `DistL(a, b, c)` | (a + b) ⊗ c → (a ⊗ c) + (b ⊗ c) |
 | `DistR(a, b, c)` | a ⊗ (b + c) → (a ⊗ b) + (a ⊗ c) |
 
+### Control Flow
+
+| Term | Type | Description |
+|------|------|-------------|
+| `Case(ty_left, ty_right, left, right)` | (A + B) → C | Copairing (case expression) |
+
+**Case signature:**
+```python
+Case(
+    ty_left: Ty,    # Type A (left payload type)
+    ty_right: Ty,   # Type B (right payload type)
+    left: Term,     # Left branch: A → C
+    right: Term     # Right branch: B → C
+) -> Term
+# Returns: term of type (A + B) → C
+```
+
+**Compilation:** Uses the anti-control pattern:
+1. X[tag] — flip tag bit
+2. Controlled-left — fires when tag was originally 0 (Left)
+3. X[tag] — flip tag back
+4. Controlled-right — fires when tag was originally 1 (Right)
+
+On superposition inputs, both branches execute coherently (indefinite causal order).
+
 ### Gates
 
 All gates take wire indices and an ambient type `ty_total`.

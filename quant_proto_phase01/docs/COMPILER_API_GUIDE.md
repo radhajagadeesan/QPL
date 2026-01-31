@@ -79,7 +79,7 @@ TenTerm(f, g)           # Parallel: f ⊗ g
 ### Gates
 
 ```python
-from lang.terms import H, S, X, Y, Z, T, Tdg, Sdg, CX, CZ, CS, CH, CCX, Rz, Rx, Ry
+from lang.terms import H, S, X, Y, Z, T, Tdg, Sdg, CX, CZ, CS, CH, CCX, Rz, Rx, Ry, Phase
 
 # All gates take wire index and ambient type
 ty = Ten(Q(), Q())
@@ -101,6 +101,7 @@ CH(0, 1, ty)            # Controlled-H
 Rz(0.5, 0, ty)          # Rz(θ) on wire 0
 Rx(0.5, 0, ty)          # Rx(θ) on wire 0
 Ry(0.5, 0, ty)          # Ry(θ) on wire 0
+Phase(0.5, 0, ty)       # Global phase gate
 
 # Three-qubit
 ty3 = Ten(Ten(Q(), Q()), Q())

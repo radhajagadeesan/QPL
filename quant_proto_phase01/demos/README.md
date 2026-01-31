@@ -8,6 +8,7 @@ Demonstrations of Granthi language features and compilation.
 
 | Demo | File | Description |
 |------|------|-------------|
+| **QSwitch (pipeline)** | `quantum_switch_demo.py` | **Full Surface→Elaboration→Circuit pipeline demo** |
 | QSwitch (basic) | `qswitch_demo.py` | Higher-order quantum switch combinator |
 | QSwitch (term) | `qswitch_term_demo.py` | QSwitch as Case term with DistR |
 | QSwitch (abstract) | `qswitch_abstract_demo.py` | Abstract QSwitch type and wire layout |
@@ -29,6 +30,23 @@ Demonstrations of Granthi language features and compilation.
 ## QSwitch Demos
 
 Multiple demos showing different aspects of the quantum switch combinator.
+
+### QSwitch (pipeline) — `quantum_switch_demo.py`
+
+Comprehensive demo showing the full Granthi compiler pipeline on QSwitch:
+
+**Run:**
+```bash
+PYTHONPATH=src python demos/quantum_switch_demo.py
+```
+
+**What it shows:**
+1. Surface language representation of QSwitch
+2. Elaboration to Core IR with controlled gates
+3. Circuit compilation and gate output
+4. The anti-control pattern (X sandwiches)
+
+**Key insight:** Demonstrates how a higher-order quantum program becomes a first-order circuit through the full compilation pipeline.
 
 ### QSwitch (basic) — `qswitch_demo.py`
 
