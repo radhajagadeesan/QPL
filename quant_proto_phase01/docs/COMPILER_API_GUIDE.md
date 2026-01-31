@@ -23,18 +23,32 @@ Both produce identical circuits via the same compilation pipeline.
 ## Core API: Types
 
 ```python
-from lang.types import Q, Unit, Ten, Plus, width
+from lang.types import Q, Unit, Ten, Plus, Arrow, Dual, width
 
 q = Q()                 # Qubit (width 1)
 u = Unit()              # Unit (width 0)
 qq = Ten(Q(), Q())      # Q ⊗ Q (width 2)
 s = Plus(Q(), Q())      # Q + Q (width 2: 1 tag bit + 1 shared payload)
+f = Arrow(Q(), Q())     # Q ⊸ Q (width 2: argument + result wires)
 
 w = width(qq)           # Returns 2
 w = width(s)            # Returns 2
+w = width(f)            # Returns 2
 ```
 
-**Note:** Function types `A → B` exist in the surface language (OCaml) but not in the Python core API. In Python, higher-order programming uses the `Lam`, `Apply`, and `FunVar` terms directly. See [Higher-Order Terms](#higher-order-terms).
+### Arrow Type (Linear Function)
+
+Function types `A ⊸ B` are first-class in Python:
+
+```python
+from lang.types import Arrow, Q, Ten, width
+
+Arrow(Q(), Q())              # Q ⊸ Q — width 2
+Arrow(Ten(Q(), Q()), Q())    # (Q⊗Q) ⊸ Q — width 3
+Arrow(Arrow(Q(), Q()), Q())  # (Q⊸Q) ⊸ Q — width 3
+```
+
+A function is a **wire bundle**: width(A) argument wires + width(B) result wires.
 
 ### Sum Encoding (Option B: Log-Tag + Shared Payload)
 
@@ -127,20 +141,53 @@ Function types in the Python core are represented through higher-order terms:
 from lang.terms import Lam, Apply, FunVar, Feedback
 
 # Lambda abstraction: λx:A. body
-# If body : B, then Lam(x, A, B, body) : A → B
+# Boundary exposure: x is bound to width(dom) input wires
 Lam(name, dom, cod, body)
 
 # Function variable (for substitution)
-FunVar(name, dom, cod)    # Variable x : dom → cod
+FunVar(name, dom, cod)    # Variable x : dom ⊸ cod
 
 # Function application
-Apply(f, arg)             # f(arg) where f : A → B, arg : A
+# Boundary splicing: connects argument wires to function's input slot
+Apply(f, arg)
 
 # Feedback (GOI trace)
 Feedback(k, body)         # Loop k wires back
 ```
 
-Higher-order terms elaborate away during compilation—lambdas are inlined at application sites.
+### Full Source Language Terms
+
+For building terms with explicit variable binding:
+
+```python
+from lang.terms import Var, Pair, LetPair
+
+# Variable reference: identity on variable's wire range
+Var(name, ty)             # x : A (looks up wire range in env)
+
+# Tensor introduction: (t, u) : A ⊗ B
+Pair(fst, snd)
+
+# Tensor elimination: let (x, y) = t in u
+# Binds x to first width(A) wires, y to next width(B) wires
+LetPair(x, y, ty_x, ty_y, pair, body)
+```
+
+**Example: Destructuring a pair**
+```python
+from lang.terms import Var, Pair, LetPair, Id, H, Seq
+from lang.types import Q, Ten
+
+# let (x, y) = id : Q⊗Q in (H(x), y)
+pair_term = Id(Ten(Q(), Q()))
+body = Pair(
+    Seq(Var("x", Q()), H(0, Q())),  # Apply H to x
+    Var("y", Q())                    # Keep y unchanged
+)
+lp = LetPair("x", "y", Q(), Q(), pair_term, body)
+```
+
+Compilation tracks an **environment** mapping variable names to `(start, width)` wire ranges.
 
 ### Exponentials of Involutions
 
@@ -226,13 +273,20 @@ else:
 
 ### Higher-Order Compilation
 
-```python
-from compile.to_pytket import compile_higher_order
+Higher-order terms (Lam, Apply, FunVar) are compiled directly via **cup/cap wiring**:
 
-result = compile_higher_order(term, explain=False)
+- A function `A ⊸ B` is physically width(A) + width(B) wires
+- `Lam` exposes argument wires as input boundary
+- `Apply` connects argument wires to function's input slot (boundary splicing)
+
+```python
+from compile.to_pytket import compile
+
+# compile() handles higher-order terms directly
+result = compile(lam_apply_term)
 ```
 
-Higher-order compilation uses the Geometry of Interaction (GOI) representation where a morphism `f : A → B` becomes an endomorphism on `A* ⊗ B`.
+**Note:** `compile_higher_order()` is deprecated. Use `compile()` for all terms.
 
 ---
 
@@ -389,3 +443,5 @@ PYTHONPATH=src python my_program.py
 - `API_REFERENCE.md` — Complete API signatures
 - `TWO_LEVEL_IR_DESIGN.md` — IR architecture and GOI semantics
 - `demos/qswitch_demo.py` — Working higher-order example
+- `demos/qswitch_abstract_circuit_demo.py` — Abstract QSwitch circuit diagrams (no instantiation)
+- `demos/qswitch_instantiation_demo.py` — QSwitch[H,H] vs QSwitch[H,S] with simplification analysis

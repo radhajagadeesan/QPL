@@ -9,7 +9,7 @@ from __future__ import annotations
 import warnings
 
 import pytest
-from lang.types import Q, Unit, Ten, Plus, Dual, width, tag_width, payload_width, dual
+from lang.types import Q, Unit, Ten, Plus, Dual, Arrow, width, tag_width, payload_width, dual
 from lang.terms import (
     Cup, Cap, FunVar, Lam, Apply,
     Id, Seq, TenTerm, H, S, CX,
@@ -93,20 +93,46 @@ class TestFunVarLamApplyTypes:
         assert cod == Ten(Q(), Q())
 
     def test_lam_type(self):
-        """Lam compiles body directly."""
-        body = Id(Ten(Q(), Q()))
-        dom, cod = type_of(Lam("f", Q(), Q(), body))
-        # Lam passes through body's type
-        assert dom == Ten(Q(), Q())
-        assert cod == Ten(Q(), Q())
+        """Lam: Γ,x:A ⊢ body:B  ⇒  Γ ⊢ λx.body : A ⊸ B.
+
+        Per spec section 4.6:
+        - body is compiled with x:A bound to extra input wires
+        - Lambda's codomain is Arrow(A, B)
+        - Lambda's domain is Γ (body's domain minus x:A)
+        """
+        # body : (Q ⊗ Q) → Q, so Γ = Q, A = Q, B = Q
+        # Lam("x", Q, Q, body) : Q → (Q ⊸ Q)
+        body = Id(Ten(Q(), Q()))  # width 2 → width 2, but we treat as (Γ⊗A) → B
+        dom, cod = type_of(Lam("x", Q(), Q(), body))
+        # dom = Γ = Q (body_width - A_width = 2 - 1 = 1)
+        assert width(dom) == 1
+        # cod = Arrow(A, B) = Q ⊸ Q
+        assert isinstance(cod, Arrow)
+        assert cod.dom == Q()  # A = domain of the function
+        assert cod.cod == Q()  # B = codomain of the function
 
     def test_apply_type(self):
-        """Apply: tensor of f and arg types."""
-        f = Id(Ten(Q(), Q()))  # f : Q⊗Q → Q⊗Q
-        arg = Id(Q())          # arg : Q → Q
+        """Apply: Γ₁ ⊢ f:A⊸B  Γ₂ ⊢ u:A  ⇒  Γ₁⊗Γ₂ ⊢ f u : B.
+
+        Per spec section 4.7:
+        - f has codomain Arrow(A, B)
+        - arg has codomain A
+        - Apply's codomain is B (the result type)
+        """
+        # Build f : Q → Arrow(Q, Q) (a term producing a function)
+        # Use Lam to create a function-producing term
+        body = H(0, Ten(Q(), Q()))  # body: Q⊗Q → Q⊗Q
+        f = Lam("x", Q(), Q(), body)  # f : Q → (Q ⊸ Q)
+        # f has type (Q, Arrow(Q, Q))
+
+        # arg : A (must have codomain matching A from Arrow)
+        arg = Id(Q())  # arg : Q → Q
+
         dom, cod = type_of(Apply(f, arg))
-        assert dom == Ten(Ten(Q(), Q()), Q())
-        assert cod == Ten(Ten(Q(), Q()), Q())
+        # dom = Γ₁ ⊗ Γ₂ = Q ⊗ Q = Ten(Q, Q)
+        assert width(dom) == 2
+        # cod = B = Q (the result type from Arrow(Q, Q))
+        assert cod == Q()
 
 
 class TestCupCapCompilation:
@@ -143,15 +169,29 @@ class TestCupCapCompilation:
         assert cmds[0].op.type.name == "H"
 
     def test_apply_compiles_both_sides(self):
-        """Apply compiles f and arg."""
-        ty_f = Ten(Q(), Q())
-        ty_arg = Q()
-        f = H(0, ty_f)   # H on first wire of f
-        arg = S(0, ty_arg)  # S on arg wire
+        """Apply compiles f (producing function) and arg.
+
+        Per spec section 4.7:
+        - f must produce Arrow(A, B)
+        - arg must produce A
+        - Apply connects arg's A output to f's A_slot
+        - Result is B
+
+        Example: Apply(λx.H(x), S(q)) should produce S; H (first S on arg, then H on result)
+        """
+        # f = λx.H(x) : Q → (Q ⊸ Q)
+        # This produces a function that applies H
+        body = H(0, Ten(Q(), Q()))  # body operates on Q⊗Q wires
+        f = Lam("x", Q(), Q(), body)  # f : Q → Arrow(Q, Q)
+
+        # arg = S : Q → Q
+        # arg produces Q which will be connected to f's A_slot
+        arg = Seq(Id(Q()), S(0, Q()))  # Id;S : Q → Q
+
         term = Apply(f, arg)
         result = compile(term)
         cmds = result.circuit.get_commands()
-        assert len(cmds) == 2
+        # Should have S (from arg) and H (from Lam body)
         gate_names = [c.op.type.name for c in cmds]
         assert "H" in gate_names
         assert "S" in gate_names

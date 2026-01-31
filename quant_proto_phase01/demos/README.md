@@ -8,36 +8,159 @@ Demonstrations of Granthi language features and compilation.
 
 | Demo | File | Description |
 |------|------|-------------|
-| QSwitch | `qswitch_demo.py` | Higher-order quantum switch combinator |
+| QSwitch (basic) | `qswitch_demo.py` | Higher-order quantum switch combinator |
+| QSwitch (term) | `qswitch_term_demo.py` | QSwitch as Case term with DistR |
+| QSwitch (abstract) | `qswitch_abstract_demo.py` | Abstract QSwitch type and wire layout |
+| **QSwitch (abstract circuit)** | `qswitch_abstract_circuit_demo.py` | **Abstract QSwitch circuit diagrams (no instantiation)** |
+| **QSwitch (instantiation)** | `qswitch_instantiation_demo.py` | **QSwitch with ONE vs TWO functions, simplification analysis** |
+| **QSwitch (curried)** | `qswitch_curried_demo.py` | **Curried λb.λf.λg.λx type derivation** |
 | ExpInvolution | `exp_twist_demo.py` | Exponentials of structural involutions |
 | Pauli Conjugation | `pauli_conjugation_demo.py` | Qubit as I+I, Pauli identity verification |
 
+### OCaml Demos
+
+| Demo | File | Description |
+|------|------|-------------|
+| QSwitch (OCaml) | `surface/demos/qswitch_demo.ml` | QSwitch in OCaml surface language |
+| QSwitch (HO) | `surface/demos/qswitch_ho_demo.ml` | Higher-order QSwitch showing type signature |
+
 ---
 
-## QSwitch Demo
+## QSwitch Demos
 
-Demonstrates QSwitch, a higher-order quantum programming combinator.
+Multiple demos showing different aspects of the quantum switch combinator.
 
-| Format | File | Requirements |
-|--------|------|--------------|
-| Static output | `qswitch_demo_output.md` | None (just read) |
-| HTML animation | `qswitch_demo.html` | Any browser |
-| Python script | `qswitch_demo.py` | Python + pytket |
-| Video script | `qswitch_demo_video.py` | Python + pytket |
-| Detailed walkthrough | `quantum_switch_demo.py` | Python + pytket |
+### QSwitch (basic) — `qswitch_demo.py`
+
+Original QSwitch demo showing the combinator and compilation.
 
 **Run:**
 ```bash
-cd quant_proto_phase01
 PYTHONPATH=src python demos/qswitch_demo.py
 ```
 
+### QSwitch (term) — `qswitch_term_demo.py`
+
+Shows QSwitch built as an actual Term using Case (copairing):
+
+```
+QSwitch[H,S] = DistR(I,I,Q) ; Case(I⊗Q, I⊗Q, H;S, S;H)
+```
+
+**Run:**
+```bash
+PYTHONPATH=src python demos/qswitch_term_demo.py
+```
+
 **What it shows:**
-1. QSwitch definition with higher-order type signature
-2. Abstract circuit: `anti-controlled-g ; f ; controlled-g`
-3. Instantiation: QSwitch(H, S) substitution
-4. Compiled circuit: 5 gates on 2 qubits
-5. GOI form: 10 gates on 4 qubits (doubled conjugation)
+1. Type definitions: Bool = I+I, wire layouts
+2. DistR transforms Bool⊗Q → (I⊗Q)+(I⊗Q)
+3. Case with H;S (left) and S;H (right) branches
+4. Compiled circuit: 6 gates (X, CH, CS, X, CS, CH)
+
+### QSwitch (abstract) — `qswitch_abstract_demo.py`
+
+Shows the **abstract QSwitch type signature** before instantiation:
+
+```
+QSwitch : (Q⊸Q) ⊗ (Q⊸Q) ⊗ Bool ⊗ Q → Bool ⊗ Q
+```
+
+**Run:**
+```bash
+PYTHONPATH=src python demos/qswitch_abstract_demo.py
+```
+
+**What it shows:**
+1. Arrow type widths: Q⊸Q has width 2
+2. Input wire layout: [f_arg | f_res | g_arg | g_res | tag | x] = 6 wires
+3. Output wire layout: [tag | x'] = 2 wires
+4. LetPair structure for destructuring
+5. Instantiation with H, S
+
+### QSwitch (OCaml HO) — `surface/demos/qswitch_ho_demo.ml`
+
+OCaml surface language demo showing higher-order QSwitch:
+
+**Run:**
+```bash
+cd surface && dune exec demos/qswitch_ho_demo.exe
+```
+
+**What it shows:**
+1. QSwitch type: `(Q→Q) → (Q→Q) → ((I+I)⊗Q → (I+I)⊗Q)`
+2. Instantiation with H and S
+3. Elaboration to Core IR with controlled gates
+
+### QSwitch (abstract circuit) — `qswitch_abstract_circuit_demo.py`
+
+Shows the **abstract QSwitch circuit structure** in curried form with NO instantiation:
+
+```
+QSwitch = λb. λf. λg. λx. case b of
+            | Left(u)  ⇒ (Left(u), f(g(x)))
+            | Right(u) ⇒ (Right(u), g(f(x)))
+```
+
+**Run:**
+```bash
+PYTHONPATH=src python demos/qswitch_abstract_circuit_demo.py
+```
+
+**What it shows:**
+1. Curried type: `Bool ⊸ (A ⊸ A) ⊸ (A ⊸ A) ⊸ A ⊸ (Bool ⊗ A)`
+2. Wire layout (8 total): `[b|f_arg|f_res|g_arg|g_res|x] → [b'|result]`
+3. Abstract circuit diagram showing function wire routing
+4. Branch-by-branch routing diagrams
+5. Quantum CASE circuit with anti-control pattern
+6. Abstract function application (Apply as pure wiring)
+
+**Key insight:** The abstract QSwitch is **pure routing + control** with 0 gates. The control qubit `b` passes through to the output.
+
+### QSwitch (instantiation) — `qswitch_instantiation_demo.py`
+
+Shows QSwitch instantiated with concrete functions, with **simplification analysis**:
+
+**Run:**
+```bash
+PYTHONPATH=src python demos/qswitch_instantiation_demo.py
+```
+
+**What it shows:**
+
+**Section 1: ONE function (f = g)**
+- Simplification analysis: both branches compute f∘f
+- For f = H: H² = I, so QSwitch[H,H] = Identity
+- Circuit: 6 gates (all cancel to identity)
+- Verification: unitary = identity matrix
+
+**Section 2: TWO functions (f ≠ g, non-commuting)**
+- Simplification analysis: HS ≠ SH, no simplification possible
+- Matrix calculation showing non-commutativity
+- Circuit: 6 gates (X; CH; CS; X; CS; CH)
+- Execution traces for |0⟩, |1⟩, and |+⟩ inputs
+
+**Key insight:** QSwitch is only non-trivial when f and g don't commute.
+
+### QSwitch (curried) — `qswitch_curried_demo.py`
+
+**Step-by-step type derivation** for the curried QSwitch (pedagogical focus):
+
+**Run:**
+```bash
+PYTHONPATH=src python demos/qswitch_curried_demo.py
+```
+
+**What it shows:**
+1. Branch typing (what each case branch returns)
+2. Case expression typing
+3. Lambda abstraction built inside-out
+4. Full type: `Bool ⊸ (A ⊸ A) ⊸ (A ⊸ A) ⊸ A ⊸ (Bool ⊗ A)`
+5. Comparison with tensored version (same width via currying isomorphism)
+6. Linearity verification (each variable used exactly once)
+7. Semantic traces for |0⟩, |1⟩, and |+⟩ inputs
+
+**Key insight:** The control qubit `b` appears in both input AND output. It's not consumed — it passes through and becomes entangled with the result.
 
 ---
 

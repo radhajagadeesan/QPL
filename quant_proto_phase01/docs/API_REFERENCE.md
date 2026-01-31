@@ -9,10 +9,31 @@ Complete reference for types, terms, and compilation functions.
 | Type | Description | Width |
 |------|-------------|-------|
 | `Q()` | Single qubit | 1 |
-| `I()` | Unit type | 0 |
+| `Unit()` | Unit type (alias: `I()`) | 0 |
 | `Ten(a, b)` | Tensor product a ⊗ b | width(a) + width(b) |
 | `Plus(a, b)` | Sum type a + b (Option B) | ceil(log2(n)) + max(width(Aᵢ)) |
 | `Dual(a)` | Dual type a* | width(a) (self-dual) |
+| `Arrow(a, b)` | Linear function a ⊸ b | width(a) + width(b) |
+
+### Arrow Type (Linear Function)
+
+`Arrow(A, B)` represents the linear function type `A ⊸ B`.
+
+```python
+from lang.types import Arrow, Q, Ten, width
+
+arr = Arrow(Q(), Q())           # Q ⊸ Q — width 2
+width(arr)                       # 2 (argument + result wires)
+
+arr2 = Arrow(Ten(Q(), Q()), Q())  # (Q⊗Q) ⊸ Q — width 3
+width(arr2)                       # 3
+
+# Nested functions
+arr3 = Arrow(Arrow(Q(), Q()), Q())  # (Q⊸Q) ⊸ Q — width 3
+width(arr3)                          # 3
+```
+
+A function value is a **wire bundle**: argument slot + result slot.
 
 ### Dual Type
 
@@ -26,16 +47,6 @@ Dual(Q())           # Q* — width 1
 dual(Q())           # Same as Dual(Q())
 dual(dual(Q()))     # Q — involutive: dual(dual(A)) = A
 ```
-
-### Function Types
-
-Function types `A → B` are equivalent to `A* ⊗ B ≡ A ⊗ B` (self-dual).
-
-- In the **surface language** (OCaml): `TyArrow(A, B)`
-- In the **Python IR**: represented as `Ten(A, B)` wires
-- A function `Q → Q` is physically 2 wires (Q ⊗ Q)
-
-Functions are **not closures** — they are circuit fragments with exposed dual input wires.
 
 ### Option B: Flat Log-Tag Encoding
 
@@ -210,12 +221,44 @@ Cap(Q())   # ε_Q : Q* ⊗ Q → I  (connect/identify 2 wires)
 | Term | Description |
 |------|-------------|
 | `FunVar(name, dom, cod)` | Function variable — identity on A ⊗ B wires |
-| `Lam(name, dom, cod, body)` | Lambda abstraction — cup creates function wires |
-| `Apply(f, arg)` | Function application — cap connects wires |
+| `Lam(name, dom, cod, body)` | Lambda abstraction — boundary exposure |
+| `Apply(f, arg)` | Function application — boundary splicing |
 | `Feedback(k, body)` | Loop k wires back (GOI trace) |
 
 Higher-order terms are compiled directly via cup/cap wiring — no GOI needed.
-A function `A → B` is physically `A ⊗ B` wires. Lambda exposes wires, application connects them.
+A function `A ⊸ B` is physically `width(A) + width(B)` wires. Lambda exposes wires, application connects them.
+
+### Full Source Language Terms
+
+| Term | Signature | Description |
+|------|-----------|-------------|
+| `Var(name, ty)` | `Var(name: str, ty: Ty)` | Variable reference — identity on wire range |
+| `Pair(fst, snd)` | `Pair(fst: Term, snd: Term)` | Tensor introduction — (t, u) : A ⊗ B |
+| `LetPair(x, y, ty_x, ty_y, pair, body)` | See below | Tensor elimination — let (x,y) = t in u |
+
+**LetPair signature:**
+```python
+LetPair(
+    x: str,       # First variable name
+    y: str,       # Second variable name
+    ty_x: Ty,     # Type of x (A)
+    ty_y: Ty,     # Type of y (B)
+    pair: Term,   # The pair term t : A ⊗ B
+    body: Term    # The body u : C (with x, y in scope)
+) -> Term
+```
+
+**Compilation:** LetPair binds x to the first width(A) wires and y to the next width(B) wires in the environment, then compiles the body with extended environment.
+
+```python
+from lang.terms import Var, Pair, LetPair, Id, H, Seq
+from lang.types import Q, Ten
+
+# let (x, y) = id : Q⊗Q in (H(x), y)
+pair_term = Id(Ten(Q(), Q()))
+body = Pair(Seq(Var("x", Q()), H(0, Q())), Var("y", Q()))
+lp = LetPair("x", "y", Q(), Q(), pair_term, body)
+```
 
 ---
 
@@ -395,4 +438,4 @@ result = compile(term)
 
 ## Test Coverage
 
-1211+ tests across all phases.
+1207+ tests across all phases.

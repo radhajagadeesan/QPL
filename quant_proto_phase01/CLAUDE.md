@@ -1,5 +1,16 @@
 # Claude Code Instructions
 
+## Truth Over Convenience (IMPORTANT)
+
+**Always provide actual results from real execution, not fabricated outputs.**
+
+- Run demos and tests; do not generate plausible-looking output by hand
+- When showing compilation results, actually compile the terms
+- Verify semantics with real unitary matrices, not just printed claims
+- If a demo is mostly print statements, add real verification (type_of, compile, get_unitary)
+- When something breaks, show the real error - don't hide failures
+- The user wants truth, not results that "look right" or "make them happy"
+
 ## Development Workflow
 
 - Always run `PYTHONPATH=src pytest` after code changes
@@ -55,12 +66,20 @@ cd surface && dune test
   - DistL is identity; DistR moves tag bits to front
 - ExpInvolution requires involutive body (P² = id)
 - Use `materialize=True` in compile() when SWAP gates must be emitted
-- Higher-order terms use **cup/cap wiring** (no GOI):
-  - `A ⊸ B ≡ A* ⊗ B ≡ A ⊗ B` (self-dual types)
+- **Arrow type** `Arrow(A, B)` represents linear function `A ⊸ B`:
+  - `width(A ⊸ B) = width(A) + width(B)` (functions are wire bundles)
+  - A function value exposes argument slot + result slot as wires
+- Higher-order terms use **boundary exposure/splicing** (no GOI):
+  - `Lam(x, dom, cod, body)` — boundary exposure (x bound to input wires)
+  - `Apply(f, arg)` — boundary splicing (connect argument to function's input slot)
   - `Cup(A)` : I → A ⊗ A* (pure wiring, 0 gates)
   - `Cap(A)` : A* ⊗ A → I (pure wiring, 0 gates)
-  - `Dual(A)` type tracks polarity; `width(Dual(A)) = width(A)`
   - `compile_higher_order()` is deprecated; use `compile()` directly
+- **Full source language terms**:
+  - `Var(name, ty)` — variable reference, identity on wire range from environment
+  - `Pair(fst, snd)` — tensor introduction
+  - `LetPair(x, y, ty_x, ty_y, pair, body)` — tensor elimination, destructures pairs
+  - Compilation tracks `Env = dict[str, (start, width)]` mapping vars to wire ranges
 ## Compilation Pipeline: OCaml → Python → Circuit
 
 ### Two-Stage Architecture
@@ -127,6 +146,7 @@ These exist for direct Python-API usage. The OCaml pipeline does not generate th
 
 - `Case(ty_left, ty_right, left, right)` — Python-side case (OCaml elaborates case away into controlled gates before bridging)
 - `Cup(ty)`, `Cap(ty)` — compact-closed structure (OCaml compiles Lam/Apply directly)
+- `Var(name, ty)`, `Pair(fst, snd)`, `LetPair(...)` — full source language terms
 - `Feedback(k, body)` — explicit GOI loops
 - `EncodeQubit()`, `DecodeQubit()` — qubit ↔ one-hot encoding
 - `ExpSwap`, `ExpInvolution` — exponentials of structural involutions
@@ -137,12 +157,12 @@ These exist for direct Python-API usage. The OCaml pipeline does not generate th
    Python does NO normalization — it receives already-normalized terms.
 
 2. **Variables**: OCaml has `Var`, `Let`, `LetTen`, pattern matching.
-   Python has none — all bindings are eliminated during elaboration.
+   Python has `Var`, `LetPair` for direct API use; these compile via environment tracking.
 
 3. **Types**: OCaml has `TyArrow`, `TyNamed`, `TyVar`.
-   Python has only `Q`, `Unit`, `Ten`, `Plus`, `Dual`.
+   Python has `Q`, `Unit`, `Ten`, `Plus`, `Dual`, `Arrow`.
 
 4. **Wire tracking**: OCaml tracks variable→wire via `TyEnv` during elaboration.
-   Python tracks wire positions via `WirePerm` composition during compilation.
+   Python tracks wire positions via `WirePerm` + `Env` (var→wire range) during compilation.
 
 5. **Bridge**: OCaml serializes Core IR → JSON → Python `bridge.py` → `lang/terms.py` → `compile()`

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Tuple
 
-from lang.types import Ty, Q as Q_ty, Ten, Plus, Dual, Unit, width, pretty, dual
+from lang.types import Ty, Q as Q_ty, Ten, Plus, Dual, Unit, Arrow, width, pretty, dual
 from lang.terms import (
     Term,
     Id, Seq, TenTerm,
@@ -25,6 +25,8 @@ from lang.terms import (
     Cup, Cap,
     # Higher-order constructs
     FunVar, Lam, Apply,
+    # Tensor intro/elim and variables (full source language)
+    Pair, LetPair, Var,
     # Case/copairing
     Case,
     # Exponentials of structural involutions
@@ -260,17 +262,122 @@ def type_of(t: Term) -> DomCod:
         return (fn_ty, fn_ty)
 
     if isinstance(t, Lam):
-        # λx:(A→B). body
-        # body : (context ⊗ (A ⊗ B)) → result
-        # The lambda exposes function wires via cup.
+        # Typing rule: Γ, x:A ⊢ body:B  ⇒  Γ ⊢ λx.body : A ⊸ B
+        #
+        # The body is compiled with x bound to width(A) extra input wires.
+        # Body type: (Γ ⊗ A) → B
+        # Lambda type: Γ → (A ⊸ B) where A ⊸ B = Arrow(A, B)
+        #
+        # The domain is the body's domain MINUS the x-binding (width(A) wires).
+        # The codomain is Arrow(dom, cod) exposing both A-slot and B-slot.
         body_dom, body_cod = type_of(t.body)
-        return (body_dom, body_cod)
+
+        # body_dom should be (Γ ⊗ A), we extract Γ by removing A wires
+        # For now, we assume body_dom includes the x binding
+        # Lambda's domain is body_dom minus width(dom) wires
+        wA = width(t.dom)
+        body_width = width(body_dom)
+
+        if body_width < wA:
+            raise TypeCheckError(
+                f"Lam body domain too small: body_dom width {body_width}, "
+                f"but x:A has width {wA}"
+            )
+
+        # The lambda's codomain is Arrow(A, B) = A ⊸ B
+        lam_cod = Arrow(t.dom, t.cod)
+
+        # The lambda's domain is the context Γ (body_dom minus the x:A part)
+        # For simplicity, we compute based on widths
+        gamma_width = body_width - wA
+        if gamma_width == 0:
+            lam_dom = Unit()
+        else:
+            # Build a tensor type of appropriate width
+            # This is a simplification - ideally we'd track the actual type
+            lam_dom = Q_ty()
+            for _ in range(gamma_width - 1):
+                lam_dom = Ten(lam_dom, Q_ty())
+
+        return (lam_dom, lam_cod)
 
     if isinstance(t, Apply):
-        # f arg: f produces function output, arg provides input, cap connects.
+        # Typing rule: Γ₁ ⊢ f:A⊸B   Γ₂ ⊢ u:A  ⇒  Γ₁⊗Γ₂ ⊢ f u : B
+        #
+        # f produces Arrow(A, B) = [A_slot | B_slot] wires
+        # arg produces A wires
+        # Apply connects arg's output to f's A_slot (boundary splicing)
+        # Result is B (the B_slot wires)
         f_dom, f_cod = type_of(t.f)
         arg_dom, arg_cod = type_of(t.arg)
-        return (Ten(f_dom, arg_dom), Ten(f_cod, arg_cod))
+
+        # f's codomain must be Arrow(A, B)
+        if not isinstance(f_cod, Arrow):
+            raise TypeCheckError(
+                f"Apply expects function type, got {pretty(f_cod)}"
+            )
+
+        A = f_cod.dom  # argument type (domain of the function)
+        B = f_cod.cod  # result type (codomain of the function)
+
+        # arg's codomain must match A (by width)
+        if width(arg_cod) != width(A):
+            raise TypeCheckError(
+                f"Apply argument type mismatch:\n"
+                f"  expected {pretty(A)} (width {width(A)})\n"
+                f"  got {pretty(arg_cod)} (width {width(arg_cod)})"
+            )
+
+        # Apply's domain is Γ₁ ⊗ Γ₂
+        if isinstance(f_dom, Unit) and isinstance(arg_dom, Unit):
+            apply_dom = Unit()
+        elif isinstance(f_dom, Unit):
+            apply_dom = arg_dom
+        elif isinstance(arg_dom, Unit):
+            apply_dom = f_dom
+        else:
+            apply_dom = Ten(f_dom, arg_dom)
+
+        # Apply's codomain is B (the result type from the Arrow)
+        return (apply_dom, B)
+
+    # Full source language: Pair, LetPair, Var
+    if isinstance(t, Var):
+        # Variable reference: x : A (identity on A wires)
+        return (t.ty, t.ty)
+
+    if isinstance(t, Pair):
+        # Tensor introduction: (t, u) : A ⊗ B
+        # Given t : A (from Γ1) and u : B (from Γ2) with disjoint contexts,
+        # produces (t, u) : A ⊗ B (from Γ1 ⊎ Γ2).
+        fst_dom, fst_cod = type_of(t.fst)
+        snd_dom, snd_cod = type_of(t.snd)
+        return (Ten(fst_dom, snd_dom), Ten(fst_cod, snd_cod))
+
+    if isinstance(t, LetPair):
+        # Tensor elimination: let (x, y) = t in u
+        # t : A ⊗ B (t.pair produces A⊗B)
+        # x : A, y : B in u : C
+        # Result: let (x,y) = t in u : C
+        pair_dom, pair_cod = type_of(t.pair)
+
+        # The pair's codomain should be A ⊗ B = ty_x ⊗ ty_y
+        expected_pair_ty = Ten(t.ty_x, t.ty_y)
+        if width(pair_cod) != width(expected_pair_ty):
+            raise TypeCheckError(
+                f"LetPair pair codomain width mismatch:\n"
+                f"  pair codomain = {pretty(pair_cod)} (width {width(pair_cod)})\n"
+                f"  expected = {pretty(expected_pair_ty)} (width {width(expected_pair_ty)})"
+            )
+
+        # Body type depends on the body term itself
+        body_dom, body_cod = type_of(t.body)
+
+        # The full term's domain is the context that t.pair needs plus body's extra context
+        # For now we use width-based composition
+        # domain: what the pair term needs (pair_dom)
+        # codomain: what the body produces (body_cod)
+        return (pair_dom, body_cod)
 
     raise TypeCheckError(f"Unknown term node: {t!r}")
 

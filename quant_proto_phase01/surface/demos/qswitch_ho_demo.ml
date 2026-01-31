@@ -84,16 +84,16 @@ let () =
   print_endline "  QSwitch = λf:(Q→Q). λg:(Q→Q). λx:(Bool⊗Q).";
   print_endline "              let (ctrl ⊗ tgt) = x in";
   print_endline "                case ctrl of";
-  print_endline "                  | Left(u)  => f ; g   (* apply f then g *)";
-  print_endline "                  | Right(u) => g ; f   (* apply g then f *)";
+  print_endline "                  | Left(u)  => g ; f   (* apply g then f → f(g(x)) *)";
+  print_endline "                  | Right(u) => f ; g   (* apply f then g → g(f(x)) *)";
   print_endline "";
   print_endline "When we instantiate f=H and g=S:";
   print_endline "";
   print_endline "  QSwitch H S = λx:(Bool⊗Q).";
   print_endline "                  let (ctrl ⊗ tgt) = x in";
   print_endline "                    case ctrl of";
-  print_endline "                      | Left(u)  => H[1] ; S[1]";
-  print_endline "                      | Right(u) => S[1] ; H[1]";
+  print_endline "                      | Left(u)  => S[1] ; H[1]   (* g;f → H(S(x)) *)";
+  print_endline "                      | Right(u) => H[1] ; S[1]   (* f;g → S(H(x)) *)";
 
   (* =========================================================================
      PART 3: Concrete Instantiation (H, S)
@@ -101,8 +101,10 @@ let () =
   banner "PART 3: Building QSwitch[H, S]";
 
   (* Build the instantiated term directly *)
-  let left_body = Seq (GateH 1, GateS 1) in   (* f;g = H;S *)
-  let right_body = Seq (GateS 1, GateH 1) in  (* g;f = S;H *)
+  (* Abstract semantics: Left => f(g(x)), Right => g(f(x)) *)
+  (* With f=H, g=S: Left => H(S(x)) = S;H, Right => S(H(x)) = H;S *)
+  let left_body = Seq (GateS 1, GateH 1) in   (* g;f = S;H → f(g(x)) *)
+  let right_body = Seq (GateH 1, GateS 1) in  (* f;g = H;S → g(f(x)) *)
 
   let case_expr = Case (Var "ctrl", [
     (PatCtor ("Left", "u"), left_body);
@@ -149,8 +151,9 @@ let () =
   print_endline "The same abstract QSwitch can be instantiated differently:\n";
 
   let build_qswitch f_gates g_gates =
-    let left_body = seq_list (f_gates @ g_gates) in    (* f;g *)
-    let right_body = seq_list (g_gates @ f_gates) in   (* g;f *)
+    (* Abstract semantics: Left => f(g(x)), Right => g(f(x)) *)
+    let left_body = seq_list (g_gates @ f_gates) in    (* g;f → f(g(x)) *)
+    let right_body = seq_list (f_gates @ g_gates) in   (* f;g → g(f(x)) *)
     let case_expr = Case (Var "ctrl", [
       (PatCtor ("Left", "u"), left_body);
       (PatCtor ("Right", "u"), right_body);
@@ -185,11 +188,12 @@ let () =
 │                                                                        │
 │  MEANING: Takes two single-qubit operations f, g                       │
 │           Returns a circuit that applies them in superposition         │
-│           of orderings: f;g when ctrl=0, g;f when ctrl=1               │
+│           of orderings: g;f when ctrl=0, f;g when ctrl=1               │
+│           (i.e., f(g(x)) when ctrl=0, g(f(x)) when ctrl=1)             │
 │                                                                        │
 │  INSTANTIATION:                                                        │
-│           QSwitch H S → X[0]; CH; CS; X[0]; CS; CH                    │
-│           QSwitch X Z → X[0]; CX; CZ; X[0]; CZ; CX                    │
+│           QSwitch H S → X[0]; CS; CH; X[0]; CH; CS                    │
+│           QSwitch X Z → X[0]; CZ; CX; X[0]; CX; CZ                    │
 │                                                                        │
 │  KEY INSIGHT:                                                          │
 │           Higher-order in the surface language                         │

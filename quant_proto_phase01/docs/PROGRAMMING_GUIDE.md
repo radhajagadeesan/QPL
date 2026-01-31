@@ -20,31 +20,44 @@ For compiler API details, see `COMPILER_API_GUIDE.md`.
 | Constructor | Meaning | Wire Width |
 |-------------|---------|------------|
 | `A ⊗ B` | Tensor product (parallel wires) | width(A) + width(B) |
-| `A + B` | Sum type (tagged union) | 2 + width(A) + width(B) |
-| `A → B` | Function type (morphism) | Compile-time only |
+| `A + B` | Sum type (tagged union) | ceil(log2(n)) + max(width(Aᵢ)) |
+| `A ⊸ B` | Linear function type | width(A) + width(B) |
 
-### Function Types
+### Function Types (Linear Arrow)
 
-Function types `A → B` represent morphisms from A to B. They are **compile-time constructs** used for:
-- Lambda abstractions: `λx:A. body` has type `A → B` if body has type B
-- Higher-order functions: passing and returning morphisms
-- Let bindings: `let f = ... in ...`
+Function types `A ⊸ B` represent linear morphisms as **wire bundles**:
 
-Function types elaborate away during compilation—they don't correspond to physical wires. The body of a function becomes a circuit fragment that gets inlined at application sites.
+```
+width(A ⊸ B) = width(A) + width(B)
+layout(A ⊸ B) = [A_wires | B_wires]
+```
 
-### Sum Type Encoding (One-Hot Leaf Tags)
+A function value is a circuit fragment boundary exposing its **argument slot** (A wires) and **result slot** (B wires). Examples:
+- `Q ⊸ Q` has width 2 (argument wire + result wire)
+- `(Q ⊗ Q) ⊸ Q` has width 3 (2 argument wires + 1 result wire)
 
-Sum types use **one-hot leaf-tag encoding**. An n-ary sum `A₁ + A₂ + ... + Aₙ` has:
-- **N tag wires** (one-hot: exactly one is |1⟩)
-- **Payload wires** for each summand
+Lambda creates function wires, application connects them via boundary splicing.
 
-Wire layout: `[tag₁ | tag₂ | ... | tagₙ | A₁ | A₂ | ... | Aₙ]`
+### Sum Type Encoding (Option B: Log-Tag + Shared Payload)
+
+Sum types use a **flat log-sized tag register + shared payload**:
+
+```
+width(A₁ + ... + Aₙ) = ceil(log2(n)) + max(width(Aᵢ))
+```
+
+Wire layout: `[tag₀ | ... | tag_{k-1} | payload₀ | ... | payload_{W-1}]`
+
+Where:
+- k = ceil(log2(n)) tag qubits encoding the variant index
+- W = max(width(Aᵢ)) shared payload width
 
 Examples:
-- `Q + Q` = 4 wires: `[t₁, t₂, q₁, q₂]`
-- `(Q + Q) + Q` = 6 wires: `[t₁, t₂, t₃, q₁, q₂, q₃]` (nested sums flatten)
+- `I + I` (Bool) = 1 wire: just the tag (payloads are width 0)
+- `Q + Q` = 2 wires: 1 tag + 1 shared payload
+- `(Q + Q) + Q` = 3 wires: 2 tags + 1 payload
 
-This encoding makes **all structural operations on sums compile to pure wire permutations** (no gates needed).
+Tensor structurals compile to pure permutations. Sum structurals emit X gates on tag bits (tracked symbolically).
 
 ### Syntax
 
@@ -196,12 +209,17 @@ This enables using structural operations (which are free on I + I) on primitive 
 ```ocaml
 λx:A. body              (* Lambda abstraction *)
 let x = e1 in e2        (* Let binding *)
+let (x, y) = e1 in e2   (* Tensor elimination (letpair) *)
 case e of               (* Case expression *)
   | F(x) => branch1
   | T(y) => branch2
 ```
 
-Lambdas and let bindings are compile-time constructs that elaborate away via substitution.
+**Lambda (λ)**: Creates function wires. In the Python core, `Lam(x, A, B, body)` exposes A wires as input boundary.
+
+**Let binding**: Substituted away during elaboration.
+
+**Letpair**: Destructures tensor products. `let (x, y) = e1 in e2` binds `x` to the first width(A) wires and `y` to the next width(B) wires. In Python: `LetPair(x, y, A, B, pair, body)`.
 
 ---
 
@@ -318,7 +336,13 @@ See `demos/README.md` for full details. Key demos:
 
 | Demo | File | What it Shows |
 |------|------|---------------|
-| QSwitch | `qswitch_demo.py` | Higher-order quantum switch combinator |
+| QSwitch (basic) | `qswitch_demo.py` | Higher-order quantum switch combinator |
+| QSwitch (term) | `qswitch_term_demo.py` | QSwitch as Case term with DistR |
+| QSwitch (abstract) | `qswitch_abstract_demo.py` | Abstract QSwitch type and wire layout |
+| **QSwitch (abstract circuit)** | `qswitch_abstract_circuit_demo.py` | Abstract QSwitch circuit diagrams (no instantiation) |
+| **QSwitch (instantiation)** | `qswitch_instantiation_demo.py` | QSwitch[H,H] vs QSwitch[H,S], simplification analysis |
+| **QSwitch (curried)** | `qswitch_curried_demo.py` | Curried λb.λf.λg.λx type derivation |
+| QSwitch (OCaml HO) | `surface/demos/qswitch_ho_demo.ml` | Higher-order QSwitch in OCaml |
 | ExpInvolution | `exp_twist_demo.py` | Composition law: exp(θ);exp(θ) = exp(2θ) |
 | Pauli Conjugation | `pauli_conjugation_demo.py` | exp(π/4,X);Z;exp(-π/4,X) = Y on qubit as I+I |
 

@@ -94,7 +94,33 @@ class Dual:
         return f"{self.ty}*"
 
 
-Ty = Union[Unit, Q, Ten, Plus, Dual]
+@dataclass(frozen=True, slots=True)
+class Arrow:
+    """Linear function type A ⊸ B (lollipop).
+
+    Wire layout: ⟦A ⊸ B⟧ = ⟦A⟧ ∥ ⟦B⟧
+    So: width(A ⊸ B) = width(A) + width(B)
+
+    Interpretation: A function value is a circuit fragment boundary
+    exposing its argument slot (A wires) and result slot (B wires).
+    Calling a function is boundary splicing.
+
+    This is the key design choice that makes abstract QSwitch definable
+    as a term without explicit wire selection.
+
+    Examples:
+        Q ⊸ Q has width 2 (1 argument wire + 1 result wire)
+        (Q ⊗ Q) ⊸ Q has width 3 (2 argument wires + 1 result wire)
+        (Q ⊸ Q) ⊸ Q has width 3 (2 function wires + 1 result wire)
+    """
+    dom: "Ty"  # A (argument type)
+    cod: "Ty"  # B (result type)
+
+    def __str__(self) -> str:
+        return f"({self.dom} ⊸ {self.cod})"
+
+
+Ty = Union[Unit, Q, Ten, Plus, Dual, Arrow]
 
 # Alias for documentation: I is the traditional name for the unit type
 I = Unit
@@ -108,6 +134,9 @@ def width(ty: Ty) -> int:
     Layout: [tag_bits | shared_payload]
     Note: summands may themselves contain Plus, which get their own tags.
     Unit type has width 0.
+
+    For Arrow types: width(A ⊸ B) = width(A) + width(B).
+    A function is represented as its argument slot + result slot.
     """
     if isinstance(ty, Unit):
         return 0
@@ -120,6 +149,8 @@ def width(ty: Ty) -> int:
         return tag_width(ty) + payload_width(ty)
     if isinstance(ty, Dual):
         return width(ty.ty)
+    if isinstance(ty, Arrow):
+        return width(ty.dom) + width(ty.cod)
     raise TypeError(f"Unknown Ty node: {ty!r}")
 
 
@@ -137,6 +168,8 @@ def tag_width(ty: Ty) -> int:
         return math.ceil(math.log2(n))
     if isinstance(ty, Dual):
         return tag_width(ty.ty)
+    if isinstance(ty, Arrow):
+        return tag_width(ty.dom) + tag_width(ty.cod)
     return 0
 
 
@@ -153,6 +186,8 @@ def payload_width(ty: Ty) -> int:
         return max(width(s) for s in summands)
     if isinstance(ty, Dual):
         return payload_width(ty.ty)
+    if isinstance(ty, Arrow):
+        return payload_width(ty.dom) + payload_width(ty.cod)
     return width(ty)
 
 
@@ -173,6 +208,8 @@ def data_width(ty: Ty) -> int:
         return payload_width(ty)
     if isinstance(ty, Dual):
         return data_width(ty.ty)
+    if isinstance(ty, Arrow):
+        return data_width(ty.dom) + data_width(ty.cod)
     raise TypeError(f"Unknown Ty node: {ty!r}")
 
 
@@ -192,6 +229,8 @@ def tag_count(ty: Ty) -> int:
         return tag_width(ty)
     if isinstance(ty, Dual):
         return tag_count(ty.ty)
+    if isinstance(ty, Arrow):
+        return tag_count(ty.dom) + tag_count(ty.cod)
     raise TypeError(f"Unknown Ty node: {ty!r}")
 
 

@@ -517,6 +517,58 @@ class ExpInvolution:
             object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
 
 
+# -- Tensor introduction and elimination (for full source language)
+
+@dataclass(frozen=True, slots=True)
+class Pair:
+    """Tensor introduction (pairing): t ⊗ u.
+
+    Given t : A and u : B (with disjoint contexts), produces (t, u) : A ⊗ B.
+
+    This is the term-level pairing operator, distinct from TenTerm which is
+    parallel composition of morphisms. Pair is for building values, while
+    TenTerm is for combining circuits.
+    """
+    fst: "Term"  # t : A
+    snd: "Term"  # u : B
+
+
+@dataclass(frozen=True, slots=True)
+class LetPair:
+    """Tensor elimination (destructuring): let (x, y) = t in u.
+
+    Given t : A ⊗ B with x : A and y : B bound in u : C,
+    produces a term of type C.
+
+    This binds x to the first width(A) wires and y to the next width(B) wires
+    of t's output. The body u can then refer to x and y as contiguous wire
+    bundles in the environment.
+
+    Compilation:
+    1. Compile t to get circuit Ct : ⟦Γ1⟧ → ⟦A⟧||⟦B⟧
+    2. Extend environment: x ↦ prefix of t's output, y ↦ suffix
+    3. Compile u with extended environment
+    4. Wire: connect Ct's outputs to corresponding x,y input wires of Cu
+    """
+    x: str       # first variable name
+    y: str       # second variable name
+    ty_x: Ty     # type of x (A)
+    ty_y: Ty     # type of y (B)
+    pair: "Term" # the pair term t : A ⊗ B
+    body: "Term" # the body u : C (with x, y in scope)
+
+
+@dataclass(frozen=True, slots=True)
+class Var:
+    """Variable reference: x.
+
+    Represents a reference to a bound variable. During compilation, this
+    becomes identity wiring on the variable's wire range (from the environment).
+    """
+    name: str
+    ty: Ty  # The type of the variable
+
+
 # -- Case/Copairing (branching on sum types)
 
 @dataclass(frozen=True, slots=True)
@@ -598,6 +650,8 @@ Term = Union[
     Cup, Cap,
     # Higher-order constructs (compiled via cup/cap wiring)
     FunVar, Lam, Apply,
+    # Tensor intro/elim and variables (full source language)
+    Pair, LetPair, Var,
     # Case/copairing (branching on sum types)
     Case,
     # Exponentials of structural involutions
