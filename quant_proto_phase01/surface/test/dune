@@ -9,3 +9,7 @@
 (test
  (name test_exp_twist)
  (libraries qpl_surface))
+
+(test
+ (name test_case_linear)
+ (libraries qpl_surface))

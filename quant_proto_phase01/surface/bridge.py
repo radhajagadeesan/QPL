@@ -36,6 +36,10 @@ from lang.terms import (
     FunVar, Lam, Apply,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
+    # Bifunctorial action on sums
+    PlusMap,
+    # Case combinator
+    Case,
 )
 from core.perm import WirePerm, identity, compose
 from compile.to_pytket import compile
@@ -82,6 +86,10 @@ def _max_wire_index(j: dict) -> int:
         max_idx = max(max_idx, _max_wire_index(j["body"]))
     if "arg" in j:
         max_idx = max(max_idx, _max_wire_index(j["arg"]))
+    if "left" in j:
+        max_idx = max(max_idx, _max_wire_index(j["left"]))
+    if "right" in j:
+        max_idx = max(max_idx, _max_wire_index(j["right"]))
 
     return max_idx
 
@@ -297,6 +305,28 @@ def parse_term(j: dict, ty_total: Ty = None) -> Term:
 
     elif node == "Apply":
         return Apply(parse_term(j["f"], ty_total), parse_term(j["arg"], ty_total))
+
+    # Bifunctorial action on sums (⊕-Map)
+    elif node == "PlusMap":
+        ty_left = parse_type(j["ty_left"])
+        ty_right = parse_type(j["ty_right"])
+        # Branches operate on payload types, not full sum type
+        left = parse_term(j["left"], ty_left)
+        right = parse_term(j["right"], ty_right)
+        return PlusMap(ty_left, ty_right, left, right)
+
+    # Pattern-matching case expression from OCaml Linear DSL
+    # CaseExpr = Seq(scrut, Case(ty_left, ty_right, left, right))
+    elif node == "CaseExpr":
+        ty_left = parse_type(j["ty_left"])
+        ty_right = parse_type(j["ty_right"])
+        scrut = parse_term(j["scrut"], ty_total)
+        # Branches operate on payload types, not full sum type
+        left = parse_term(j["left"], ty_left)
+        right = parse_term(j["right"], ty_right)
+        # Compose: first scrutinee, then case combinator
+        case_combinator = Case(ty_left, ty_right, left, right)
+        return Seq(scrut, case_combinator)
 
     # Exponentials of structural involutions
     elif node == "ExpSwap":

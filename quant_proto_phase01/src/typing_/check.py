@@ -27,8 +27,10 @@ from lang.terms import (
     FunVar, Lam, Apply,
     # Tensor intro/elim and variables (full source language)
     Pair, LetPair, Var,
-    # Case/copairing
+    # Case/copairing and bifunctor
     Case,
+    CaseExpr,
+    PlusMap,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
     # Qubit encoding isomorphism
@@ -244,6 +246,75 @@ def type_of(t: Term) -> DomCod:
         dom = Plus(t.ty_left, t.ty_right)
         cod = Plus(left_cod, right_cod)
         return (dom, cod)
+
+    # PlusMap (⊕-Map): f ⊕ g : (A + B) → (C + D)
+    if isinstance(t, PlusMap):
+        # left  : A → C
+        # right : B → D
+        # Result: (A + B) → (C + D), tag preserved
+        left_dom, left_cod = type_of(t.left)
+        right_dom, right_cod = type_of(t.right)
+
+        # Check that branch domains match declared types (by width)
+        if width(left_dom) != width(t.ty_left):
+            raise TypeCheckError(
+                f"PlusMap left branch domain mismatch:\n"
+                f"  declared ty_left = {pretty(t.ty_left)} (width {width(t.ty_left)})\n"
+                f"  actual left dom  = {pretty(left_dom)} (width {width(left_dom)})"
+            )
+        if width(right_dom) != width(t.ty_right):
+            raise TypeCheckError(
+                f"PlusMap right branch domain mismatch:\n"
+                f"  declared ty_right = {pretty(t.ty_right)} (width {width(t.ty_right)})\n"
+                f"  actual right dom  = {pretty(right_dom)} (width {width(right_dom)})"
+            )
+
+        # Result type: (A + B) → (C + D), tag preserved
+        dom = Plus(t.ty_left, t.ty_right)
+        cod = Plus(left_cod, right_cod)
+        return (dom, cod)
+
+    # CaseExpr: pattern-matching case with variable binding
+    if isinstance(t, CaseExpr):
+        # case scrut of | inl x => left | inr y => right
+        # scrut : Γ → A + B
+        # left  : x:A in scope, produces C
+        # right : y:B in scope, produces C (for true copairing)
+        scrut_dom, scrut_cod = type_of(t.scrut)
+
+        # Scrutinee must produce a sum type
+        # Check width matches A + B = ty_x + ty_y
+        expected_sum = Plus(t.ty_x, t.ty_y)
+        if width(scrut_cod) != width(expected_sum):
+            raise TypeCheckError(
+                f"CaseExpr scrutinee codomain width mismatch:\n"
+                f"  expected {pretty(expected_sum)} (width {width(expected_sum)})\n"
+                f"  got {pretty(scrut_cod)} (width {width(scrut_cod)})"
+            )
+
+        # Type-check branches: they operate on the payload type
+        # x:A in scope for left, y:B in scope for right
+        left_dom, left_cod = type_of(t.left)
+        right_dom, right_cod = type_of(t.right)
+
+        # Branch domains should include the bound variable type
+        # For now, check that widths are compatible
+        if width(left_dom) < width(t.ty_x):
+            raise TypeCheckError(
+                f"CaseExpr left branch domain too small:\n"
+                f"  expected at least width {width(t.ty_x)} for x:{pretty(t.ty_x)}\n"
+                f"  got {pretty(left_dom)} (width {width(left_dom)})"
+            )
+        if width(right_dom) < width(t.ty_y):
+            raise TypeCheckError(
+                f"CaseExpr right branch domain too small:\n"
+                f"  expected at least width {width(t.ty_y)} for y:{pretty(t.ty_y)}\n"
+                f"  got {pretty(right_dom)} (width {width(right_dom)})"
+            )
+
+        # Result type: dom(scrut) → Plus(left_cod, right_cod)
+        # This preserves the tag (bifunctorial semantics)
+        return (scrut_dom, Plus(left_cod, right_cod))
 
     # Compact-closed: Cup and Cap
     if isinstance(t, Cup):

@@ -84,7 +84,8 @@ type (_, _) prog =
   (* Sum *)
   | OMap : ('g1, [`Lolli of 'a * 'c]) prog * ('g2, [`Lolli of 'b * 'd]) prog
         -> ('g1 * 'g2, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
-  | Case : ('g0, [`Plus of 'a * 'b]) prog * ('a * 'g1, 'c) prog * ('b * 'g2, 'd) prog
+  (* Case with type witnesses for emission *)
+  | Case : Rep.t * Rep.t * ('g0, [`Plus of 'a * 'b]) prog * ('a * 'g1, 'c) prog * ('b * 'g2, 'd) prog
         -> ('g0 * ('g1 * 'g2), [`Plus of 'c * 'd]) prog
 
   (* Structural isomorphisms (closed) *)
@@ -131,8 +132,8 @@ type (_, _) prog =
   (* Primitive/opaque operations (from datatype declarations) *)
   | Prim : string * Rep.t * Rep.t -> (unit, [`Lolli of 'a * 'b]) prog
 
-  (* Closed omap for datatype control *)
-  | OMap0 : (unit, [`Lolli of 'a * 'c]) prog * (unit, [`Lolli of 'b * 'd]) prog
+  (* Closed omap for datatype control - carries type witnesses for emission *)
+  | OMap0 : Rep.t * Rep.t * (unit, [`Lolli of 'a * 'c]) prog * (unit, [`Lolli of 'b * 'd]) prog
          -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
 
 (* ========== Smart Constructors ========== *)
@@ -155,7 +156,7 @@ let app f e = App (f, e)
 
 let omap f g = OMap (f, g)
 
-let case_ scrut left right = Case (scrut, left, right)
+let case_ ty_left ty_right scrut left right = Case (ty_left, ty_right, scrut, left, right)
 
 let twist_tensor a b = TwistTensor (a, b)
 let twist_plus a b = TwistPlus (a, b)
@@ -181,7 +182,7 @@ let seq0 f g = Seq0 (f, g)
 
 let par0 f g = Par0 (f, g)
 
-let omap0 f g = OMap0 (f, g)  [@@warning "-32"]
+let omap0 ty_left ty_right f g = OMap0 (ty_left, ty_right, f, g) [@@warning "-32"]
 
 (* ========== Meta-level Combinators ========== *)
 
@@ -228,8 +229,8 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
   | App (f, arg) -> Bridge.TApply (emit_any f, emit_any arg)
 
   | OMap (f, g) -> Bridge.TTenTerm (emit_any f, emit_any g)
-  | Case (scrut, left, right) ->
-      Bridge.TSeq (emit_any scrut, Bridge.TTenTerm (emit_any left, emit_any right))
+  | Case (ty_left, ty_right, scrut, left, right) ->
+      Bridge.TCase (ty_left, ty_right, emit_any scrut, emit_any left, emit_any right)
 
   | TwistTensor (a, b) -> Bridge.TTwistTen (a, b)
   | TwistPlus (a, b) -> Bridge.TTwistPlus (a, b)
@@ -253,7 +254,8 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
   | Par0 (f, g) -> Bridge.TTenTerm (emit_any f, emit_any g)
 
   | Prim (name, _dom, _cod) -> Bridge.TGate (name, [0], [])
-  | OMap0 (f, g) -> Bridge.TTenTerm (emit_any f, emit_any g)
+  | OMap0 (ty_left, ty_right, f, g) ->
+      Bridge.TPlusMap (ty_left, ty_right, emit_any f, emit_any g)
 
 (* Emit a closed program. Uses emit_any internally. *)
 let emit (p : (unit, 'a) prog) : Bridge.term = emit_any p

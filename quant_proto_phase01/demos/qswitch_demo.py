@@ -2,7 +2,9 @@
 """
 QSwitch Demo - End-to-End from Source to Gates
 
-Run with: PYTHONPATH=src python demos/qswitch_demo.py
+Usage:
+    python qswitch_demo.py              # Run demo
+    python qswitch_demo.py --circuits   # Show circuit diagrams
 
 This demo shows the quantum switch circuit structure.
 For the full elaboration pipeline (source AST → Core IR → circuit),
@@ -16,22 +18,25 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from lang.terms import H, S, Seq, CH, CS, X
 from lang.types import Q, Ten
-from compile.to_pytket import compile
 
+from demo_utils import DemoRunner
 
-def section(title):
-    print()
-    print("=" * 70)
-    print(f"  {title}")
-    print("=" * 70)
-    print()
+# Global runner instance
+runner = None
 
 
 def main():
-    section("QUANTUM SWITCH: Source to Gates")
+    global runner
+    runner = DemoRunner(
+        "QSwitch: Source to Gates",
+        "Demonstrates quantum switch circuit compilation"
+    )
+    runner.print_header()
 
     # =========================================================================
-    section("Part 1: Source Definition")
+    print("\n" + "="*70)
+    print("  Part 1: Source Definition")
+    print("="*70 + "\n")
     # =========================================================================
 
     print("""
@@ -51,7 +56,9 @@ Type layout:
 """)
 
     # =========================================================================
-    section("Part 2: Elaboration (OCaml → Core IR)")
+    print("\n" + "="*70)
+    print("  Part 2: Elaboration (OCaml → Core IR)")
+    print("="*70 + "\n")
     # =========================================================================
 
     print("""
@@ -78,7 +85,9 @@ Run `dune exec demos/qswitch_demo.exe` in surface/ for full elaboration trace.
 """)
 
     # =========================================================================
-    section("Part 3: Compiled Circuit")
+    print("\n" + "="*70)
+    print("  Part 3: Compiled Circuit")
+    print("="*70 + "\n")
     # =========================================================================
 
     ty = Ten(Q(), Q())
@@ -92,14 +101,9 @@ Run `dune exec demos/qswitch_demo.exe` in surface/ for full elaboration trace.
         CS(0, 1, ty),    # controlled-S (right branch, part 2)
     )
 
-    result = compile(qswitch_hs)
-
-    print(f"Qubits: {result.circuit.n_qubits}")
-    print(f"Gates:  {result.circuit.n_gates}")
-    print()
-    print("Circuit commands:")
-    for cmd in result.circuit.get_commands():
-        print(f"  {cmd}")
+    result = runner.compile(qswitch_hs, "QSwitch(H, S)")
+    runner.print_circuit_details(result, "Compiled Circuit")
+    runner.show_circuit(result, "QSwitch(H, S)")
 
     print("""
 Diagram:
@@ -110,7 +114,9 @@ Diagram:
 """)
 
     # =========================================================================
-    section("Part 4: Semantics")
+    print("\n" + "="*70)
+    print("  Part 4: Semantics")
+    print("="*70 + "\n")
     # =========================================================================
 
     print("""
@@ -118,13 +124,13 @@ Execution trace:
 
   When ctrl = |0⟩ (Left):
     X[0] flips to |1⟩ → CS and CH fire → X[0] flips back to |0⟩
-    Target gets: S then H ✓
+    Target gets: S then H
     (Right branch gates don't fire because ctrl is |0⟩)
 
   When ctrl = |1⟩ (Right):
     X[0] flips to |0⟩ → CS and CH don't fire → X[0] flips back to |1⟩
     Then: CH and CS fire
-    Target gets: H then S ✓
+    Target gets: H then S
 
   When ctrl = superposition:
     Both branches execute coherently
@@ -134,30 +140,31 @@ The quantum switch applies operations in BOTH orders simultaneously!
 """)
 
     # =========================================================================
-    section("Summary")
+    print("\n" + "="*70)
+    print("  Summary")
+    print("="*70 + "\n")
     # =========================================================================
 
     print("""
-┌─────────────────────────────────────────────────────────────────────┐
-│  COMPILATION PIPELINE                                               │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  SOURCE        λx. let (ctrl ⊗ tgt) = x in                          │
-│  (AST)           case ctrl of Left => S;H | Right => H;S            │
-│                                                                     │
-│      ↓         elaborate() — β-reduce, substitute, case transform   │
-│                                                                     │
-│  CORE IR       X[0]; C0-S[1]; C0-H[1]; X[0]; C0-H[1]; C0-S[1]       │
-│                                                                     │
-│      ↓         compile() — emit gates, track permutation            │
-│                                                                     │
-│  CIRCUIT       X q[0]; CS q[0],q[1]; CH q[0],q[1]; ...              │
-│  (pytket)      6 gates, 2 qubits, identity permutation              │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+COMPILATION PIPELINE
+────────────────────
+
+  SOURCE        λx. let (ctrl ⊗ tgt) = x in
+  (AST)           case ctrl of Left => S;H | Right => H;S
+
+      ↓         elaborate() — β-reduce, substitute, case transform
+
+  CORE IR       X[0]; C0-S[1]; C0-H[1]; X[0]; C0-H[1]; C0-S[1]
+
+      ↓         compile() — emit gates, track permutation
+
+  CIRCUIT       X q[0]; CS q[0],q[1]; CH q[0],q[1]; ...
+  (pytket)      6 gates, 2 qubits, identity permutation
 
 Key insight: case on superposition → controlled gates
 """)
+
+    runner.print_footer()
 
 
 if __name__ == "__main__":

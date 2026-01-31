@@ -339,12 +339,21 @@ See `demos/README.md` for full details. Key demos:
 | QSwitch (basic) | `qswitch_demo.py` | Higher-order quantum switch combinator |
 | QSwitch (term) | `qswitch_term_demo.py` | QSwitch as Case term with DistR |
 | QSwitch (abstract) | `qswitch_abstract_demo.py` | Abstract QSwitch type and wire layout |
-| **QSwitch (abstract circuit)** | `qswitch_abstract_circuit_demo.py` | Abstract QSwitch circuit diagrams (no instantiation) |
+| **QSwitch (abstract circuit)** | `qswitch_abstract_circuit_theory_demo.py` | THEORY: Abstract QSwitch circuit diagrams |
 | **QSwitch (instantiation)** | `qswitch_instantiation_demo.py` | QSwitch[H,H] vs QSwitch[H,S], simplification analysis |
-| **QSwitch (curried)** | `qswitch_curried_demo.py` | Curried λb.λf.λg.λx type derivation |
+| **QSwitch (curried)** | `qswitch_curried_theory_demo.py` | THEORY: Curried λb.λf.λg.λx type derivation |
 | QSwitch (OCaml HO) | `surface/demos/qswitch_ho_demo.ml` | Higher-order QSwitch in OCaml |
 | ExpInvolution | `exp_twist_demo.py` | Composition law: exp(θ);exp(θ) = exp(2θ) |
 | Pauli Conjugation | `pauli_conjugation_demo.py` | exp(π/4,X);Z;exp(-π/4,X) = Y on qubit as I+I |
+
+### Running Demos
+
+```bash
+PYTHONPATH=src python demos/<demo>.py            # Run demo
+PYTHONPATH=src python demos/<demo>.py --circuits # Show ASCII circuit diagrams
+```
+
+Most demos support the `--circuits` flag to display circuit diagrams. Demos marked "THEORY" explain types and wire layouts without compiling circuits.
 
 ### ExpInvolution Demo
 

@@ -22,10 +22,11 @@ let test_twist_plus_involution () =
     print_endline (Printf.sprintf "  perm.n = %d" perm.n);
     print_endline (Printf.sprintf "  perm.new_to_old = [%s]"
       (String.concat ", " (List.map string_of_int perm.new_to_old)));
-    (* One-hot layout: Q + Q has width 4 (2 tags + 2 data) *)
-    (* Perm = [1, 0, 3, 2]: swaps both tags and data *)
-    assert (perm.n = 4);
-    assert (perm.new_to_old = [1; 0; 3; 2])
+    (* Flat tag model: Q + Q has width 2 (1 tag bit + 1 payload) *)
+    (* TwistPlus flips tag via X gate, permutation is identity *)
+    (* Perm = [0, 1]: wires stay same, tag bit flipped by X gate *)
+    assert (perm.n = 2);
+    assert (perm.new_to_old = [0; 1])
   | Qpl.NotInvolutive _ ->
     print_endline "✗ TwistPlus should be involutive!";
     assert false
@@ -42,10 +43,12 @@ let test_identity_involution () =
   match Qpl.check_involution id_term with
   | Qpl.Involutive perm ->
     print_endline "✓ Identity is involutive";
+    print_endline (Printf.sprintf "  perm.n = %d" perm.n);
     print_endline (Printf.sprintf "  perm.new_to_old = [%s]"
       (String.concat ", " (List.map string_of_int perm.new_to_old)));
-    (* One-hot layout: V0 + V1 has width 4 (2 tags + 2 data) *)
-    assert (perm.new_to_old = [0; 1; 2; 3])
+    (* Flat tag model: V0 + V1 (Q + Q) has width 2 (1 tag bit + 1 payload) *)
+    assert (perm.n = 2);
+    assert (perm.new_to_old = [0; 1])
   | Qpl.NotInvolutive _ ->
     print_endline "✗ Identity should be involutive!";
     assert false

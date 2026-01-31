@@ -98,6 +98,7 @@ Sum structurals compile to **symbolic tag permutations** (lowered to gates late)
 | Term | Type | Description |
 |------|------|-------------|
 | `Case(ty_left, ty_right, left, right)` | (A + B) → C | Copairing (case expression) |
+| `PlusMap(ty_left, ty_right, left, right)` | (A + B) → (C + D) | Bifunctorial action (⊕-Map) |
 
 **Case signature:**
 ```python
@@ -110,13 +111,29 @@ Case(
 # Returns: term of type (A + B) → C
 ```
 
-**Compilation:** Uses the anti-control pattern:
+**PlusMap signature (⊕-Map):**
+```python
+PlusMap(
+    ty_left: Ty,    # Type A (left input type)
+    ty_right: Ty,   # Type B (right input type)
+    left: Term,     # Left branch: A → C
+    right: Term     # Right branch: B → D
+) -> Term
+# Returns: term of type (A + B) → (C + D)
+# Tag is preserved: left stays left, right stays right
+```
+
+**Compilation (both Case and PlusMap):** Uses the anti-control pattern:
 1. X[tag] — flip tag bit
 2. Controlled-left — fires when tag was originally 0 (Left)
 3. X[tag] — flip tag back
 4. Controlled-right — fires when tag was originally 1 (Right)
 
 On superposition inputs, both branches execute coherently (indefinite causal order).
+
+**Case vs PlusMap:**
+- Case: `[f, g] : (A + B) → C` — copairing, both branches produce same output type
+- PlusMap: `f ⊕ g : (A + B) → (C + D)` — bifunctor, branches can have different output types
 
 ### Gates
 

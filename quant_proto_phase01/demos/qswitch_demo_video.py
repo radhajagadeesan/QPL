@@ -234,6 +234,7 @@ def main():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="QSwitch Demo - Video Recording Script")
     parser.add_argument("--fast", action="store_true", help="Skip all delays (for automated testing)")
+    parser.add_argument("--circuits", action="store_true", help="(Ignored - circuits always shown in video demo)")
     args = parser.parse_args()
 
     if args.fast:

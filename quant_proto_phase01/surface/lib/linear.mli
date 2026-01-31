@@ -101,10 +101,12 @@ val omap : ('g1, [`Lolli of 'a * 'c]) prog
         -> ('g2, [`Lolli of 'b * 'd]) prog
         -> ('g1 * 'g2, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
 
-(** Case elimination (monoidal): [case scrut left right]
+(** Case elimination (monoidal): [case_ ty_left ty_right scrut left right]
     Context is split: Γ0 for scrutinee, Γ1 for left branch, Γ2 for right.
+    ty_left and ty_right are type witnesses for A and B (needed for emission).
     Returns a sum type C ⊕ D. *)
-val case_ : ('g0, [`Plus of 'a * 'b]) prog
+val case_ : 'a ty -> 'b ty
+         -> ('g0, [`Plus of 'a * 'b]) prog
          -> ('a * 'g1, 'c) prog
          -> ('b * 'g2, 'd) prog
          -> ('g0 * ('g1 * 'g2), [`Plus of 'c * 'd]) prog

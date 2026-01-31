@@ -12,9 +12,9 @@ Demonstrations of Granthi language features and compilation.
 | QSwitch (basic) | `qswitch_demo.py` | Higher-order quantum switch combinator |
 | QSwitch (term) | `qswitch_term_demo.py` | QSwitch as Case term with DistR |
 | QSwitch (abstract) | `qswitch_abstract_demo.py` | Abstract QSwitch type and wire layout |
-| **QSwitch (abstract circuit)** | `qswitch_abstract_circuit_demo.py` | **Abstract QSwitch circuit diagrams (no instantiation)** |
+| **QSwitch (abstract circuit)** | `qswitch_abstract_circuit_theory_demo.py` | **THEORY: Abstract QSwitch circuit diagrams (no instantiation)** |
 | **QSwitch (instantiation)** | `qswitch_instantiation_demo.py` | **QSwitch with ONE vs TWO functions, simplification analysis** |
-| **QSwitch (curried)** | `qswitch_curried_demo.py` | **Curried λb.λf.λg.λx type derivation** |
+| **QSwitch (curried)** | `qswitch_curried_theory_demo.py` | **THEORY: Curried λb.λf.λg.λx type derivation** |
 | ExpInvolution | `exp_twist_demo.py` | Exponentials of structural involutions |
 | Pauli Conjugation | `pauli_conjugation_demo.py` | Qubit as I+I, Pauli identity verification |
 
@@ -110,7 +110,7 @@ cd surface && dune exec demos/qswitch_ho_demo.exe
 2. Instantiation with H and S
 3. Elaboration to Core IR with controlled gates
 
-### QSwitch (abstract circuit) — `qswitch_abstract_circuit_demo.py`
+### QSwitch (abstract circuit) — `qswitch_abstract_circuit_theory_demo.py` (THEORY ONLY)
 
 Shows the **abstract QSwitch circuit structure** in curried form with NO instantiation:
 
@@ -122,7 +122,7 @@ QSwitch = λb. λf. λg. λx. case b of
 
 **Run:**
 ```bash
-PYTHONPATH=src python demos/qswitch_abstract_circuit_demo.py
+PYTHONPATH=src python demos/qswitch_abstract_circuit_theory_demo.py
 ```
 
 **What it shows:**
@@ -160,13 +160,13 @@ PYTHONPATH=src python demos/qswitch_instantiation_demo.py
 
 **Key insight:** QSwitch is only non-trivial when f and g don't commute.
 
-### QSwitch (curried) — `qswitch_curried_demo.py`
+### QSwitch (curried) — `qswitch_curried_theory_demo.py` (THEORY ONLY)
 
 **Step-by-step type derivation** for the curried QSwitch (pedagogical focus):
 
 **Run:**
 ```bash
-PYTHONPATH=src python demos/qswitch_curried_demo.py
+PYTHONPATH=src python demos/qswitch_curried_theory_demo.py
 ```
 
 **What it shows:**
@@ -275,6 +275,50 @@ Run from the `quant_proto_phase01` directory:
 cd quant_proto_phase01
 PYTHONPATH=src python demos/<demo_name>.py
 ```
+
+### Live Execution Confirmation
+
+All demos display **live compilation confirmation**:
+```
+============================================================
+  LIVE EXECUTION: Demo Name
+  All compilations are real - no fabricated output
+============================================================
+
+  [COMPILING term_name...] OK - 6 gates on 2 qubits
+```
+
+This confirms that compilations are actually running, not displaying pre-recorded output.
+
+### Circuit Diagrams (--circuits flag)
+
+Most demos support the `--circuits` flag to display ASCII circuit diagrams:
+
+```bash
+PYTHONPATH=src python demos/case_demo.py --circuits
+```
+
+This will show circuit diagrams like:
+```
+────────────────────────────────────────────────────────────
+Circuit Diagram: QSwitch(H, S)
+────────────────────────────────────────────────────────────
+q[0]: ───[X]─────●─────[X]─────●─────
+              ───│──────────────│───
+q[1]: ───────[H]───────────[S]─────
+```
+
+**Demos supporting --circuits:**
+- `algorithmic_snippets_demo.py`
+- `case_demo.py`
+- `exp_twist_demo.py`
+- `pauli_conjugation_demo.py`
+- `qswitch_demo.py`
+- `qswitch_term_demo.py`
+- `qswitch_abstract_demo.py`
+- `qswitch_instantiation_demo.py`
+- `quantum_switch_demo.py`
+- `short_circuit_demo.py`
 
 ---
 

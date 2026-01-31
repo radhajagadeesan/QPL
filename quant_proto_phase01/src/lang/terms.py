@@ -573,15 +573,16 @@ class Var:
 
 @dataclass(frozen=True, slots=True)
 class Case:
-    """Case expression (copairing): [f, g] : (A + B) → C.
+    """Case combinator (bifunctorial): [f, g] : (A + B) → (C + D).
 
     Given:
         left  : A → C
-        right : B → C
+        right : B → D
 
-    Produces a term of type (A + B) → C that:
+    Produces a combinator of type (A + B) → (C + D) that:
     - Applies `left` when the input is in the left summand
     - Applies `right` when the input is in the right summand
+    - Preserves the tag (left stays left, right stays right)
 
     When the input is in superposition, this compiles to controlled gates:
     - Anti-controlled (on tag=0): apply gates from `left` branch
@@ -591,12 +592,81 @@ class Case:
         ty_left:  A (left summand)
         ty_right: B (right summand)
 
-    The result type C is inferred from the branches (they must match).
+    Note: This is semantically a bifunctor on sums (same as PlusMap).
+    For true copairing with same codomain, use branches that produce the same type.
     """
     ty_left: Ty   # A
     ty_right: Ty  # B
     left: "Term"  # f : A → C
-    right: "Term" # g : B → C
+    right: "Term" # g : B → D
+
+
+@dataclass(frozen=True, slots=True)
+class CaseExpr:
+    """Pattern-matching case expression on sum types.
+
+    case scrut of
+    | inl x => left_body
+    | inr y => right_body
+
+    Given:
+        scrut : A + B (the scrutinee)
+        x     : variable name bound to A in left branch
+        y     : variable name bound to B in right branch
+
+    The scrutinee is evaluated, then based on the tag:
+    - If left (tag=0): bind x to payload A, evaluate left_body
+    - If right (tag=1): bind y to payload B, evaluate right_body
+
+    When the scrutinee is in superposition, both branches execute coherently
+    via controlled gates (anti-control for left, control for right).
+
+    Type parameters:
+        ty_x: A (left payload type, bound to x)
+        ty_y: B (right payload type, bound to y)
+
+    The result type C is inferred from the bodies (they must match for true copairing).
+    """
+    scrut: "Term"  # scrutinee : A + B
+    x: str         # variable name for left payload
+    y: str         # variable name for right payload
+    ty_x: Ty       # type A (left payload)
+    ty_y: Ty       # type B (right payload)
+    left: "Term"   # left_body : C (with x : A in scope)
+    right: "Term"  # right_body : C (with y : B in scope)
+
+
+@dataclass(frozen=True, slots=True)
+class PlusMap:
+    """Bifunctorial action on sums (⊕-Map): f ⊕ g : (A + B) → (C + D).
+
+    Given:
+        left  : A → C
+        right : B → D
+
+    Produces a term of type (A + B) → (C + D) that:
+    - Applies `left` when the input is in the left summand
+    - Applies `right` when the input is in the right summand
+    - Preserves the tag (left stays left, right stays right)
+
+    When the input is in superposition, this compiles to controlled gates:
+    - Anti-controlled (on tag=0): apply gates from `left` branch
+    - Controlled (on tag=1): apply gates from `right` branch
+
+    This differs from Case which has both branches produce the same type:
+    - Case:    [f, g] : (A + B) → C           (f: A→C, g: B→C)
+    - PlusMap: f ⊕ g  : (A + B) → (C + D)     (f: A→C, g: B→D)
+
+    Type parameters:
+        ty_left:  A (left summand input type)
+        ty_right: B (right summand input type)
+
+    The output types C and D are inferred from the branches.
+    """
+    ty_left: Ty    # A (left input)
+    ty_right: Ty   # B (right input)
+    left: "Term"   # f : A → C
+    right: "Term"  # g : B → D
 
 
 # -- Qubit encoding isomorphism (Q ↔ I + I with ancilla)
@@ -654,6 +724,10 @@ Term = Union[
     Pair, LetPair, Var,
     # Case/copairing (branching on sum types)
     Case,
+    # Pattern-matching case expression
+    CaseExpr,
+    # Bifunctorial action on sums (⊕-Map)
+    PlusMap,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
     # Qubit encoding isomorphism

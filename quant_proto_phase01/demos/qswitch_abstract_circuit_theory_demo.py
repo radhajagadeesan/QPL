@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Abstract QSwitch Circuit Demo
+"""Abstract QSwitch Circuit Demo (THEORY ONLY - no compilation)
 
 Shows the ABSTRACT QSwitch circuit structure - NO instantiation.
 This is the pure higher-order term before any concrete functions are applied.
 
-Run with: PYTHONPATH=src python demos/qswitch_abstract_circuit_demo.py
+This is a theory-only demo explaining wire layouts and semantics. No circuits are compiled.
+For demos with actual compilation, see: qswitch_instantiation_demo.py
+
+Run with: PYTHONPATH=src python demos/qswitch_abstract_circuit_theory_demo.py
 """
 
 import sys

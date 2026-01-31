@@ -90,6 +90,10 @@ type term =
   | TFunVar of string * Rep.t * Rep.t  (* function variable: x : A → B *)
   | TLam of string * Rep.t * Rep.t * term  (* lambda: λx:A→B. body *)
   | TApply of term * term  (* application: f arg, compiled via GOI *)
+  (* Bifunctorial action on sums (⊕-Map) *)
+  | TPlusMap of Rep.t * Rep.t * term * term  (* f ⊕ g : (A + B) → (C + D) *)
+  (* Pattern-matching case on sums *)
+  | TCase of Rep.t * Rep.t * term * term * term  (* case scrut of Left => left | Right => right *)
 
 (** Convert a term to JSON *)
 let rec term_to_json = function
@@ -172,6 +176,14 @@ let rec term_to_json = function
   | TApply (f, arg) ->
     Printf.sprintf {|{"node": "Apply", "f": %s, "arg": %s}|}
       (term_to_json f) (term_to_json arg)
+  (* Bifunctorial action on sums (⊕-Map) *)
+  | TPlusMap (ty_left, ty_right, left, right) ->
+    Printf.sprintf {|{"node": "PlusMap", "ty_left": %s, "ty_right": %s, "left": %s, "right": %s}|}
+      (type_to_json ty_left) (type_to_json ty_right) (term_to_json left) (term_to_json right)
+  (* Pattern-matching case on sums *)
+  | TCase (ty_left, ty_right, scrut, left, right) ->
+    Printf.sprintf {|{"node": "CaseExpr", "ty_left": %s, "ty_right": %s, "scrut": %s, "left": %s, "right": %s}|}
+      (type_to_json ty_left) (type_to_json ty_right) (term_to_json scrut) (term_to_json left) (term_to_json right)
 
 (** Simple JSON parsing helpers *)
 let find_string key json =

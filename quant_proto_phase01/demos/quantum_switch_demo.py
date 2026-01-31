@@ -5,8 +5,15 @@ Quantum Switch Demo: Surface → Elaboration → Circuit
 Demonstrates the Granthi compiler pipeline on QSwitch, a higher-order
 quantum program that coherently superimposes causal orders.
 
-Run: source ../venv/bin/activate && PYTHONPATH=src python demos/quantum_switch_demo.py
+Usage:
+    python quantum_switch_demo.py              # Run demo
+    python quantum_switch_demo.py --circuits   # Show circuit diagrams
 """
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from lang.types import Unit, Q, Ten, Plus, width
 from lang.terms import (
@@ -15,46 +22,27 @@ from lang.terms import (
     H, S, X,
     CH, CS,  # Controlled gates
 )
-from compile.to_pytket import compile
 
+from demo_utils import DemoRunner
 
-def banner(title: str) -> None:
-    print("\n" + "=" * 74)
-    print(f"  {title}")
-    print("=" * 74)
-
-
-def section(title: str) -> None:
-    print(f"\n--- {title} ---\n")
-
-
-def show_circuit(result, label: str = "") -> None:
-    """Display circuit gates and final permutation."""
-    cmds = result.circuit.get_commands()
-    if label:
-        print(f"{label}")
-    print("  Gates: ", end="")
-    if cmds:
-        gate_strs = []
-        for c in cmds:
-            qubits = [q.index[0] for q in c.qubits]
-            if len(qubits) == 1:
-                gate_strs.append(f"{c.op.type.name}[{qubits[0]}]")
-            else:
-                gate_strs.append(f"{c.op.type.name}{qubits}")
-        print(" ; ".join(gate_strs))
-    else:
-        print("(identity)")
-    print(f"  Perm:  {list(result.perm.new_to_old)}")
+# Global runner instance
+runner = None
 
 
 def main():
-    banner("QUANTUM SWITCH: From Surface Syntax to Circuit")
+    global runner
+    runner = DemoRunner(
+        "Quantum Switch: Surface → Circuit",
+        "Full compilation pipeline demonstration"
+    )
+    runner.print_header()
 
     # =========================================================================
     # PART 1: Source Program
     # =========================================================================
-    banner("PART 1: Source Program")
+    print("\n" + "="*74)
+    print("  PART 1: Source Program")
+    print("="*74 + "\n")
 
     print("""
 The quantum switch takes a control qubit and two operations f, g.
@@ -65,21 +53,18 @@ It applies them in different orders depending on the control:
   - Control = superposition: coherent mixture of both orders!
 
 SOURCE SYNTAX (Linear Lambda Calculus):
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│  (* Type: control qubit + target qubit *)                           │
-│  QSwitch : (I + I) ⊗ Q  →  (I + I) ⊗ Q                              │
-│                                                                     │
-│  def QSwitch(f, g) =                                                │
-│    λx. let (ctrl ⊗ tgt) : (I + I) ⊗ Q = x in                        │
-│      case ctrl of                                                   │
-│        | Left(u)  => Left(u)  ⊗ (g ; f) tgt   (* order: g then f *) │
-│        | Right(u) => Right(u) ⊗ (f ; g) tgt   (* order: f then g *) │
-│                                                                     │
-│  (* Instantiated with H and S *)                                    │
-│  def QSwitch_HS = QSwitch(H, S)                                     │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+
+  (* Type: control qubit + target qubit *)
+  QSwitch : (I + I) ⊗ Q  →  (I + I) ⊗ Q
+
+  def QSwitch(f, g) =
+    λx. let (ctrl ⊗ tgt) : (I + I) ⊗ Q = x in
+      case ctrl of
+        | Left(u)  => Left(u)  ⊗ (g ; f) tgt   (* order: g then f *)
+        | Right(u) => Right(u) ⊗ (f ; g) tgt   (* order: f then g *)
+
+  (* Instantiated with H and S *)
+  def QSwitch_HS = QSwitch(H, S)
 
 TYPE LAYOUT:
 
@@ -95,7 +80,9 @@ TYPE LAYOUT:
     # =========================================================================
     # PART 2: Elaboration (Source → Core IR)
     # =========================================================================
-    banner("PART 2: Elaboration (Source → Core IR)")
+    print("\n" + "="*74)
+    print("  PART 2: Elaboration (Source → Core IR)")
+    print("="*74 + "\n")
 
     print("""
 STEP 2.1: Lambda/Let Elimination
@@ -108,11 +95,9 @@ STEP 2.2: Case on Quantum Superposition
   The key transformation! When the scrutinee (ctrl) can be in superposition,
   case elaborates to CONTROLLED GATES:
 
-  ┌────────────────────────────────────────────────────────────────────┐
-  │  case ctrl of                                                      │
-  │    | Left(u)  => body_L        Elaborates    Anti-controlled body_L│
-  │    | Right(u) => body_R        ─────────►    Controlled body_R     │
-  └────────────────────────────────────────────────────────────────────┘
+    case ctrl of
+      | Left(u)  => body_L        Elaborates    Anti-controlled body_L
+      | Right(u) => body_R        ─────────►    Controlled body_R
 
   For QSwitch_HS:
     - Left branch:  g;f = S;H  (anti-controlled, i.e., control=0)
@@ -128,22 +113,21 @@ STEP 2.3: Controlled Gate Decomposition
   where C-L means "controlled-L" and X[ctrl] flips the control.
 
 ELABORATED CORE IR:
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│  X[0] ; C0-S[1] ; C0-H[1] ; X[0] ; C0-H[1] ; C0-S[1]                 │
-│  ────   ───────────────   ────   ───────────────────                │
-│   │           │            │              │                         │
-│   │     anti-controlled    │       controlled                       │
-│   │       (S ; H)          │        (H ; S)                         │
-│   flip control        flip back                                     │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+
+  X[0] ; C0-S[1] ; C0-H[1] ; X[0] ; C0-H[1] ; C0-S[1]
+  ────   ───────────────   ────   ───────────────────
+   │           │            │              │
+   │     anti-controlled    │       controlled
+   │       (S ; H)          │        (H ; S)
+   flip control        flip back
 """)
 
     # =========================================================================
     # PART 3: The Int Construction (Interface Duplication)
     # =========================================================================
-    banner("PART 3: The Int Construction (Interface Duplication)")
+    print("\n" + "="*74)
+    print("  PART 3: The Int Construction (Interface Duplication)")
+    print("="*74 + "\n")
 
     print("""
 CONCEPTUAL BACKGROUND: Geometry of Interaction
@@ -151,13 +135,9 @@ CONCEPTUAL BACKGROUND: Geometry of Interaction
   In standard λ-calculus, a function f : A → B is a "black box".
   In GOI/Int semantics, we OPEN the box:
 
-  ┌──────────────────────────────────────────────────────────────────┐
-  │                                                                  │
-  │  f : A → B     becomes     f̂ : A† ⊗ B  →  A† ⊗ B                 │
-  │                                                                  │
-  │  (morphism)                (endomorphism on doubled boundary)    │
-  │                                                                  │
-  └──────────────────────────────────────────────────────────────────┘
+  f : A → B     becomes     f̂ : A† ⊗ B  →  A† ⊗ B
+
+  (morphism)                (endomorphism on doubled boundary)
 
   The † denotes the "input interface" (contravariantly).
 
@@ -182,32 +162,22 @@ WHY THIS MATTERS FOR QSWITCH:
 
 INTERFACE STRUCTURE:
 
-  ┌─────────────────────────────────────────────────────────────────┐
-  │                                                                 │
-  │  Input:   ┌──────────────────────────────────────┐              │
-  │           │ Wire 0: ctrl (tag)  │ Wire 1: target │              │
-  │           └──────────────────────────────────────┘              │
-  │                    ↓                    ↓                       │
-  │           ┌──────────────────────────────────────┐              │
-  │           │    QSwitch circuit (controlled)      │              │
-  │           └──────────────────────────────────────┘              │
-  │                    ↓                    ↓                       │
-  │  Output:  ┌──────────────────────────────────────┐              │
-  │           │ Wire 0: ctrl (tag)  │ Wire 1: target │              │
-  │           └──────────────────────────────────────┘              │
-  │                                                                 │
-  │  The control qubit is PRESERVED (not measured).                 │
-  │  This enables coherent superposition of causal orders.          │
-  │                                                                 │
-  └─────────────────────────────────────────────────────────────────┘
+  Input:    Wire 0: ctrl (tag)   Wire 1: target
+                    ↓                    ↓
+            QSwitch circuit (controlled)
+                    ↓                    ↓
+  Output:   Wire 0: ctrl (tag)   Wire 1: target
+
+  The control qubit is PRESERVED (not measured).
+  This enables coherent superposition of causal orders.
 """)
 
     # =========================================================================
     # PART 4: Final Circuit
     # =========================================================================
-    banner("PART 4: Final Circuit")
-
-    section("Building the circuit step by step")
+    print("\n" + "="*74)
+    print("  PART 4: Final Circuit")
+    print("="*74 + "\n")
 
     # Type definitions
     Bit = Plus(Unit(), Unit())  # I + I
@@ -219,27 +189,27 @@ INTERFACE STRUCTURE:
     print(f"  Wire 2: target qubit")
     print(f"  Total width: {width(BitQ)}")
 
-    section("Individual operations")
+    print("\n--- Individual operations ---\n")
 
     # X on control
     print("X[0] — flip control (converts |0⟩-control to |1⟩-control)")
     x_ctrl = TenTerm(TwistPlus(Unit(), Unit()), Id(Q()))
-    result = compile(x_ctrl)
-    show_circuit(result)
+    result = runner.compile(x_ctrl, "X[0] (TwistPlus)")
+    runner.show_circuit(result, "X[0]")
 
     # Controlled-H
     print("\nC0-H[1] — controlled-H (H on target iff control=1)")
     ch = CH(0, 1, BitQ)
-    result = compile(ch)
-    show_circuit(result)
+    result = runner.compile(ch, "CH[0,1]")
+    runner.show_circuit(result, "CH[0,1]")
 
     # Controlled-S
     print("\nC0-S[1] — controlled-S (S on target iff control=1)")
     cs = CS(0, 1, BitQ)
-    result = compile(cs)
-    show_circuit(result)
+    result = runner.compile(cs, "CS[0,1]")
+    runner.show_circuit(result, "CS[0,1]")
 
-    section("Complete QSwitch(H, S) circuit")
+    print("\n--- Complete QSwitch(H, S) circuit ---\n")
 
     # Full circuit: X[0] ; CS[0,1] ; CH[0,1] ; X[0] ; CH[0,1] ; CS[0,1]
     qswitch = Seq(
@@ -251,8 +221,9 @@ INTERFACE STRUCTURE:
         CS(0, 1, BitQ),                                # C-S[0,1]
     )
 
-    result = compile(qswitch)
-    show_circuit(result, "QSwitch(H, S):")
+    result = runner.compile(qswitch, "QSwitch(H, S)")
+    runner.print_circuit_details(result, "QSwitch(H, S)")
+    runner.show_circuit(result, "QSwitch(H, S)")
 
     print("""
 CIRCUIT EXPLANATION:
@@ -281,29 +252,28 @@ CIRCUIT EXPLANATION:
     # =========================================================================
     # PART 5: Summary
     # =========================================================================
-    banner("SUMMARY: Compilation Pipeline")
+    print("\n" + "="*74)
+    print("  SUMMARY: Compilation Pipeline")
+    print("="*74 + "\n")
 
     print("""
-┌─────────────────────────────────────────────────────────────────────────┐
-│  STAGE              REPRESENTATION                                      │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  1. SOURCE          λx. let (ctrl ⊗ tgt) = x in                         │
-│     (Linear λ)        case ctrl of                                      │
-│                         | Left(u)  => Left(u) ⊗ (S;H) tgt               │
-│                         | Right(u) => Right(u) ⊗ (H;S) tgt              │
-│                                                                         │
-│        ↓ elaboration (macro expansion + case → controlled)              │
-│                                                                         │
-│  2. CORE IR         X[0] ; C0-S[1] ; C0-H[1] ; X[0] ; C0-H[1] ; C0-S[1] │
-│     (Compositional)                                                     │
-│                                                                         │
-│        ↓ compile (emit gates, track permutation)                        │
-│                                                                         │
-│  3. CIRCUIT         pytket.Circuit with 4 gates                         │
-│     (Executable)    + identity permutation [0, 1]                       │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+  STAGE              REPRESENTATION
+─────────────────────────────────────────────────────────────────────────
+
+  1. SOURCE          λx. let (ctrl ⊗ tgt) = x in
+     (Linear λ)        case ctrl of
+                         | Left(u)  => Left(u) ⊗ (S;H) tgt
+                         | Right(u) => Right(u) ⊗ (H;S) tgt
+
+        ↓ elaboration (macro expansion + case → controlled)
+
+  2. CORE IR         X[0] ; C0-S[1] ; C0-H[1] ; X[0] ; C0-H[1] ; C0-S[1]
+     (Compositional)
+
+        ↓ compile (emit gates, track permutation)
+
+  3. CIRCUIT         pytket.Circuit with gates
+     (Executable)    + identity permutation
 
 KEY INSIGHT: Interface Duplication in Int/GOI
 
@@ -318,7 +288,7 @@ KEY INSIGHT: Interface Duplication in Int/GOI
   the wires are doubled, and the control is EXPLICIT in the layout.
 """)
 
-    banner("DEMO COMPLETE")
+    runner.print_footer()
 
 
 if __name__ == "__main__":

@@ -7,7 +7,9 @@ Shows QSwitch instantiated with concrete functions:
 
 Prerequisites: See qswitch_abstract_circuit_demo.py for the abstract structure.
 
-Run with: PYTHONPATH=src python demos/qswitch_instantiation_demo.py
+Usage:
+    python qswitch_instantiation_demo.py              # Run demo
+    python qswitch_instantiation_demo.py --circuits   # Show circuit diagrams
 """
 
 import sys
@@ -18,50 +20,52 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from lang.types import Q, Unit, Ten, Plus, Arrow, width
 from lang.terms import Id, Seq, Case, DistL, H, S
-from compile.to_pytket import compile
 from typing_.check import type_of
 
+from demo_utils import DemoRunner
 
-def section(title: str) -> None:
-    print()
-    print("=" * 74)
-    print(f"  {title}")
-    print("=" * 74)
-    print()
+# Global runner instance
+runner = None
 
 
 def main():
+    global runner
+    runner = DemoRunner(
+        "QSwitch Instantiation Demo",
+        "QSwitch with concrete functions (H,H) vs (H,S)"
+    )
+    runner.print_header()
+
     # Type definitions used throughout
     I = Unit()
     Bool = Plus(I, I)
     IQ = Ten(I, Q())
-
-    section("QSWITCH INSTANTIATION DEMO")
 
     print("""
 This demo shows QSwitch instantiated with concrete functions.
 For the abstract QSwitch structure, see: qswitch_abstract_circuit_demo.py
 
 Recall the abstract QSwitch semantics:
-    │0⟩│ψ⟩  →  │0⟩ f(g(ψ))     (apply g then f)
-    │1⟩│ψ⟩  →  │1⟩ g(f(ψ))     (apply f then g)
+    |0⟩|ψ⟩  →  |0⟩ f(g(ψ))     (apply g then f)
+    |1⟩|ψ⟩  →  |1⟩ g(f(ψ))     (apply f then g)
 """)
 
     # =========================================================================
     # SECTION 1: ONE FUNCTION (f = g)
     # =========================================================================
-    section("SECTION 1: QSwitch with ONE Function (f = g)")
+    print("\n" + "="*74)
+    print("  SECTION 1: QSwitch with ONE Function (f = g)")
+    print("="*74 + "\n")
 
     print("""
-┌─────────────────────────────────────────────────────────────────────────┐
-│  SIMPLIFICATION ANALYSIS (before compiling)                             │
-└─────────────────────────────────────────────────────────────────────────┘
+SIMPLIFICATION ANALYSIS (before compiling)
+──────────────────────────────────────────
 
 When f = g (same function applied to both slots), the QSwitch semantics
 become:
 
-    │0⟩│ψ⟩  →  │0⟩ f(f(ψ))     (apply f then f)
-    │1⟩│ψ⟩  →  │1⟩ f(f(ψ))     (apply f then f)
+    |0⟩|ψ⟩  →  |0⟩ f(f(ψ))     (apply f then f)
+    |1⟩|ψ⟩  →  |1⟩ f(f(ψ))     (apply f then f)
                   ─────────
                   IDENTICAL!
 
@@ -92,9 +96,8 @@ SPECIAL CASE: f = H (Hadamard)
 """)
 
     print("""
-┌─────────────────────────────────────────────────────────────────────────┐
-│  CIRCUIT (QSwitch[H, H])                                                │
-└─────────────────────────────────────────────────────────────────────────┘
+CIRCUIT (QSwitch[H, H])
+───────────────────────
 """)
 
     # Build QSwitch[H, H]
@@ -110,13 +113,9 @@ SPECIAL CASE: f = H (Hadamard)
     print(f"Type: {dom} → {cod}")
     print(f"      (width {width(dom)} → width {width(cod)})")
 
-    print("\nCompiling QSwitch[H, H]...")
-    result_hh = compile(qswitch_hh, materialize=True)
-
-    print(f"\nGate count: {result_hh.circuit.n_gates}")
-    print("\nGate sequence:")
-    for cmd in result_hh.circuit.get_commands():
-        print(f"    {cmd}")
+    result_hh = runner.compile(qswitch_hh, "QSwitch[H, H]", materialize=True)
+    runner.print_circuit_details(result_hh, "Compiled Circuit")
+    runner.show_circuit(result_hh, "QSwitch[H, H]")
 
     print("""
 CIRCUIT DIAGRAM:
@@ -138,28 +137,29 @@ VERIFICATION:
 
     if is_identity:
         print("""
-    ✓ CONFIRMED: QSwitch[H, H] = Identity
+    CONFIRMED: QSwitch[H, H] = Identity
 
     The 6 gates completely cancel:
-      • X;X = I (the two X gates cancel)
-      • CH;CH = I (controlled-H squared is identity)
-      • CH;CH = I (second pair also cancels)
+      - X;X = I (the two X gates cancel)
+      - CH;CH = I (controlled-H squared is identity)
+      - CH;CH = I (second pair also cancels)
 """)
 
     # =========================================================================
     # SECTION 2: TWO FUNCTIONS (f ≠ g)
     # =========================================================================
-    section("SECTION 2: QSwitch with TWO Functions (f ≠ g)")
+    print("\n" + "="*74)
+    print("  SECTION 2: QSwitch with TWO Functions (f ≠ g)")
+    print("="*74 + "\n")
 
     print("""
-┌─────────────────────────────────────────────────────────────────────────┐
-│  SIMPLIFICATION ANALYSIS (before compiling)                             │
-└─────────────────────────────────────────────────────────────────────────┘
+SIMPLIFICATION ANALYSIS (before compiling)
+──────────────────────────────────────────
 
 When f ≠ g (different functions), the QSwitch semantics are:
 
-    │0⟩│ψ⟩  →  │0⟩ f(g(ψ))     (apply g then f)
-    │1⟩│ψ⟩  →  │1⟩ g(f(ψ))     (apply f then g)
+    |0⟩|ψ⟩  →  |0⟩ f(g(ψ))     (apply g then f)
+    |1⟩|ψ⟩  →  |1⟩ g(f(ψ))     (apply f then g)
                   ─────────
                   DIFFERENT!
 
@@ -196,9 +196,8 @@ CONSEQUENCE: NO SIMPLIFICATION POSSIBLE
 """)
 
     print("""
-┌─────────────────────────────────────────────────────────────────────────┐
-│  CIRCUIT (QSwitch[H, S])                                                │
-└─────────────────────────────────────────────────────────────────────────┘
+CIRCUIT (QSwitch[H, S])
+───────────────────────
 """)
 
     # Build QSwitch[H, S]
@@ -215,13 +214,9 @@ CONSEQUENCE: NO SIMPLIFICATION POSSIBLE
     print(f"Type: {dom} → {cod}")
     print(f"      (width {width(dom)} → width {width(cod)})")
 
-    print("\nCompiling QSwitch[H, S]...")
-    result_hs = compile(qswitch_hs, materialize=True)
-
-    print(f"\nGate count: {result_hs.circuit.n_gates}")
-    print("\nGate sequence:")
-    for cmd in result_hs.circuit.get_commands():
-        print(f"    {cmd}")
+    result_hs = runner.compile(qswitch_hs, "QSwitch[H, S]", materialize=True)
+    runner.print_circuit_details(result_hs, "Compiled Circuit")
+    runner.show_circuit(result_hs, "QSwitch[H, S]")
 
     print("""
 CIRCUIT DIAGRAM:
@@ -240,65 +235,62 @@ CIRCUIT DIAGRAM:
 EXECUTION TRACE:
 ────────────────
 
-    Input │0⟩│ψ⟩ (Left branch → f(g(x)) = H(S(x))):
-      X         →  │1⟩│ψ⟩
-      CS        →  │1⟩ S│ψ⟩      (fires, ctrl=1)
-      CH        →  │1⟩ HS│ψ⟩     (fires, ctrl=1)
-      X         →  │0⟩ HS│ψ⟩
-      CH        →  │0⟩ HS│ψ⟩     (skips, ctrl=0)
-      CS        →  │0⟩ HS│ψ⟩     (skips, ctrl=0)
-      Output: │0⟩ H(S|ψ⟩)  ✓   (applied S then H = f∘g)
+    Input |0⟩|ψ⟩ (Left branch → f(g(x)) = H(S(x))):
+      X         →  |1⟩|ψ⟩
+      CS        →  |1⟩ S|ψ⟩      (fires, ctrl=1)
+      CH        →  |1⟩ HS|ψ⟩     (fires, ctrl=1)
+      X         →  |0⟩ HS|ψ⟩
+      CH        →  |0⟩ HS|ψ⟩     (skips, ctrl=0)
+      CS        →  |0⟩ HS|ψ⟩     (skips, ctrl=0)
+      Output: |0⟩ H(S|ψ⟩)   (applied S then H = f∘g)
 
-    Input │1⟩│ψ⟩ (Right branch → g(f(x)) = S(H(x))):
-      X         →  │0⟩│ψ⟩
-      CS        →  │0⟩│ψ⟩        (skips, ctrl=0)
-      CH        →  │0⟩│ψ⟩        (skips, ctrl=0)
-      X         →  │1⟩│ψ⟩
-      CH        →  │1⟩ H│ψ⟩      (fires, ctrl=1)
-      CS        →  │1⟩ SH│ψ⟩     (fires, ctrl=1)
-      Output: │1⟩ S(H|ψ⟩)  ✓   (applied H then S = g∘f)
+    Input |1⟩|ψ⟩ (Right branch → g(f(x)) = S(H(x))):
+      X         →  |0⟩|ψ⟩
+      CS        →  |0⟩|ψ⟩        (skips, ctrl=0)
+      CH        →  |0⟩|ψ⟩        (skips, ctrl=0)
+      X         →  |1⟩|ψ⟩
+      CH        →  |1⟩ H|ψ⟩      (fires, ctrl=1)
+      CS        →  |1⟩ SH|ψ⟩     (fires, ctrl=1)
+      Output: |1⟩ S(H|ψ⟩)   (applied H then S = g∘f)
 
-    Input │+⟩│ψ⟩ = (│0⟩ + │1⟩)/√2 │ψ⟩:
+    Input |+⟩|ψ⟩ = (|0⟩ + |1⟩)/√2 |ψ⟩:
       BOTH branches execute coherently!
-      Output: (│0⟩ H(S|ψ⟩) + │1⟩ S(H|ψ⟩)) / √2
+      Output: (|0⟩ H(S|ψ⟩) + |1⟩ S(H|ψ⟩)) / √2
       This is INDEFINITE CAUSAL ORDER!
 """)
 
     # =========================================================================
     # SUMMARY
     # =========================================================================
-    section("SUMMARY")
+    print("\n" + "="*74)
+    print("  SUMMARY")
+    print("="*74 + "\n")
 
     print("""
-┌─────────────────────────────────────────────────────────────────────────┐
-│  QSWITCH INSTANTIATION COMPARISON                                       │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  QSwitch[f, f]  (ONE function, f = g):                                  │
-│  ─────────────────────────────────────                                  │
-│    Simplification: Both branches identical → f ∘ f                      │
-│    Control qubit: IRRELEVANT (passes through)                           │
-│    Example: QSwitch[H, H] = Identity (H² = I)                           │
-│    Gates: 6 (but all cancel to identity)                                │
-│                                                                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  QSwitch[f, g]  (TWO functions, f ≠ g, non-commuting):                  │
-│  ─────────────────────────────────────────────────────                  │
-│    Simplification: NONE (f∘g ≠ g∘f)                                     │
-│    Control qubit: ESSENTIAL (determines operation order)                │
-│    Example: QSwitch[H, S] → genuine quantum switch                      │
-│    Gates: 6 (X; CS; CH; X; CH; CS)                                      │
-│                                                                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  KEY INSIGHT:                                                           │
-│    QSwitch is only non-trivial when f and g DON'T commute.             │
-│    Commutativity [f,g] = 0  →  QSwitch[f,g] = f∘g (no switch)          │
-│    Non-commutativity        →  true indefinite causal order             │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+QSWITCH INSTANTIATION COMPARISON
+────────────────────────────────
+
+  QSwitch[f, f]  (ONE function, f = g):
+  ─────────────────────────────────────
+    Simplification: Both branches identical → f ∘ f
+    Control qubit: IRRELEVANT (passes through)
+    Example: QSwitch[H, H] = Identity (H² = I)
+    Gates: 6 (but all cancel to identity)
+
+  QSwitch[f, g]  (TWO functions, f ≠ g, non-commuting):
+  ─────────────────────────────────────────────────────
+    Simplification: NONE (f∘g ≠ g∘f)
+    Control qubit: ESSENTIAL (determines operation order)
+    Example: QSwitch[H, S] → genuine quantum switch
+    Gates: 6 (X; CS; CH; X; CH; CS)
+
+  KEY INSIGHT:
+    QSwitch is only non-trivial when f and g DON'T commute.
+    Commutativity [f,g] = 0  →  QSwitch[f,g] = f∘g (no switch)
+    Non-commutativity        →  true indefinite causal order
 """)
+
+    runner.print_footer()
 
 
 if __name__ == "__main__":

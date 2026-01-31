@@ -10,7 +10,9 @@ not just raw controlled gates.
         | Left  → (ctrl, (H;S)(tgt))
         | Right → (ctrl, (S;H)(tgt))
 
-Run with: PYTHONPATH=src python demos/qswitch_term_demo.py
+Usage:
+    python qswitch_term_demo.py              # Run demo
+    python qswitch_term_demo.py --circuits   # Show circuit diagrams
 """
 
 import sys
@@ -20,20 +22,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from lang.types import Q, Unit, Ten, Plus, width
 from lang.terms import Id, Seq, TenTerm, Case, H, S, DistR, Lam
-from compile.to_pytket import compile
 from typing_.check import type_of
 
+from demo_utils import DemoRunner
 
-def section(title: str) -> None:
-    print()
-    print("=" * 70)
-    print(f"  {title}")
-    print("=" * 70)
-    print()
+# Global runner instance
+runner = None
 
 
 def main():
-    section("QSWITCH AS A TERM USING CASE")
+    global runner
+    runner = DemoRunner(
+        "QSwitch as a Term using Case",
+        "Builds QSwitch using Case combinator"
+    )
+    runner.print_header()
 
     # Type definitions
     I = Unit()
@@ -49,7 +52,9 @@ TYPE DEFINITIONS:
     Bool ⊗ Q = (I+I) ⊗ Q    width = {width(BoolQ)}
 """)
 
-    section("1. The Distribution Step")
+    print("\n" + "="*70)
+    print("  1. The Distribution Step")
+    print("="*70 + "\n")
 
     print("""
 To use Case on Bool ⊗ Q, we first distribute:
@@ -64,7 +69,9 @@ allowing Case to branch on the tag while keeping the Q payload.
     dom, cod = type_of(dist)
     print(f"DistR(I, I, Q) : {dom} → {cod}")
 
-    section("2. The Case Branches")
+    print("\n" + "="*70)
+    print("  2. The Case Branches")
+    print("="*70 + "\n")
 
     print("""
 Each branch operates on I ⊗ Q (which has width 1, just the Q).
@@ -81,7 +88,9 @@ Since I has width 0, the payload is effectively just Q.
     print(f"Left branch (H;S):  {type_of(left_branch)}")
     print(f"Right branch (S;H): {type_of(right_branch)}")
 
-    section("3. The Case Term")
+    print("\n" + "="*70)
+    print("  3. The Case Term")
+    print("="*70 + "\n")
 
     print("""
 Case combines the branches into a copairing:
@@ -96,7 +105,9 @@ When compiled, this becomes controlled gates:
     case_term = Case(IQ, IQ, left_branch, right_branch)
     print(f"Case term type: {type_of(case_term)}")
 
-    section("4. Full QSwitch = DistR ; Case")
+    print("\n" + "="*70)
+    print("  4. Full QSwitch = DistR ; Case")
+    print("="*70 + "\n")
 
     qswitch = Seq(dist, case_term)
     dom, cod = type_of(qswitch)
@@ -108,23 +119,17 @@ Type: {dom} → {cod}
     ≅ Bool ⊗ Q → Bool ⊗ Q
 """)
 
-    section("5. Compilation")
+    print("\n" + "="*70)
+    print("  5. Compilation")
+    print("="*70 + "\n")
 
-    result = compile(qswitch, explain=True)
+    result = runner.compile(qswitch, "QSwitch[H,S]")
+    runner.print_circuit_details(result, "Compiled Circuit")
+    runner.show_circuit(result, "QSwitch[H,S]")
 
-    print(f"Qubits: {result.circuit.n_qubits}")
-    print(f"Gates:  {result.circuit.n_gates}")
-    print()
-    print("Commands:")
-    for cmd in result.circuit.get_commands():
-        print(f"  {cmd}")
-
-    print()
-    print("Compilation log:")
-    for line in result.log:
-        print(f"  {line}")
-
-    section("6. Circuit Diagram")
+    print("\n" + "="*70)
+    print("  6. Circuit Diagram")
+    print("="*70 + "\n")
 
     print("""
   ctrl ──X───●───●───X───●───●──
@@ -140,18 +145,19 @@ Gate sequence:
   CH q[0],q[1]  ← controlled H (right branch, part 2)
 """)
 
-    section("7. Execution Semantics")
+    print("\n" + "="*70)
+    print("  7. Execution Semantics")
+    print("="*70 + "\n")
 
     print("""
 When ctrl = |0⟩:
   - X flips to |1⟩ → CH;CS fire → X flips back to |0⟩
-  - Target receives: H ; S ✓
-  - Right branch gates skip (ctrl is |0⟩)
+  - Target receives: H ; S
 
 When ctrl = |1⟩:
   - X flips to |0⟩ → CH;CS skip → X flips back to |1⟩
   - CS;CH fire
-  - Target receives: S ; H ✓
+  - Target receives: S ; H
 
 When ctrl = |+⟩ = (|0⟩ + |1⟩)/√2:
   - BOTH branches execute coherently!
@@ -160,7 +166,9 @@ When ctrl = |+⟩ = (|0⟩ + |1⟩)/√2:
   - Result: (|0⟩(HS)|ψ⟩ + |1⟩(SH)|ψ⟩)/√2
 """)
 
-    section("8. Wrapping in Lambda")
+    print("\n" + "="*70)
+    print("  8. Wrapping in Lambda")
+    print("="*70 + "\n")
 
     # Wrap in lambda for a complete term
     output_ty = Plus(IQ, IQ)
@@ -175,36 +183,36 @@ Type: {dom} → {cod}
 This is a proper closed term representing QSwitch[H,S].
 """)
 
-    result2 = compile(lam_qswitch, explain=True)
+    result2 = runner.compile(lam_qswitch, "λ-wrapped QSwitch")
     print(f"Compiled λ-term: {result2.circuit.n_gates} gates")
 
-    section("Summary")
+    print("\n" + "="*70)
+    print("  Summary")
+    print("="*70 + "\n")
 
     print("""
-┌──────────────────────────────────────────────────────────────────────┐
-│  QSWITCH AS A TERM                                                   │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  TERM:                                                               │
-│    QSwitch[H,S] = DistR(I,I,Q) ; Case(I⊗Q, I⊗Q, H;S, S;H)           │
-│                                                                      │
-│  TYPE:                                                               │
-│    Bool ⊗ Q → (I⊗Q) + (I⊗Q) ≅ Bool ⊗ Q → Bool ⊗ Q                   │
-│                                                                      │
-│  COMPILATION:                                                        │
-│    DistR → pure permutation (0 gates)                                │
-│    Case  → controlled gates (6 gates total)                          │
-│                                                                      │
-│  CIRCUIT:                                                            │
-│    X[0]; CH[0,1]; CS[0,1]; X[0]; CS[0,1]; CH[0,1]                   │
-│                                                                      │
-├──────────────────────────────────────────────────────────────────────┤
-│  KEY INSIGHT:                                                        │
-│                                                                      │
-│  Case on a superposition → controlled gates                          │
-│  Both branches execute coherently on |+⟩ control!                    │
-└──────────────────────────────────────────────────────────────────────┘
+QSWITCH AS A TERM
+─────────────────
+
+  TERM:
+    QSwitch[H,S] = DistR(I,I,Q) ; Case(I⊗Q, I⊗Q, H;S, S;H)
+
+  TYPE:
+    Bool ⊗ Q → (I⊗Q) + (I⊗Q) ≅ Bool ⊗ Q → Bool ⊗ Q
+
+  COMPILATION:
+    DistR → pure permutation (0 gates)
+    Case  → controlled gates (6 gates total)
+
+  CIRCUIT:
+    X[0]; CH[0,1]; CS[0,1]; X[0]; CS[0,1]; CH[0,1]
+
+  KEY INSIGHT:
+    Case on a superposition → controlled gates
+    Both branches execute coherently on |+⟩ control!
 """)
+
+    runner.print_footer()
 
 
 if __name__ == "__main__":

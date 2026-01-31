@@ -16,7 +16,9 @@ The abstract definition (in pseudocode):
         | Left  => (b, Apply(f, Apply(g, x)))  -- f;g when ctrl=0
         | Right => (b, Apply(g, Apply(f, x)))  -- g;f when ctrl=1
 
-Run with: PYTHONPATH=src python demos/qswitch_abstract_demo.py
+Usage:
+    python qswitch_abstract_demo.py              # Run demo
+    python qswitch_abstract_demo.py --circuits   # Show circuit diagrams
 """
 
 import sys
@@ -30,25 +32,28 @@ from lang.terms import (
     Var, Pair, LetPair, Lam, Apply, FunVar,
     H, S,
 )
-from compile.to_pytket import compile
 from typing_.check import type_of
 
+from demo_utils import DemoRunner
 
-def section(title: str) -> None:
-    print()
-    print("=" * 74)
-    print(f"  {title}")
-    print("=" * 74)
-    print()
+# Global runner instance
+runner = None
 
 
 def main():
-    section("ABSTRACT QSWITCH (Higher-Order Term)")
+    global runner
+    runner = DemoRunner(
+        "Abstract QSwitch (Higher-Order Term)",
+        "QSwitch as a higher-order term before instantiation"
+    )
+    runner.print_header()
 
     # ==========================================================================
     # Type Definitions
     # ==========================================================================
-    section("1. Type Definitions")
+    print("\n" + "="*74)
+    print("  1. Type Definitions")
+    print("="*74 + "\n")
 
     I = Unit()
     Bool = Plus(I, I)           # I + I (control qubit)
@@ -80,7 +85,9 @@ Wire layout for input:
     # ==========================================================================
     # Abstract QSwitch Term Structure
     # ==========================================================================
-    section("2. Abstract QSwitch Term Structure")
+    print("\n" + "="*74)
+    print("  2. Abstract QSwitch Term Structure")
+    print("="*74 + "\n")
 
     print("""
 The abstract QSwitch has this structure:
@@ -100,10 +107,9 @@ representing the function's argument-slot and result-slot.
     # ==========================================================================
     # Building the Term
     # ==========================================================================
-    section("3. Building the Abstract QSwitch Term")
-
-    # We'll build the term step by step, showing the structure.
-    # For the abstract version, f and g are just variables (wire bundles).
+    print("\n" + "="*74)
+    print("  3. Building the Abstract QSwitch Term")
+    print("="*74 + "\n")
 
     # The inner types after destructuring:
     rest_ty = Ten(QtoQ, Ten(Bool, Q()))   # (Q⊸Q) ⊗ Bool ⊗ Q
@@ -122,7 +128,9 @@ After destructuring:
     # ==========================================================================
     # Instantiation with H and S
     # ==========================================================================
-    section("4. Instantiation: QSwitch[H, S]")
+    print("\n" + "="*74)
+    print("  4. Instantiation: QSwitch[H, S]")
+    print("="*74 + "\n")
 
     print("""
 To instantiate QSwitch with specific gates H and S, we would:
@@ -158,46 +166,44 @@ circuit directly using Case.
     print(f"QSwitch[H,S] type: {dom} → {cod}")
 
     # Compile
-    result = compile(qswitch_hs, explain=True)
-    print(f"\nCompiled circuit ({result.circuit.n_gates} gates):")
-    for cmd in result.circuit.get_commands():
-        print(f"  {cmd}")
+    result = runner.compile(qswitch_hs, "QSwitch[H,S]")
+    runner.print_circuit_details(result, "Compiled Circuit")
+    runner.show_circuit(result, "QSwitch[H,S]")
 
     # ==========================================================================
     # Summary
     # ==========================================================================
-    section("5. Summary")
+    print("\n" + "="*74)
+    print("  5. Summary")
+    print("="*74 + "\n")
 
     print("""
-┌────────────────────────────────────────────────────────────────────────┐
-│  ABSTRACT QSWITCH                                                      │
-├────────────────────────────────────────────────────────────────────────┤
-│                                                                        │
-│  TYPE:                                                                 │
-│    QSwitch : (Q⊸Q) ⊗ (Q⊸Q) ⊗ Bool ⊗ Q → Bool ⊗ Q                     │
-│                                                                        │
-│  WIRE LAYOUT:                                                          │
-│    Input:  [f_arg | f_res | g_arg | g_res | tag | x]  (6 wires)       │
-│    Output: [tag | x']  (2 wires)                                       │
-│                                                                        │
-│  SEMANTICS:                                                            │
-│    |0⟩|ψ⟩ → |0⟩(f∘g)(ψ)                                               │
-│    |1⟩|ψ⟩ → |1⟩(g∘f)(ψ)                                               │
-│                                                                        │
-│  KEY INSIGHT:                                                          │
-│    Functions f, g are WIRE BUNDLES (Q ⊗ Q wires each).                │
-│    LetPair destructures input to bind f, g, b, x to wire ranges.      │
-│    Apply connects wires (boundary splicing).                           │
-│    Case branches on tag with coherent quantum control.                 │
-│                                                                        │
-│  INSTANTIATION:                                                        │
-│    QSwitch[H, S] → X[0]; CH; CS; X[0]; CS; CH                         │
-│    QSwitch[X, Z] → X[0]; CX; CZ; X[0]; CZ; CX                         │
-│                                                                        │
-└────────────────────────────────────────────────────────────────────────┘
+ABSTRACT QSWITCH
+────────────────
+
+  TYPE:
+    QSwitch : (Q⊸Q) ⊗ (Q⊸Q) ⊗ Bool ⊗ Q → Bool ⊗ Q
+
+  WIRE LAYOUT:
+    Input:  [f_arg | f_res | g_arg | g_res | tag | x]  (6 wires)
+    Output: [tag | x']  (2 wires)
+
+  SEMANTICS:
+    |0⟩|ψ⟩ → |0⟩(f∘g)(ψ)
+    |1⟩|ψ⟩ → |1⟩(g∘f)(ψ)
+
+  KEY INSIGHT:
+    Functions f, g are WIRE BUNDLES (Q ⊗ Q wires each).
+    LetPair destructures input to bind f, g, b, x to wire ranges.
+    Apply connects wires (boundary splicing).
+    Case branches on tag with coherent quantum control.
+
+  INSTANTIATION:
+    QSwitch[H, S] → X[0]; CH; CS; X[0]; CS; CH
+    QSwitch[X, Z] → X[0]; CX; CZ; X[0]; CZ; CX
 """)
 
-    section("DEMO COMPLETE")
+    runner.print_footer()
 
 
 if __name__ == "__main__":

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""QSwitch Curried Derivation Demo
+"""QSwitch Curried Derivation Demo (THEORY ONLY - no compilation)
 
 Derives QSwitch with the lambda structure:
   λb. λf. λg. λx. case b of
     | Left(u)  => (Left(u), f(g(x)))
     | Right(u) => (Right(u), g(f(x)))
 
-Run with: PYTHONPATH=src python demos/qswitch_curried_demo.py
+This is a theory-only demo explaining type derivation. No circuits are compiled.
+For demos with actual compilation, see: qswitch_instantiation_demo.py
+
+Run with: PYTHONPATH=src python demos/qswitch_curried_theory_demo.py
 """
 
 import sys

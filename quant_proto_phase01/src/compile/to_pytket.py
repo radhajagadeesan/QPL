@@ -28,8 +28,10 @@ from lang.terms import (
     FunVar, Lam, Apply,
     # Tensor intro/elim and variables (full source language)
     Pair, LetPair, Var,
-    # Case/copairing
+    # Case/copairing and bifunctor
     Case,
+    CaseExpr,
+    PlusMap,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
     # Qubit encoding isomorphism
@@ -654,10 +656,10 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
         # Layout: [tag | payload]. Tag controls which branch runs on payload.
         # Width is preserved. Each gate becomes controlled on the tag qubit.
         if isinstance(t, Case):
-            from lang.types import Plus, tag_width as tw
+            from lang.types import Plus
             from pytket.circuit import OpType
-            sum_ty = Plus(t.ty_left, t.ty_right)
-            k = tw(sum_ty)  # tag qubits (1 for binary)
+            # Binary sum always uses 1 outer tag bit (regardless of nested structure)
+            k = 1
             tag_phys = p.apply_new_to_old(offset)
 
             # Map gate types to their controlled versions
@@ -710,6 +712,152 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
 
             if explain:
                 log.append(f"Case: {len(left_cmds)} left gates (anti-ctrl), "
+                           f"{len(right_cmds)} right gates (ctrl) at offset {offset}")
+            return
+
+        # CaseExpr: pattern-matching case with variable binding
+        # Layout: [tag | payload]. Scrutinee produces A+B, then branches operate on payload.
+        if isinstance(t, CaseExpr):
+            from lang.types import Plus
+            from pytket.circuit import OpType
+
+            # First compile the scrutinee - it produces A + B on wires
+            go(t.scrut, offset, env)
+
+            # Now the wires at offset have layout [outer_tag | payload]
+            # Binary sum always uses 1 outer tag bit (regardless of nested structure)
+            k = 1
+            tag_phys = p.apply_new_to_old(offset)
+            payload_base = offset + k
+
+            # Payload width is max of left/right payload types
+            payload_width = max(width(t.ty_x), width(t.ty_y))
+
+            # Map gate types to their controlled versions
+            _ctrl_gate = {
+                OpType.H: OpType.CH,
+                OpType.S: OpType.CS,
+                OpType.Sdg: OpType.CSdg,
+                OpType.X: OpType.CX,
+                OpType.Y: OpType.CY,
+                OpType.Z: OpType.CZ,
+                OpType.Rz: OpType.CRz,
+                OpType.Rx: OpType.CRx,
+                OpType.Ry: OpType.CRy,
+                OpType.CX: OpType.CCX,
+            }
+
+            def _emit_controlled_case(cmds, tag_q, payload_base_local):
+                """Emit each gate controlled on tag_q, with wires offset to payload."""
+                for cmd in cmds:
+                    phys_qubits = [p.apply_new_to_old(q.index[0] + payload_base_local)
+                                   for q in cmd.qubits]
+                    ctrl_op = _ctrl_gate.get(cmd.op.type)
+                    if ctrl_op is not None:
+                        circ.add_gate(ctrl_op, cmd.op.params,
+                                      [tag_q] + phys_qubits)
+                    else:
+                        raise NotImplementedError(
+                            f"No controlled version for gate {cmd.op.type.name} in CaseExpr")
+
+            # Left branch: bind x to payload wires, compile, emit anti-controlled
+            left_env = {**env, t.x: (payload_base, width(t.ty_x))}
+            # Compile left body to a sub-circuit
+            left_dom, _ = type_of(t.left)
+            left_w = width(left_dom)
+            if left_w > 0:
+                # Compile left branch as a standalone circuit
+                left_cmds = list(compile(t.left, materialize=True).circuit.get_commands())
+            else:
+                left_cmds = []
+
+            # Right branch: bind y to payload wires, compile, emit controlled
+            right_env = {**env, t.y: (payload_base, width(t.ty_y))}
+            right_dom, _ = type_of(t.right)
+            right_w = width(right_dom)
+            if right_w > 0:
+                right_cmds = list(compile(t.right, materialize=True).circuit.get_commands())
+            else:
+                right_cmds = []
+
+            # Left branch: anti-controlled (tag=0) → X; ctrl-gates; X
+            if left_cmds:
+                circ.X(tag_phys)
+                _emit_controlled_case(left_cmds, tag_phys, payload_base)
+                circ.X(tag_phys)
+
+            # Right branch: controlled (tag=1) → ctrl-gates directly
+            if right_cmds:
+                _emit_controlled_case(right_cmds, tag_phys, payload_base)
+
+            if explain:
+                log.append(f"CaseExpr: scrut compiled, {t.x} bound at [{payload_base},{payload_base+width(t.ty_x)}), "
+                           f"{t.y} bound at [{payload_base},{payload_base+width(t.ty_y)}), "
+                           f"{len(left_cmds)} left gates (anti-ctrl), "
+                           f"{len(right_cmds)} right gates (ctrl)")
+            return
+
+        # PlusMap (⊕-Map): f ⊕ g : (A + B) → (C + D)
+        # Bifunctorial action on sums. Same anti-control pattern as Case.
+        # Layout: [outer_tag | payload]. Outer tag (1 bit) controls which branch.
+        # Note: Even for nested sums, PlusMap sees a binary sum A + B with 1 outer tag.
+        if isinstance(t, PlusMap):
+            from lang.types import Plus
+            from pytket.circuit import OpType
+            # Binary sum always uses 1 outer tag bit (regardless of nested structure)
+            k = 1
+            tag_phys = p.apply_new_to_old(offset)
+
+            # Map gate types to their controlled versions
+            _ctrl_gate = {
+                OpType.H: OpType.CH,
+                OpType.S: OpType.CS,
+                OpType.Sdg: OpType.CSdg,
+                OpType.X: OpType.CX,
+                OpType.Y: OpType.CY,
+                OpType.Z: OpType.CZ,
+                OpType.Rz: OpType.CRz,
+                OpType.Rx: OpType.CRx,
+                OpType.Ry: OpType.CRy,
+                OpType.CX: OpType.CCX,
+            }
+
+            def _emit_controlled_pm(cmds, tag_q, payload_base):
+                """Emit each gate controlled on tag_q, with wires offset to payload."""
+                for cmd in cmds:
+                    phys_qubits = [p.apply_new_to_old(q.index[0] + payload_base)
+                                   for q in cmd.qubits]
+                    ctrl_op = _ctrl_gate.get(cmd.op.type)
+                    if ctrl_op is not None:
+                        circ.add_gate(ctrl_op, cmd.op.params,
+                                      [tag_q] + phys_qubits)
+                    else:
+                        raise NotImplementedError(
+                            f"No controlled version for gate {cmd.op.type.name} in PlusMap")
+
+            # Compile branches to sub-circuits
+            left_dom, _ = type_of(t.left)
+            left_w = width(left_dom)
+            left_cmds = list(compile(t.left, materialize=True).circuit.get_commands()) if left_w > 0 else []
+
+            right_dom, _ = type_of(t.right)
+            right_w = width(right_dom)
+            right_cmds = list(compile(t.right, materialize=True).circuit.get_commands()) if right_w > 0 else []
+
+            payload_base = offset + k
+
+            # Left branch: anti-controlled (tag=0) → X; ctrl-gates; X
+            if left_cmds:
+                circ.X(tag_phys)
+                _emit_controlled_pm(left_cmds, tag_phys, payload_base)
+                circ.X(tag_phys)
+
+            # Right branch: controlled (tag=1) → ctrl-gates directly
+            if right_cmds:
+                _emit_controlled_pm(right_cmds, tag_phys, payload_base)
+
+            if explain:
+                log.append(f"PlusMap: {len(left_cmds)} left gates (anti-ctrl), "
                            f"{len(right_cmds)} right gates (ctrl) at offset {offset}")
             return
 
