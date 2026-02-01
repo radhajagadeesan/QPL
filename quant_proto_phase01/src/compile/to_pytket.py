@@ -17,7 +17,7 @@ from lang.terms import (
     # Phase 0 gates
     H, S, CX,
     # Phase 4C fixed gates
-    X, Y, Z, T, Tdg, Sdg, CZ, CCX,
+    X, Y, Z, T, Tdg, Sdg, CZ, CCX, CSWAP,
     # Phase 4C parameterized gates
     Rz, Rx, Ry, Phase, CRz,
     # Controlled single-qubit gates
@@ -34,6 +34,8 @@ from lang.terms import (
     PlusMap,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
+    # Controlled combinator
+    Ctrl,
     # Qubit encoding isomorphism
     EncodeQubit, DecodeQubit,
 )
@@ -366,6 +368,13 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
         phys_k = p.apply_new_to_old(k + offset)
         circ.CCX(phys_i, phys_j, phys_k)
 
+    def emit_CSWAP(c: int, i: int, j: int, offset: int = 0) -> None:
+        """Emit CSWAP (Fredkin) gate: swap i,j when c is |1⟩."""
+        phys_c = p.apply_new_to_old(c + offset)
+        phys_i = p.apply_new_to_old(i + offset)
+        phys_j = p.apply_new_to_old(j + offset)
+        circ.CSWAP(phys_c, phys_i, phys_j)
+
     # Phase 4C: Parameterized gate emitters
     def emit_Rz(theta: float, i: int, offset: int = 0) -> None:
         phys = p.apply_new_to_old(i + offset)
@@ -581,6 +590,111 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
             emit_CZ(t.i, t.j, offset); return
         if isinstance(t, CCX):
             emit_CCX(t.i, t.j, t.k, offset); return
+
+        if isinstance(t, CSWAP):
+            emit_CSWAP(t.c, t.i, t.j, offset); return
+
+        # Ctrl: inductive controlled combinator
+        # Compiles Ctrl(f) : Bool ⊗ A → Bool ⊗ A
+        # Uses built-in controlled gates when available, recurses otherwise
+        if isinstance(t, Ctrl):
+            # Control qubit is at offset, payload starts at offset+1
+            ctrl_wire = offset
+            payload_offset = offset + 1
+
+            def compile_multi_ctrl(body: Term, ctrls: list, pay_off: int) -> None:
+                """Recursively compile controlled body with multiple control wires.
+
+                Args:
+                    body: The term to control
+                    ctrls: List of control wire positions (in order)
+                    pay_off: Offset where payload wires start
+                """
+                n_ctrls = len(ctrls)
+
+                # Single-controlled gates (built-in)
+                if n_ctrls == 1:
+                    ctrl = ctrls[0]
+                    if isinstance(body, H):
+                        emit_CH(ctrl, body.i + pay_off)
+                        return
+                    if isinstance(body, S):
+                        emit_CS(ctrl, body.i + pay_off)
+                        return
+                    if isinstance(body, Sdg):
+                        emit_CSdg(ctrl, body.i + pay_off)
+                        return
+                    if isinstance(body, X):
+                        emit_CX(ctrl, body.i + pay_off)
+                        return
+                    if isinstance(body, Z):
+                        emit_CZ(ctrl, body.i + pay_off)
+                        return
+                    if isinstance(body, Rz):
+                        emit_CRz(body.theta, ctrl, body.i + pay_off)
+                        return
+                    if isinstance(body, CX):
+                        emit_CCX(ctrl, body.i + pay_off, body.j + pay_off)
+                        return
+                    # Ctrl(TwistTen) on Q ⊗ Q = CSWAP
+                    if isinstance(body, TwistTen):
+                        from lang.types import Q as QTy
+                        if isinstance(body.a, QTy) and isinstance(body.b, QTy):
+                            emit_CSWAP(ctrl, pay_off, pay_off + 1)
+                            return
+                        else:
+                            w_a = width(body.a)
+                            w_b = width(body.b)
+                            for i in range(min(w_a, w_b)):
+                                emit_CSWAP(ctrl, pay_off + i, pay_off + w_a + i)
+                            return
+
+                # Doubly-controlled gates (built-in)
+                if n_ctrls == 2:
+                    c0, c1 = ctrls[0], ctrls[1]
+                    if isinstance(body, X):
+                        # CCX = Toffoli
+                        emit_CCX(c0, c1, body.i + pay_off)
+                        return
+
+                # Structural: identity (any number of controls)
+                if isinstance(body, Id):
+                    return
+
+                # Inductive: Ctrl(Seq(f, g)) = Ctrl(f); Ctrl(g)
+                if isinstance(body, Seq):
+                    compile_multi_ctrl(body.f, ctrls, pay_off)
+                    compile_multi_ctrl(body.g, ctrls, pay_off)
+                    return
+
+                # Inductive: Ctrl(TenTerm(f, g)) = Ctrl(f) ⊗ Ctrl(g) with shared controls
+                if isinstance(body, TenTerm):
+                    left_dom, _ = type_of(body.f)
+                    left_width = width(left_dom)
+                    compile_multi_ctrl(body.f, ctrls, pay_off)
+                    compile_multi_ctrl(body.g, ctrls, pay_off + left_width)
+                    return
+
+                # Inductive: Ctrl(Ctrl(f)) adds another control
+                # Layout: [c_outer | c_inner | A]
+                # When body is Ctrl(inner), we add its control to our list
+                if isinstance(body, Ctrl):
+                    inner_ctrl = pay_off  # Inner control is first wire of payload
+                    inner_pay_off = pay_off + 1  # Inner payload starts after inner control
+                    compile_multi_ctrl(body.body, ctrls + [inner_ctrl], inner_pay_off)
+                    return
+
+                # Fallback: unsupported multi-controlled gate
+                raise NotImplementedError(
+                    f"Multi-controlled ({n_ctrls} controls) not implemented for: {type(body).__name__}. "
+                    f"Only X (CCX/Toffoli) is supported for 2 controls. "
+                    f"Use structural decomposition or primitive gates."
+                )
+
+            compile_multi_ctrl(t.body, [ctrl_wire], payload_offset)
+            if explain:
+                log.append(f"Ctrl: compiled with control at {ctrl_wire}, payload at {payload_offset}")
+            return
 
         # Phase 4C: Parameterized gates
         if isinstance(t, Rz):
@@ -1299,6 +1413,10 @@ def compile_goi(
             emit_atom("CCX", [t.i, t.j, t.k], offset)
             return
 
+        if isinstance(t, CSWAP):
+            emit_atom("CSWAP", [t.c, t.i, t.j], offset)
+            return
+
         # Phase 4C: Parameterized gates
         if isinstance(t, Rz):
             emit_atom("Rz", [t.i], offset, params=(t.theta,))
@@ -1441,6 +1559,8 @@ def compile_goi(
                 circ.CZ(wires[0], wires[1])
             elif name == "CCX":
                 circ.CCX(wires[0], wires[1], wires[2])
+            elif name == "CSWAP":
+                circ.CSWAP(wires[0], wires[1], wires[2])
             # Phase 4C parameterized gates
             elif name == "Rz":
                 circ.Rz(params[0], wires[0])

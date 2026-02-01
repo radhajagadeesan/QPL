@@ -177,6 +177,51 @@ All gates take wire indices and an ambient type `ty_total`.
 | Gate | Signature | Description |
 |------|-----------|-------------|
 | `CCX(i, j, k, ty)` | Toffoli (controls i,j, target k) | |
+| `CSWAP(c, i, j, ty)` | Fredkin (control c, swap i,j) | |
+
+### Ctrl Combinator (Controlled Operations)
+
+The `Ctrl` combinator provides a principled way to create controlled operations.
+
+**Type signature:**
+```
+Ctrl(f) : Bool ⊗ A → Bool ⊗ A    where f : A → A
+```
+
+**Semantics:**
+- When control qubit is |0⟩: identity on A (f not applied)
+- When control qubit is |1⟩: apply f to A
+- Control qubit passes through unchanged
+
+**Compilation:** Uses inductive construction:
+- **Base case:** Primitive gates use built-in controlled versions
+  - `Ctrl(H)` → CH, `Ctrl(S)` → CS, `Ctrl(X)` → CX, `Ctrl(Z)` → CZ
+  - `Ctrl(Rz(θ))` → CRz(θ), `Ctrl(CX)` → CCX
+  - `Ctrl(TwistTen(Q,Q))` → CSWAP
+- **Inductive cases:**
+  - `Ctrl(f ; g)` = `Ctrl(f) ; Ctrl(g)` (distributes over composition)
+  - `Ctrl(f ⊗ g)` = `Ctrl(f) ⊗ Ctrl(g)` (shared control over tensor)
+  - `Ctrl(Id)` = Id (identity needs no control)
+  - `Ctrl(Ctrl(X))` = CCX (nested control gives multi-controlled)
+
+**Example:**
+```python
+from lang.terms import Ctrl, H, S, Seq, TenTerm
+from lang.types import Q, Ten
+
+# Single-qubit controlled gates
+Ctrl(H(0, Q()))              # CH : Bool ⊗ Q → Bool ⊗ Q
+Ctrl(S(0, Q()))              # CS : Bool ⊗ Q → Bool ⊗ Q
+
+# Controlled sequence
+Ctrl(Seq(H(0, Q()), S(0, Q())))  # CH ; CS
+
+# Controlled tensor (shared control)
+Ctrl(TenTerm(H(0, Q()), S(0, Q())))  # Ctrl(H) ⊗ Ctrl(S)
+
+# Doubly-controlled (Toffoli)
+Ctrl(Ctrl(X(0, Q())))        # CCX : Bool ⊗ (Bool ⊗ Q) → Bool ⊗ (Bool ⊗ Q)
+```
 
 ### Exponentials of Involutions
 

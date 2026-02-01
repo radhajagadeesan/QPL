@@ -16,7 +16,7 @@ from lang.terms import (
     # Phase 0 gates
     H, S, CX,
     # Phase 4C fixed gates
-    X, Y, Z, T, Tdg, Sdg, CZ, CCX,
+    X, Y, Z, T, Tdg, Sdg, CZ, CCX, CSWAP,
     # Phase 4C parameterized gates
     Rz, Rx, Ry, Phase, CRz,
     # Controlled single-qubit gates
@@ -33,6 +33,8 @@ from lang.terms import (
     PlusMap,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
+    # Controlled combinator
+    Ctrl,
     # Qubit encoding isomorphism
     EncodeQubit, DecodeQubit,
 )
@@ -163,6 +165,15 @@ def type_of(t: Term) -> DomCod:
             raise TypeCheckError("CCX requires three distinct indices.")
         return (t.ty_total, t.ty_total)
 
+    # Phase 4C three-wire fixed gate (CSWAP/Fredkin)
+    if isinstance(t, CSWAP):
+        n = width(t.ty_total)
+        if t.c < 0 or t.c >= n or t.i < 0 or t.i >= n or t.j < 0 or t.j >= n:
+            raise TypeCheckError(f"CSWAP index out of range: (c,i,j)=({t.c},{t.i},{t.j}), width={n}")
+        if t.c == t.i or t.c == t.j or t.i == t.j:
+            raise TypeCheckError("CSWAP requires three distinct indices.")
+        return (t.ty_total, t.ty_total)
+
     # Phase 4C single-wire parameterized gates
     if isinstance(t, (Rz, Rx, Ry, Phase)):
         n = width(t.ty_total)
@@ -209,6 +220,20 @@ def type_of(t: Term) -> DomCod:
             )
         # ExpInvolution preserves the type (since exp(iθP) : A → A when P : A → A)
         return (body_dom, body_cod)
+
+    # Ctrl: controlled combinator
+    # Ctrl(f) : Bool ⊗ A → Bool ⊗ A when f : A → A
+    if isinstance(t, Ctrl):
+        body_dom, body_cod = type_of(t.body)
+        if width(body_dom) != width(body_cod):
+            raise TypeCheckError(
+                f"Ctrl body must have equal domain and codomain width, "
+                f"got {width(body_dom)} and {width(body_cod)}"
+            )
+        # Bool = I + I (control qubit)
+        Bool = Plus(Unit(), Unit())
+        # Ctrl(f : A → A) : Bool ⊗ A → Bool ⊗ A
+        return (Ten(Bool, body_dom), Ten(Bool, body_cod))
 
     # Qubit encoding isomorphism: Q ↔ I + I (with implicit ancilla)
     if isinstance(t, EncodeQubit):

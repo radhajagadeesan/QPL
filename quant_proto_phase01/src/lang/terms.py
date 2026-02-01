@@ -329,6 +329,23 @@ class CCX:
             object.__setattr__(self, 'ty_total', Ten(Ten(Q(), Q()), Q()))
 
 
+@dataclass(frozen=True, slots=True)
+class CSWAP:
+    """Fredkin (CSWAP) gate with control c and targets i, j.
+
+    Swaps qubits i and j when control c is |1⟩.
+    This is Ctrl(SWAP) - the controlled version of SWAP.
+    """
+    c: int = 0
+    i: int = 1
+    j: int = 2
+    ty_total: Ty = None  # type: ignore
+
+    def __post_init__(self):
+        if self.ty_total is None:
+            object.__setattr__(self, 'ty_total', Ten(Ten(Q(), Q()), Q()))
+
+
 # -- Phase 4C: Parameterized gates
 
 @dataclass(frozen=True, slots=True)
@@ -669,6 +686,32 @@ class PlusMap:
     right: "Term"  # g : B → D
 
 
+# -- Controlled combinator (inductive construction)
+
+@dataclass(frozen=True, slots=True)
+class Ctrl:
+    """Controlled combinator: Ctrl(f) : Bool ⊗ A → Bool ⊗ A.
+
+    Given f : A → A, produces a controlled version that:
+    - Applies f when control qubit is |1⟩
+    - Applies identity when control qubit is |0⟩
+    - Preserves the control qubit (passes it through)
+
+    Type: Ctrl : (A ⊸ A) → (Bool ⊗ A ⊸ Bool ⊗ A)
+
+    Compiled inductively:
+    - Base case: primitive gates use built-in controlled versions (CH, CS, etc.)
+    - Inductive cases:
+        Ctrl(f ; g) = Ctrl(f) ; Ctrl(g)     -- distributes over composition
+        Ctrl(f ⊗ g) = Ctrl(f) ⊗ Ctrl(g)    -- shared control over tensor
+        Ctrl(Id)    = Id                    -- identity
+        Ctrl(Twist) = CSWAP                 -- controlled swap
+
+    This enables multi-level control: Ctrl(Ctrl(f)) gives doubly-controlled gates.
+    """
+    body: "Term"  # f : A → A
+
+
 # -- Qubit encoding isomorphism (Q ↔ I + I with ancilla)
 
 @dataclass(frozen=True, slots=True)
@@ -711,7 +754,7 @@ Term = Union[
     # Phase 0 gates
     H, S, CX,
     # Phase 4C fixed gates
-    X, Y, Z, T, Tdg, Sdg, CZ, CCX,
+    X, Y, Z, T, Tdg, Sdg, CZ, CCX, CSWAP,
     # Phase 4C parameterized gates
     Rz, Rx, Ry, Phase, CRz,
     # Controlled single-qubit gates (for quantum case expressions)
@@ -730,6 +773,8 @@ Term = Union[
     PlusMap,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
+    # Controlled combinator (inductive)
+    Ctrl,
     # Qubit encoding isomorphism
     EncodeQubit, DecodeQubit,
 ]
