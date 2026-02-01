@@ -15,6 +15,7 @@ Demonstrations of Granthi language features and compilation.
 | **QSwitch (abstract circuit)** | `qswitch_abstract_circuit_theory_demo.py` | **THEORY: Abstract QSwitch circuit diagrams (no instantiation)** |
 | **QSwitch (instantiation)** | `qswitch_instantiation_demo.py` | **QSwitch with ONE vs TWO functions, simplification analysis** |
 | **QSwitch (curried)** | `qswitch_curried_theory_demo.py` | **THEORY: Curried λb.λf.λg.λx type derivation** |
+| **Zn Controlled Phase** | `zn_controlled_phase_demo.py` | **Z2, Z4, Z5 controlled phase rotation via Ctrl** |
 | ExpInvolution | `exp_twist_demo.py` | Exponentials of structural involutions |
 | Pauli Conjugation | `pauli_conjugation_demo.py` | Qubit as I+I, Pauli identity verification |
 
@@ -182,6 +183,31 @@ PYTHONPATH=src python demos/qswitch_curried_theory_demo.py
 
 ---
 
+## Zn Controlled Phase Demo
+
+Demonstrates the `Ctrl` combinator for controlled operations on cyclic groups:
+
+**Run:**
+```bash
+PYTHONPATH=src python demos/zn_controlled_phase_demo.py
+```
+
+**What it shows:**
+
+| Group | Tag Width | Gates | Example |
+|-------|-----------|-------|---------|
+| Z2 (Bool) | 1 bit | 1 | CZ on control + target |
+| Z4 | 2 bits | 2 | CS + CZ (binary decomposition) |
+| Z5 | 3 bits | 3 | CRz(2π/5) + CRz(4π/5) + CRz(8π/5) |
+
+**Key insight:** Phase selection uses binary decomposition. For Zn with n-bit register:
+- Phase(k) = Σᵢ tᵢ × (2ⁱ × 2π/n) where tᵢ are tag bits
+- Each bit contributes a controlled rotation: CRz(2π×2ⁱ/n)
+
+This achieves O(log n) gate count for coherent control over n-element groups.
+
+---
+
 ## ExpInvolution Demo
 
 Infrastructure test verifying the composition law for exponentials of involutions:
@@ -331,20 +357,3 @@ Controls:
 - **⏩ Show All** — show everything immediately
 - **↺ Reset** — start over
 
----
-
-## Video Recording (QSwitch)
-
-For creating video demos with visual timing:
-
-```bash
-cd quant_proto_phase01
-PYTHONPATH=src python demos/qswitch_demo_video.py
-```
-
-With asciinema:
-```bash
-pip install asciinema
-asciinema rec -c "PYTHONPATH=src python demos/qswitch_demo_video.py" qswitch_demo.cast
-asciinema play qswitch_demo.cast
-```

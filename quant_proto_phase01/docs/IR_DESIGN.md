@@ -1,6 +1,6 @@
-# Granthi IR Architecture
+# Granthi IR Design
 
-**Design Document: Flat IR with Direct Compilation**
+**Flat IR with Direct Compilation**
 
 This document describes the compiler's intermediate representation and compilation strategy.
 
@@ -8,7 +8,7 @@ This document describes the compiler's intermediate representation and compilati
 
 ## Overview
 
-The compiler uses a **single flat IR** with direct recursive-descent compilation. There is no separate "IR2" layer for typical programs. GOI (Geometry of Interaction) machinery exists only for the explicit `Feedback` term, which is rarely used.
+The compiler uses a **single flat IR** with direct recursive-descent compilation. There is no separate "IR2" layer.
 
 ```
 OCaml Surface Language
@@ -136,11 +136,11 @@ class WirePerm:
 
 ---
 
-## Higher-Order Compilation — Cup/Cap (No GOI)
+## Higher-Order Compilation — Cup/Cap
 
 **Location:** `src/lang/terms.py`, `src/compile/to_pytket.py`
 
-Higher-order programs compile via **compact-closed structure**, not GOI:
+Higher-order programs compile via **compact-closed structure**:
 
 - **`Cup(A)`**: η_A : I → A ⊗ A* — allocate 2·width(A) wires (pure wiring, 0 gates)
 - **`Cap(A)`**: ε_A : A* ⊗ A → I — identify/connect wires (pure wiring, 0 gates)
@@ -152,7 +152,7 @@ Since A* = A, lambda abstraction just exposes wires (cup), and application conne
 Apply(f, arg)     compiles to    Cap connects f's output wires to arg
 ```
 
-**No feedback, no loops, no GOI** — higher-order is just wire bookkeeping.
+Higher-order is just wire bookkeeping — no feedback, no loops.
 
 ---
 
@@ -214,25 +214,9 @@ class Compiled:
 
 ---
 
-## GOI / Feedback (Rarely Used)
+## Feedback (Reserved)
 
-**Location:** `src/compile/goi.py`, `src/compile/to_pytket.py` (compile_goi)
-
-The `Feedback(k, body)` term introduces explicit loops. This is the **only** place GOI semantics apply:
-
-```python
-@dataclass
-class GOIArtifact:
-    n_in: int                    # Input boundary width
-    n_out: int                   # Output boundary width
-    perm: WirePerm               # Routing permutation
-    atoms: Tuple[GateAtom, ...]  # Gate sequence
-    loops: Tuple[LoopSpec, ...]  # Explicit loop metadata
-```
-
-**Extraction rule:** Feedback is eliminable iff no gate touches loop wires (yanking).
-
-**Important:** GOI is NOT used for higher-order compilation. It's only for explicit `Feedback` terms, which are rare in practice.
+The `Feedback(k, body)` term exists in the IR for future extensions but is **not currently compiled**. Attempting to compile a term containing `Feedback` raises `NotImplementedError`.
 
 ---
 
@@ -266,9 +250,9 @@ The compiler maintains a `WirePerm p` throughout traversal:
 | Layout | Option B: log-tag + shared payload |
 | Tensor structurals | Pure wire permutations (0 gates) |
 | Sum structurals | Tag permutations (X gates for TwistPlus) |
-| Higher-order | Cup/cap wiring (0 gates, no GOI) |
+| Higher-order | Cup/cap wiring (0 gates) |
 | Quantum case | Anti-controlled + controlled gates |
 | Output | pytket Circuit + WirePerm |
-| GOI/Feedback | Only for explicit `Feedback` term (rare) |
+| Feedback | Reserved for future use (not currently compiled) |
 
 **Design principle:** The compiler does minimal work. Structural operations are permutations, not gates. Higher-order is wiring, not computation. Only actual quantum gates become circuit gates.

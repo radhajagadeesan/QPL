@@ -70,7 +70,7 @@ let lolli  a b = Rep.Tensor (a, b)   (* Int construction: A ⊸ B ≅ A ⊗ B *)
 This prevents mixing incompatible types at the OCaml level, even though the runtime representation is uniform.
 
 **Lolli representation:** Linear functions use the Int (interaction) construction where `A ⊸ B` is represented as `A ⊗ B`. This is sound because:
-- In GOI semantics, a morphism `f : A → B` is an endomorphism on `A* ⊗ B`
+- In compact-closed categories, `A ⊸ B ≅ A* ⊗ B`
 - For self-dual types (which we have), `A* = A`, so `A ⊸ B ≅ A ⊗ B`
 
 ---

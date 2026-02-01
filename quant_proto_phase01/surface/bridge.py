@@ -32,7 +32,7 @@ from lang.terms import (
     CX, CZ, CRz, CCX,
     # Controlled single-qubit gates
     CH, CS, CSdg,
-    # Higher-order constructs (GOI apply)
+    # Higher-order constructs
     FunVar, Lam, Apply,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
@@ -43,10 +43,6 @@ from lang.terms import (
 )
 from core.perm import WirePerm, identity, compose
 from compile.to_pytket import compile
-from compile.goi import (
-    GOIArtifact, GateAtom, LoopSpec,
-    apply_perm, goi_seq, make_unitary_value, conjugate_unitary,
-)
 
 
 def parse_type(j: dict) -> Ty:
@@ -295,7 +291,7 @@ def parse_term(j: dict, ty_total: Ty = None) -> Term:
     elif node == "Gate":
         return parse_general_gate(j, ty_total)
 
-    # Higher-order constructs (GOI apply)
+    # Higher-order constructs
     elif node == "FunVar":
         return FunVar(j["name"], parse_type(j["dom"]), parse_type(j["cod"]))
 

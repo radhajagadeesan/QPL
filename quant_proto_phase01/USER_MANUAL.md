@@ -636,27 +636,22 @@ result = compile(qswitch_hs)
 #   |1⟩|ψ⟩ → |1⟩(H;S)|ψ⟩
 ```
 
-**GOI Conjugation Form (doubled):**
-```
-QSwitch(H,S) in GOI form: 10 gates on 4 qubits
-  Wires 0,1: (QSwitch)† on negative side
-  Wires 2,3: QSwitch on positive side
-```
-
 ### 7.4 Demos
 
 Interactive demos are available in the `demos/` directory:
 
 | File | Description |
 |------|-------------|
-| `qswitch_demo_output.md` | Static output (just view results) |
-| `qswitch_demo.py` | Runnable Python script |
+| `qswitch_demo.py` | Quantum switch demo |
 | `qswitch_demo.html` | HTML animation (open in browser) |
-| `qswitch_demo_video.py` | Script for video recording |
+| `zn_controlled_phase_demo.py` | Zn controlled phase rotation (Z2, Z4, Z5) |
+| `case_demo.py` | Case/pattern matching compilation |
+| `exp_twist_demo.py` | Exponential of structural involutions |
 
-**Run the demo:**
+**Run a demo:**
 ```bash
 PYTHONPATH=src python demos/qswitch_demo.py
+PYTHONPATH=src python demos/zn_controlled_phase_demo.py
 ```
 
 **View HTML animation:**
@@ -682,7 +677,7 @@ See `surface/examples/algorithmic_snippets.surf` for:
 | Error | Cause | Solution |
 |-------|-------|----------|
 | `TypeCheckError` | Type mismatch in composition | Check that output type of f matches input type of g in `f ; g` |
-| `NotImplementedError: Feedback` | Used Feedback | Use `compile_goi()` for terms with feedback |
+| `NotImplementedError: Feedback` | Used Feedback | Feedback is reserved for future use; not currently supported |
 | `Term is not structural` | Non-structural term in `exp_i` | Ensure J contains no gates |
 | `not involutive` | J ∘ J ≠ id | Use a proper involution (e.g., swap, not rotation) |
 
@@ -712,53 +707,26 @@ See `surface/examples/algorithmic_snippets.surf` for:
 
 ## 9. Advanced Topics
 
-### 9.1 GOI Compilation
+### 9.1 Higher-Order Terms
 
-For terms with feedback (advanced use):
+Higher-order terms use **compact-closed structure** (cup/cap wiring):
 
-```python
-from compile.to_pytket import compile_goi
-
-result = compile_goi(term_with_feedback)
-```
-
-### 9.2 Higher-Order Compilation
-
-For higher-order terms with function composition via GOI:
-
-```python
-from lang.terms import H, S, Seq, Apply
-from compile.to_pytket import compile_higher_order
-
-# Compose H ; S via GOI infrastructure
-term = Seq(H(0, ty), S(0, ty))
-result = compile_higher_order(term, explain=True)
-
-# Result: 4 gates on 2 qubits (GOI conjugation form)
-# Wire 0 (Q*): Sdg, H  = (H;S)†
-# Wire 1 (Q):  H, S    = H;S
-```
-
-**GOI Representation:**
-- A morphism `f : A → B` is represented as `End(A* ⊗ B)`
-- A unitary `U : A → A` becomes `(U† ⊗ U)` on `A* ⊗ A` (conjugation form)
-- Composition uses `goi_seq` + `execute_trace` to collapse internal wires
-
-**Higher-Order Term Types:**
 ```python
 from lang.terms import FunVar, Lam, Apply
 
-# Function variable (placeholder in lambda body)
+# Function variable (identity on A ⊗ B wires)
 FunVar(name, dom, cod)  # x : A → B
 
-# Lambda abstraction
+# Lambda abstraction (boundary exposure)
 Lam(name, dom, cod, body)  # λx:A→B. body
 
-# Application (compiled via GOI)
+# Application (boundary splicing)
 Apply(f, arg)  # f arg
 ```
 
-### 9.3 Pipeline Architecture
+Since all types are self-dual (`A* = A`), a function `A ⊸ B` is physically `width(A) + width(B)` wires. Lambda exposes wires; application connects them. No feedback or loops are involved.
+
+### 9.2 Pipeline Architecture
 
 ```
 Surface Program
@@ -779,7 +747,7 @@ The compiler maintains these invariants:
 
 1. **Determinism**: Same input → identical output
 2. **Structural → perm only**: Structural terms compile to permutations without gates
-3. **No residual GOI**: Certified programs fully extract
+3. **Acyclic compilation**: All terms compile to flat circuits (no loops)
 4. **Involution certification**: `exp_i` rejects non-involutive inputs
 
 ---
@@ -818,7 +786,7 @@ cd surface && dune test
 quant_proto_phase01/
 ├── src/
 │   ├── lang/           # Types and terms
-│   ├── compile/        # Compilation phases (incl. GOI)
+│   ├── compile/        # Compilation to pytket circuits
 │   ├── core/           # Permutation algebra
 │   ├── backends/       # Circuit backends
 │   └── typing_/        # Type checking
@@ -827,9 +795,10 @@ quant_proto_phase01/
 │   ├── test/           # Surface tests
 │   └── examples/       # Example programs
 ├── demos/              # Interactive demos
-│   ├── qswitch_demo.py      # Runnable demo
-│   ├── qswitch_demo.html    # HTML animation
-│   └── README.md            # Demo instructions
+│   ├── qswitch_demo.py           # Quantum switch demo
+│   ├── zn_controlled_phase_demo.py  # Zn controlled phase (Z2, Z4, Z5)
+│   ├── qswitch_demo.html         # HTML animation
+│   └── README.md                 # Demo instructions
 ├── tests/              # Python tests
 └── docs/               # Documentation
 ```

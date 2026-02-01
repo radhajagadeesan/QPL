@@ -343,6 +343,7 @@ See `demos/README.md` for full details. Key demos:
 | **QSwitch (instantiation)** | `qswitch_instantiation_demo.py` | QSwitch[H,H] vs QSwitch[H,S], simplification analysis |
 | **QSwitch (curried)** | `qswitch_curried_theory_demo.py` | THEORY: Curried λb.λf.λg.λx type derivation |
 | QSwitch (OCaml HO) | `surface/demos/qswitch_ho_demo.ml` | Higher-order QSwitch in OCaml |
+| **Zn Controlled Phase** | `zn_controlled_phase_demo.py` | Z2, Z4, Z5 controlled phase rotation via Ctrl combinator |
 | ExpInvolution | `exp_twist_demo.py` | Composition law: exp(θ);exp(θ) = exp(2θ) |
 | Pauli Conjugation | `pauli_conjugation_demo.py` | exp(π/4,X);Z;exp(-π/4,X) = Y on qubit as I+I |
 
@@ -545,5 +546,5 @@ See `surface/examples/datatype_demo.ml` for complete examples.
 - `API_REFERENCE.md` — Complete type and term reference
 - `COMPILER_API_GUIDE.md` — Python API for compiler embedding
 - `STAGING_SOUNDNESS.md` — Formal soundness arguments for OCaml staging
-- `TWO_LEVEL_IR_DESIGN.md` — Wire layouts and IR architecture
+- `IR_DESIGN.md` — Wire layouts and IR architecture
 - `demos/README.md` — Demo instructions

@@ -5,7 +5,6 @@ These tests verify:
 - ExpSwap compiles to XXPhase, YYPhase, ZZPhase gates
 - ExpInvolution decomposes structural involutions into ExpSwap atoms
 - Involution verification works correctly
-- Both compile() and compile_goi() handle these terms
 """
 
 import pytest
@@ -18,7 +17,7 @@ from lang.terms import (
     ExpSwap, ExpInvolution, H, CX,
 )
 from typing_.check import type_of, assert_well_typed, TypeCheckError
-from compile.to_pytket import compile, compile_goi, CompiledGOI, _compile_structural_to_perm
+from compile.to_pytket import compile, _compile_structural_to_perm
 from core.perm import identity, WirePerm, is_involution, decompose_involution
 
 
@@ -92,17 +91,6 @@ class TestExpSwapCompilation:
         for cmd in cmds:
             actual_alpha = cmd.op.params[0]
             assert abs(actual_alpha - expected_alpha) < 1e-10
-
-    def test_expswap_compile_goi(self):
-        """ExpSwap compiles correctly via compile_goi."""
-        ty = Ten(Q(), Q())
-        exp = ExpSwap(theta=0.5, i=0, j=1, ty_total=ty)
-
-        result = compile_goi(exp)
-        assert isinstance(result, CompiledGOI)
-
-        cmds = list(result.circuit.get_commands())
-        assert len(cmds) == 3
 
     def test_expswap_with_offset(self):
         """ExpSwap respects wire offsets in larger circuits."""
@@ -207,17 +195,6 @@ class TestExpInvolutionCompilation:
 
         # TwistTen twice = identity, which is involution with no transpositions
         assert len(cmds) == 0
-
-    def test_exp_involution_compile_goi(self):
-        """ExpInvolution compiles correctly via compile_goi."""
-        body = TwistTen(Q(), Q())
-        exp = ExpInvolution(theta=0.5, body=body)
-
-        result = compile_goi(exp)
-        assert isinstance(result, CompiledGOI)
-
-        cmds = list(result.circuit.get_commands())
-        assert len(cmds) == 3
 
     def test_exp_involution_with_non_involution_fails(self):
         """ExpInvolution with non-involutive body fails at compile time."""

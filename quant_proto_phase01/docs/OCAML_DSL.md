@@ -320,5 +320,5 @@ surface/
 
 - **PROGRAMMING_GUIDE.md** — Meta-level combinators, datatype declarations
 - **STAGING_SOUNDNESS.md** — Formal soundness arguments for staging
-- **TWO_LEVEL_IR_DESIGN.md** — Wire layouts and IR architecture
+- **IR_DESIGN.md** — Wire layouts and IR architecture
 - **CLAUDE.md** — Compilation pipeline and elaboration rules

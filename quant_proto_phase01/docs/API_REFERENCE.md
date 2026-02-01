@@ -310,9 +310,11 @@ Cap(Q())   # ε_Q : Q* ⊗ Q → I  (connect/identify 2 wires)
 | `FunVar(name, dom, cod)` | Function variable — identity on A ⊗ B wires |
 | `Lam(name, dom, cod, body)` | Lambda abstraction — boundary exposure |
 | `Apply(f, arg)` | Function application — boundary splicing |
-| `Feedback(k, body)` | Loop k wires back (GOI trace) |
+| `Feedback(k, body)` | Loop k wires back (reserved for future use) |
 
-Higher-order terms are compiled directly via cup/cap wiring — no GOI needed.
+**Note:** `Feedback` exists for future extensions but currently raises `NotImplementedError` when compiled.
+
+Higher-order terms are compiled directly via cup/cap wiring.
 A function `A ⊸ B` is physically `width(A) + width(B)` wires. Lambda exposes wires, application connects them.
 
 ### Full Source Language Terms
@@ -366,37 +368,6 @@ result.perm      # WirePerm (final wire permutation)
 result.log       # List[str] if explain=True
 ```
 
-### compile_goi()
-
-Compilation with feedback support.
-
-```python
-from compile.to_pytket import compile_goi
-from compile.goi import GOIArtifact
-
-result = compile_goi(term, materialize=False, explain=False)
-
-# Returns Compiled if feedback extracted, GOIArtifact if residual
-if isinstance(result, GOIArtifact):
-    print("Residual loops:", result.loops)
-else:
-    print("Extracted:", result.circuit)
-```
-
-### compile_higher_order() *(deprecated)*
-
-**Deprecated.** Use `compile()` instead — higher-order terms (Cup, Cap, FunVar, Lam, Apply) are now compiled directly via cup/cap wiring without GOI.
-
-```python
-# Old (deprecated):
-from compile.to_pytket import compile_higher_order
-result = compile_higher_order(term)  # emits DeprecationWarning
-
-# New (preferred):
-from compile.to_pytket import compile
-result = compile(term)  # handles Cup, Cap, Lam, Apply directly
-```
-
 ---
 
 ## Permutations (`src/core/perm.py`)
@@ -441,30 +412,6 @@ from typing_.check import type_of, assert_well_typed
 
 dom, cod = type_of(term)     # Get domain and codomain
 assert_well_typed(term)      # Raises TypeCheckError if invalid
-```
-
----
-
-## GOI Module (`src/compile/goi.py`)
-
-```python
-from compile.goi import (
-    GateAtom,
-    GOIArtifact,
-    LoopSpec,
-    make_unitary_value,
-    goi_seq,
-    execute_trace,
-)
-
-# Create GOI representation of a unitary
-h_goi = make_unitary_value('H', (0,), n_a=1, inverse_gate_name='H')
-
-# Compose via GOI
-composed = goi_seq(h_goi, s_goi, n_shared=1)
-
-# Execute trace (collapse loops)
-result = execute_trace(composed)
 ```
 
 ---

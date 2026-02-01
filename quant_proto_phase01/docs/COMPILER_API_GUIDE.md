@@ -3,7 +3,7 @@
 This guide is for developers extending or embedding the Granthi compiler. It explains the Python core API, compilation functions, and higher-order compilation hooks.
 
 For surface language programming, see `PROGRAMMING_GUIDE.md`.
-For IR architecture details, see `TWO_LEVEL_IR_DESIGN.md`.
+For IR architecture details, see `IR_DESIGN.md`.
 
 ---
 
@@ -152,8 +152,8 @@ FunVar(name, dom, cod)    # Variable x : dom ⊸ cod
 # Boundary splicing: connects argument wires to function's input slot
 Apply(f, arg)
 
-# Feedback (GOI trace)
-Feedback(k, body)         # Loop k wires back
+# Feedback (reserved for future use)
+Feedback(k, body)         # Loop k wires back (not currently compiled)
 ```
 
 ### Full Source Language Terms
@@ -252,26 +252,6 @@ result.perm             # WirePerm (final wire permutation)
 result.log              # List[str] if explain=True
 ```
 
-### With Feedback (GOI)
-
-```python
-from lang.terms import Feedback
-from compile.to_pytket import compile_goi
-from compile.goi import GOIArtifact
-
-# Feedback loops k wires back
-term = Feedback(k=1, body=body)
-
-result = compile_goi(term, materialize=False)
-
-if isinstance(result, GOIArtifact):
-    # Residual: feedback could not be eliminated
-    print("Loops:", result.loops)
-else:
-    # Extracted: collapsed to flat circuit
-    print("Circuit:", result.circuit)
-```
-
 ### Higher-Order Compilation
 
 Higher-order terms (Lam, Apply, FunVar) are compiled directly via **cup/cap wiring**:
@@ -285,36 +265,6 @@ from compile.to_pytket import compile
 
 # compile() handles higher-order terms directly
 result = compile(lam_apply_term)
-```
-
-**Note:** `compile_higher_order()` is deprecated. Use `compile()` for all terms.
-
----
-
-## GOI Module
-
-For direct GOI manipulation:
-
-```python
-from compile.goi import (
-    GateAtom,
-    GOIArtifact,
-    LoopSpec,
-    make_unitary_value,
-    goi_seq,
-    execute_trace,
-)
-
-# Create GOI representation of a unitary
-# U : A → A becomes (U† ⊗ U) on A* ⊗ A
-h_goi = make_unitary_value('H', (0,), n_a=1, inverse_gate_name='H')
-s_goi = make_unitary_value('S', (0,), n_a=1, inverse_gate_name='Sdg')
-
-# Compose via GOI (uses feedback internally)
-composed = goi_seq(h_goi, s_goi, n_shared=1)
-
-# Execute trace to collapse loop wires
-result = execute_trace(composed)
 ```
 
 ---
@@ -442,7 +392,7 @@ PYTHONPATH=src python my_program.py
 ## Further Reading
 
 - `API_REFERENCE.md` — Complete API signatures
-- `TWO_LEVEL_IR_DESIGN.md` — IR architecture and GOI semantics
+- `IR_DESIGN.md` — IR architecture and compilation semantics
 - `demos/qswitch_demo.py` — Working higher-order example
 - `demos/qswitch_abstract_circuit_demo.py` — Abstract QSwitch circuit diagrams (no instantiation)
 - `demos/qswitch_instantiation_demo.py` — QSwitch[H,H] vs QSwitch[H,S] with simplification analysis

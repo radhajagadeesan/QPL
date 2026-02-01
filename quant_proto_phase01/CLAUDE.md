@@ -69,12 +69,11 @@ cd surface && dune test
 - **Arrow type** `Arrow(A, B)` represents linear function `A ⊸ B`:
   - `width(A ⊸ B) = width(A) + width(B)` (functions are wire bundles)
   - A function value exposes argument slot + result slot as wires
-- Higher-order terms use **boundary exposure/splicing** (no GOI):
+- Higher-order terms use **boundary exposure/splicing**:
   - `Lam(x, dom, cod, body)` — boundary exposure (x bound to input wires)
   - `Apply(f, arg)` — boundary splicing (connect argument to function's input slot)
   - `Cup(A)` : I → A ⊗ A* (pure wiring, 0 gates)
   - `Cap(A)` : A* ⊗ A → I (pure wiring, 0 gates)
-  - `compile_higher_order()` is deprecated; use `compile()` directly
 - **Full source language terms**:
   - `Var(name, ty)` — variable reference, identity on wire range from environment
   - `Pair(fst, snd)` — tensor introduction
@@ -147,7 +146,7 @@ These exist for direct Python-API usage. The OCaml pipeline does not generate th
 - `Case(ty_left, ty_right, left, right)` — Python-side case (OCaml elaborates case away into controlled gates before bridging)
 - `Cup(ty)`, `Cap(ty)` — compact-closed structure (OCaml compiles Lam/Apply directly)
 - `Var(name, ty)`, `Pair(fst, snd)`, `LetPair(...)` — full source language terms
-- `Feedback(k, body)` — explicit GOI loops
+- `Feedback(k, body)` — reserved for future use (not currently compiled)
 - `EncodeQubit()`, `DecodeQubit()` — qubit ↔ one-hot encoding
 - `ExpSwap`, `ExpInvolution` — exponentials of structural involutions
 

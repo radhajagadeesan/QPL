@@ -171,8 +171,7 @@ quant_proto_phase01/
 │   ├── core/
 │   │   └── perm.py         # Wire permutations
 │   ├── compile/
-│   │   ├── to_pytket.py    # Main compiler
-│   │   └── goi.py          # GOI (for Feedback only)
+│   │   └── to_pytket.py    # Main compiler
 │   ├── typing_/
 │   │   └── check.py        # Type inference
 │   └── bridge.py           # JSON → Python AST
@@ -267,5 +266,5 @@ dune exec demos/qswitch_demo.exe
 
 - `PROGRAMMING_GUIDE.md` — Surface language tutorial
 - `COMPILER_API_GUIDE.md` — Python API reference
-- `TWO_LEVEL_IR_DESIGN.md` — IR architecture details
+- `IR_DESIGN.md` — IR architecture details
 - `API_REFERENCE.md` — Complete API signatures

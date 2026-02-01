@@ -6,8 +6,6 @@ application = cap (connect wires). Both are pure wiring — no gates.
 """
 from __future__ import annotations
 
-import warnings
-
 import pytest
 from lang.types import Q, Unit, Ten, Plus, Dual, Arrow, width, tag_width, payload_width, dual
 from lang.terms import (
@@ -206,16 +204,3 @@ class TestCupCapCompilation:
         assert width(cod) == 2
 
 
-class TestCompileHigherOrderDeprecation:
-    """compile_higher_order() is deprecated."""
-
-    def test_deprecation_warning(self):
-        from compile.to_pytket import compile_higher_order
-        ty = Ten(Q(), Q())
-        term = H(0, ty)
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            result = compile_higher_order(term)
-            assert len(w) == 1
-            assert issubclass(w[0].category, DeprecationWarning)
-            assert "deprecated" in str(w[0].message).lower()
