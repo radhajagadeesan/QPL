@@ -123,41 +123,31 @@ ELABORATED CORE IR:
 """)
 
     # =========================================================================
-    # PART 3: The Int Construction (Interface Duplication)
+    # PART 3: Coherent Control (Interface Structure)
     # =========================================================================
     print("\n" + "="*74)
-    print("  PART 3: The Int Construction (Interface Duplication)")
+    print("  PART 3: Coherent Control (Interface Structure)")
     print("="*74 + "\n")
 
     print("""
-CONCEPTUAL BACKGROUND: Geometry of Interaction
+CONCEPTUAL BACKGROUND: Compact-Closed Categories
 
-  In standard λ-calculus, a function f : A → B is a "black box".
-  In GOI/Int semantics, we OPEN the box:
+  In linear type theory, all types are self-dual: A* = A.
+  A function f : A → B is physically a wire bundle of width(A) + width(B).
 
-  f : A → B     becomes     f̂ : A† ⊗ B  →  A† ⊗ B
-
-  (morphism)                (endomorphism on doubled boundary)
-
-  The † denotes the "input interface" (contravariantly).
-
-  For quantum types: A† = A (self-dual).
-  So f : Q → Q becomes f̂ : Q ⊗ Q → Q ⊗ Q.
+  For quantum types:
+  - Q* = Q (self-dual)
+  - f : Q → Q is physically 2 wires
 
 WHY THIS MATTERS FOR QSWITCH:
 
   QSwitch doesn't just apply H and S — it applies them in SUPERPOSED ORDER.
 
-  In the Int picture:
+  The key insight:
 
-  1. H : Q → Q  becomes  Ĥ : Q ⊗ Q → Q ⊗ Q
-     (H acts on the "output part", identity on "input part")
-
-  2. S : Q → Q  becomes  Ŝ : Q ⊗ Q → Q ⊗ Q
-     (S acts on the "output part", identity on "input part")
-
-  3. Sequential composition f;g is matrix multiplication of endos
-
+  1. H : Q → Q acts on the target qubit
+  2. S : Q → Q acts on the target qubit
+  3. Sequential composition f;g chains the operations
   4. The control qubit SELECTS which composition to use!
 
 INTERFACE STRUCTURE:
@@ -275,17 +265,14 @@ CIRCUIT EXPLANATION:
   3. CIRCUIT         pytket.Circuit with gates
      (Executable)    + identity permutation
 
-KEY INSIGHT: Interface Duplication in Int/GOI
+KEY INSIGHT: Coherent Control
 
-  The "trick" is that morphisms f : A → B become endos f̂ : A ⊗ B → A ⊗ B.
-
-  For QSwitch:
-  - H : Q → Q  becomes  Ĥ on boundary Q ⊗ Q (acts on wire 1, identity on wire 0)
-  - S : Q → Q  becomes  Ŝ on boundary Q ⊗ Q
-  - The control qubit lives on wire 0 and SELECTS the composition
+  The control qubit determines which order of operations applies:
+  - H and S act on the target qubit (wire 1)
+  - The control qubit (wire 0) SELECTS the composition order
 
   This is why quantum control over causal order works:
-  the wires are doubled, and the control is EXPLICIT in the layout.
+  the control is preserved through the circuit, enabling superposition.
 """)
 
     runner.print_footer()
