@@ -1,238 +1,261 @@
+# QSwitch Instantiation Demo Output
 
-==========================================================================
-  QSWITCH INSTANTIATION DEMO
-==========================================================================
+Run with: `PYTHONPATH=src python demos/qswitch_instantiation_demo.py --circuits`
 
+This demo shows **compositional construction** of QSwitch: the circuit structure
+comes from the abstract QSwitch combinator, with concrete gates H and S plugged in.
 
-This demo shows QSwitch instantiated with concrete functions.
-For the abstract QSwitch structure, see: qswitch_abstract_circuit_demo.py
+---
 
-Recall the abstract QSwitch semantics:
-    │0⟩│ψ⟩  →  │0⟩ f(g(ψ))     (apply g then f)
-    │1⟩│ψ⟩  →  │1⟩ g(f(ψ))     (apply f then g)
+## Section 1: Compositional Construction
 
+```
+KEY INSIGHT: QSwitch is built COMPOSITIONALLY
+──────────────────────────────────────────────
 
-==========================================================================
-  SECTION 1: QSwitch with ONE Function (f = g)
-==========================================================================
+The QSwitch circuit is NOT built by directly embedding gates.
+Instead, it's built by COMPOSING:
 
+  1. ABSTRACT STRUCTURE: The QSwitch combinator (fixed shape)
+  2. CONCRETE GATES: The functions f and g (parameters)
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│  SIMPLIFICATION ANALYSIS (before compiling)                             │
-└─────────────────────────────────────────────────────────────────────────┘
+ABSTRACT QSWITCH STRUCTURE:
 
-When f = g (same function applied to both slots), the QSwitch semantics
-become:
+    def make_qswitch(f, g):
+        '''
+        QSwitch = DistL ; Case(
+            left  = (Id_I ⊗ g) ; (Id_I ⊗ f),   -- g then f
+            right = (Id_I ⊗ f) ; (Id_I ⊗ g)    -- f then g
+        )
+        '''
+        left_branch  = Seq(TenTerm(Id(I), g), TenTerm(Id(I), f))
+        right_branch = Seq(TenTerm(Id(I), f), TenTerm(Id(I), g))
+        return Seq(DistL, Case(left_branch, right_branch))
 
-    │0⟩│ψ⟩  →  │0⟩ f(f(ψ))     (apply f then f)
-    │1⟩│ψ⟩  →  │1⟩ f(f(ψ))     (apply f then f)
-                  ─────────
-                  IDENTICAL!
+INSTANTIATION:
 
-OBSERVATION: Both branches compute the SAME thing: f ∘ f
+    QSwitch[H, S] = make_qswitch(H, S)
 
-CONSEQUENCE: The control qubit has NO EFFECT on the output!
-             The QSwitch degenerates to unconditional f ∘ f.
+The circuit structure comes from the COMBINATOR.
+The concrete behavior comes from the GATES.
+```
 
+---
 
-ALGEBRAIC SIMPLIFICATION:
-─────────────────────────
+## Section 2: Abstract QSwitch Type
 
-    QSwitch[f, f] ≡ Id_ctrl ⊗ (f ∘ f)
+```
+QSWITCH TYPE SIGNATURE:
 
-    The control qubit passes through unchanged.
-    The target gets f applied twice, regardless of control.
+    QSwitch : (Q → Q) → (Q → Q) → (Bool ⊗ Q) → (Bool ⊗ Q)
+              ───────   ───────   ─────────────────────────
+                 f         g           input → output
 
+    Parameters:
+      f : Q → Q    (first function, width 1)
+      g : Q → Q    (second function, width 1)
 
-SPECIAL CASE: f = H (Hadamard)
-──────────────────────────────
+    Input/Output: Bool ⊗ Q
+      Wire 0: control qubit (Bool = I + I, width 1)
+      Wire 1: target qubit (Q, width 1)
+      Total width: 2
 
-    H ∘ H = H² = I    (Hadamard is self-inverse)
+SEMANTICS:
 
-    Therefore:
-        QSwitch[H, H] ≡ Id_ctrl ⊗ I = Id
+    |0⟩|ψ⟩  →  |0⟩ f(g(ψ))     (g first, then f)
+    |1⟩|ψ⟩  →  |1⟩ g(f(ψ))     (f first, then g)
+    |+⟩|ψ⟩  →  superposition of both orders!
 
-    The ENTIRE circuit simplifies to IDENTITY!
+CONCRETE GATE TERMS:
+  H = H(0, Q())  :  Q → Q
+  S = S(0, Q())  :  Q → Q
+```
 
+---
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│  CIRCUIT (QSwitch[H, H])                                                │
-└─────────────────────────────────────────────────────────────────────────┘
+## Section 3: QSwitch[H, H] — Same Function (f = g)
 
-Type: ((I ⊕ I) ⊗ Q) → ((I ⊗ Q) ⊕ (I ⊗ Q))
-      (width 2 → width 2)
+```
+SIMPLIFICATION ANALYSIS:
 
-Compiling QSwitch[H, H]...
+    When f = g, both branches compute the SAME thing:
 
-Gate count: 6
+        |0⟩|ψ⟩  →  |0⟩ f(f(ψ))
+        |1⟩|ψ⟩  →  |1⟩ f(f(ψ))     ← IDENTICAL!
 
-Gate sequence:
-    X q[0];
-    CH q[0], q[1];
-    CH q[0], q[1];
-    X q[0];
-    CH q[0], q[1];
-    CH q[0], q[1];
+    The control qubit has NO EFFECT.
 
-CIRCUIT DIAGRAM:
-────────────────
-
-    ctrl ──X───●───●───X───●───●──
-           │   │   │   │   │   │
-    tgt  ─────CH──CH─────CH──CH───
-
-
-VERIFICATION:
-─────────────
-
-    Unitary equals identity matrix? True
-
-    ✓ CONFIRMED: QSwitch[H, H] = Identity
-
-    The 6 gates completely cancel:
-      • X;X = I (the two X gates cancel)
-      • CH;CH = I (controlled-H squared is identity)
-      • CH;CH = I (second pair also cancels)
+    For f = H:  H² = I (Hadamard is self-inverse)
+    Therefore:  QSwitch[H, H] = Identity!
 
 
-==========================================================================
-  SECTION 2: QSwitch with TWO Functions (f ≠ g)
-==========================================================================
+COMPOSITIONAL CONSTRUCTION:
+
+    qswitch_hh = make_qswitch(H, H)
+    Type: ((I ⊕ I) ⊗ Q) → ... (width 2)
+```
+
+**Compiled Circuit:**
+```
+Circuit: 6 gates on 2 qubits
+Permutation: [0, 1]
+Gates:
+  X on [0]
+  CH on [0, 1]
+  CH on [0, 1]
+  X on [0]
+  CH on [0, 1]
+  CH on [0, 1]
+
+Circuit Diagram:
+q[0]: ───[X]─────●────●──[X]─────●────●──
+q[1]: ─────────[H]──[H]────────[H]──[H]──
+```
+
+**Verification:**
+```
+Unitary equals identity matrix? True
+
+CONFIRMED: QSwitch[H, H] = Identity
+
+The 6 gates completely cancel because H² = I.
+This demonstrates: when f = g, QSwitch degenerates.
+```
+
+---
+
+## Section 4: QSwitch[H, S] — Different Functions (f ≠ g)
+
+```
+NON-COMMUTATIVITY CHECK:
+
+    H ∘ S ≠ S ∘ H  (Hadamard and S-gate don't commute)
+
+    Therefore the two branches produce DIFFERENT results:
+        |0⟩|ψ⟩  →  |0⟩ H(S(ψ))     (S then H)
+        |1⟩|ψ⟩  →  |1⟩ S(H(ψ))     (H then S)
+
+    NO SIMPLIFICATION POSSIBLE — this is the true quantum switch!
 
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│  SIMPLIFICATION ANALYSIS (before compiling)                             │
-└─────────────────────────────────────────────────────────────────────────┘
+COMPOSITIONAL CONSTRUCTION:
 
-When f ≠ g (different functions), the QSwitch semantics are:
+    qswitch_hs = make_qswitch(H, S)
+    Type: ((I ⊕ I) ⊗ Q) → ... (width 2)
+```
 
-    │0⟩│ψ⟩  →  │0⟩ f(g(ψ))     (apply g then f)
-    │1⟩│ψ⟩  →  │1⟩ g(f(ψ))     (apply f then g)
-                  ─────────
-                  DIFFERENT!
+**Compiled Circuit:**
+```
+Circuit: 6 gates on 2 qubits
+Permutation: [0, 1]
+Gates:
+  X on [0]
+  CS on [0, 1]
+  CH on [0, 1]
+  X on [0]
+  CH on [0, 1]
+  CS on [0, 1]
 
-QUESTION: Can we simplify?
+Circuit Diagram:
+q[0]: ───[X]─────●────●──[X]─────●────●──
+q[1]: ─────────[S]──[H]────────[H]──[S]──
+```
 
-ANSWER: Only if f and g COMMUTE, i.e., f ∘ g = g ∘ f
+**Circuit Derivation (from compositional structure):**
+```
+The circuit comes from the QSwitch COMBINATOR structure:
 
+    QSwitch = DistL ; Case(left, right)
 
-EXAMPLE: f = H, g = S
-─────────────────────
+    where Case compiles to anti-control pattern:
+        X[ctrl] ; Controlled(left) ; X[ctrl] ; Controlled(right)
 
-    H ∘ S  =  HS  (Hadamard then S-gate)
-    S ∘ H  =  SH  (S-gate then Hadamard)
+With f=H, g=S plugged in:
 
-    Do they commute?
+    left  = TenTerm(Id(I), S) ; TenTerm(Id(I), H)  →  CS ; CH
+    right = TenTerm(Id(I), H) ; TenTerm(Id(I), S)  →  CH ; CS
 
-    H = 1/√2 [1   1]      S = [1  0]
-             [1  -1]          [0  i]
+Result:
+    X[0] ; CS[0,1] ; CH[0,1] ; X[0] ; CH[0,1] ; CS[0,1]
+    ────   ─────────────────   ────   ─────────────────
+    flip   anti-controlled     flip   controlled
+           (S;H branch)        back   (H;S branch)
+```
 
-    HS = 1/√2 [1   i]     SH = 1/√2 [1   1]
-              [1  -i]               [i  -i]
+**Execution Trace:**
+```
+Input |0⟩|ψ⟩ (left branch → S then H):
+  X         →  |1⟩|ψ⟩
+  CS        →  |1⟩ S|ψ⟩      (fires)
+  CH        →  |1⟩ HS|ψ⟩     (fires)
+  X         →  |0⟩ HS|ψ⟩
+  CH, CS    →  (skip)
+  Output: |0⟩ H(S|ψ⟩)   ✓
 
-    HS ≠ SH   →   H and S do NOT commute!
+Input |1⟩|ψ⟩ (right branch → H then S):
+  X         →  |0⟩|ψ⟩
+  CS, CH    →  (skip)
+  X         →  |1⟩|ψ⟩
+  CH        →  |1⟩ H|ψ⟩      (fires)
+  CS        →  |1⟩ SH|ψ⟩     (fires)
+  Output: |1⟩ S(H|ψ⟩)   ✓
 
+Input |+⟩|ψ⟩:
+  BOTH branches execute coherently!
+  Output: (|0⟩ H(S|ψ⟩) + |1⟩ S(H|ψ⟩)) / √2
+  This is INDEFINITE CAUSAL ORDER!
+```
 
-CONSEQUENCE: NO SIMPLIFICATION POSSIBLE
+---
+
+## Summary: Compositional Construction
+
+```
+COMPOSITIONAL CONSTRUCTION DEMONSTRATED
 ───────────────────────────────────────
 
-    Since H ∘ S ≠ S ∘ H, the two branches produce genuinely
-    different results. The control qubit MATTERS.
-
-    Both branches must be compiled with controlled gates.
-    This is the TRUE quantum switch with indefinite causal order.
-
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│  CIRCUIT (QSwitch[H, S])                                                │
-└─────────────────────────────────────────────────────────────────────────┘
-
-Type: ((I ⊕ I) ⊗ Q) → ((I ⊗ Q) ⊕ (I ⊗ Q))
-      (width 2 → width 2)
-
-Compiling QSwitch[H, S]...
-
-Gate count: 6
-
-Gate sequence:
-    X q[0];
-    CS q[0], q[1];
-    CH q[0], q[1];
-    X q[0];
-    CH q[0], q[1];
-    CS q[0], q[1];
-
-CIRCUIT DIAGRAM:
-────────────────
-
-    ctrl ──X───●───●───X───●───●──
-           │   │   │   │   │   │
-    tgt  ─────CS──CH─────CH──CS───
-
-    Where:
-      X       = Pauli-X (bit flip) for anti-control
-      CH      = Controlled-Hadamard
-      CS      = Controlled-S (phase gate)
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                                                                 │
+    │   ABSTRACT QSWITCH COMBINATOR                                   │
+    │   ════════════════════════════                                  │
+    │                                                                 │
+    │   make_qswitch(f, g) =                                          │
+    │       DistL ; Case(                                             │
+    │           left  = (Id ⊗ g) ; (Id ⊗ f),                          │
+    │           right = (Id ⊗ f) ; (Id ⊗ g)                           │
+    │       )                                                         │
+    │                                                                 │
+    │   This structure is FIXED — it's the QSwitch combinator.        │
+    │                                                                 │
+    └─────────────────────────────────────────────────────────────────┘
+                              │
+                              │ plug in concrete gates
+                              ▼
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                                                                 │
+    │   INSTANTIATION                                                 │
+    │   ═════════════                                                 │
+    │                                                                 │
+    │   QSwitch[H, H] = make_qswitch(H, H)  →  Identity (H² = I)      │
+    │   QSwitch[H, S] = make_qswitch(H, S)  →  6 gates, non-trivial   │
+    │                                                                 │
+    │   The circuit structure comes from COMPOSING:                   │
+    │     • The abstract QSwitch combinator (provides shape)          │
+    │     • The concrete gates H, S (provide behavior)                │
+    │                                                                 │
+    └─────────────────────────────────────────────────────────────────┘
 
 
-EXECUTION TRACE:
-────────────────
+KEY INSIGHT:
 
-    Input │0⟩│ψ⟩ (Left branch → f(g(x)) = H(S(x))):
-      X         →  │1⟩│ψ⟩
-      CS        →  │1⟩ S│ψ⟩      (fires, ctrl=1)
-      CH        →  │1⟩ HS│ψ⟩     (fires, ctrl=1)
-      X         →  │0⟩ HS│ψ⟩
-      CH        →  │0⟩ HS│ψ⟩     (skips, ctrl=0)
-      CS        →  │0⟩ HS│ψ⟩     (skips, ctrl=0)
-      Output: │0⟩ H(S|ψ⟩)  ✓   (applied S then H = f∘g)
+    The QSwitch circuit is built COMPOSITIONALLY:
 
-    Input │1⟩│ψ⟩ (Right branch → g(f(x)) = S(H(x))):
-      X         →  │0⟩│ψ⟩
-      CS        →  │0⟩│ψ⟩        (skips, ctrl=0)
-      CH        →  │0⟩│ψ⟩        (skips, ctrl=0)
-      X         →  │1⟩│ψ⟩
-      CH        →  │1⟩ H│ψ⟩      (fires, ctrl=1)
-      CS        →  │1⟩ SH│ψ⟩     (fires, ctrl=1)
-      Output: │1⟩ S(H|ψ⟩)  ✓   (applied H then S = g∘f)
+        Circuit = Combinator(Structure) ∘ Gates(Behavior)
 
-    Input │+⟩│ψ⟩ = (│0⟩ + │1⟩)/√2 │ψ⟩:
-      BOTH branches execute coherently!
-      Output: (│0⟩ H(S|ψ⟩) + │1⟩ S(H|ψ⟩)) / √2
-      This is INDEFINITE CAUSAL ORDER!
+    NOT by directly embedding gates into a flat circuit.
 
-
-==========================================================================
-  SUMMARY
-==========================================================================
-
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│  QSWITCH INSTANTIATION COMPARISON                                       │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  QSwitch[f, f]  (ONE function, f = g):                                  │
-│  ─────────────────────────────────────                                  │
-│    Simplification: Both branches identical → f ∘ f                      │
-│    Control qubit: IRRELEVANT (passes through)                           │
-│    Example: QSwitch[H, H] = Identity (H² = I)                           │
-│    Gates: 6 (but all cancel to identity)                                │
-│                                                                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  QSwitch[f, g]  (TWO functions, f ≠ g, non-commuting):                  │
-│  ─────────────────────────────────────────────────────                  │
-│    Simplification: NONE (f∘g ≠ g∘f)                                     │
-│    Control qubit: ESSENTIAL (determines operation order)                │
-│    Example: QSwitch[H, S] → genuine quantum switch                      │
-│    Gates: 6 (X; CS; CH; X; CH; CS)                                      │
-│                                                                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  KEY INSIGHT:                                                           │
-│    QSwitch is only non-trivial when f and g DON'T commute.             │
-│    Commutativity [f,g] = 0  →  QSwitch[f,g] = f∘g (no switch)          │
-│    Non-commutativity        →  true indefinite causal order             │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-
+    This is higher-order quantum programming:
+    - QSwitch is a COMBINATOR that takes functions as arguments
+    - H and S are FUNCTION TERMS that get composed in
+    - The final circuit emerges from their composition
+```
