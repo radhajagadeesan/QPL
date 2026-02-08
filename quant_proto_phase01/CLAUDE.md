@@ -1,5 +1,22 @@
 # Claude Code Instructions
 
+## Core Principles (ALWAYS FOLLOW)
+
+1. **Well-tested code is non-negotiable.** I'd rather have too many tests than too few.
+2. **No unnecessary complexity.** All enhancements must be strictly-scoped — avoid over-engineering (premature abstraction, unnecessary complexity).
+3. **Never break production.** I'd rather miss a deadline than ship buggy code.
+
+## Workflow and Interaction
+
+- **No coding without analysis** — provide test plan first
+- **Data-focused** — before/after comparisons on metrics
+- **For every issue:**
+  1. First identify issue (bug, smell, design problem, or risk)
+  2. List concrete options with tradeoffs
+  3. Get explicit approval before making changes
+  4. For each option, specify: implementation effort, risk, impact on other code, maintenance burden
+  5. Add test explicitly demonstrating fix
+
 ## Truth Over Convenience (IMPORTANT)
 
 **Always provide actual results from real execution, not fabricated outputs.**
