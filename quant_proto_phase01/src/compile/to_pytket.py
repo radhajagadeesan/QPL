@@ -275,7 +275,7 @@ def _internal_width(t: Term) -> int:
     return max(type_width(dom), type_width(cod))
 
 
-def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> Compiled:
+def compile(term: Term, *, materialize: bool = False, explain: bool = False, env: Env = None) -> Compiled:
     # Check for Feedback - not currently supported
     if _contains_feedback(term):
         raise NotImplementedError(
@@ -870,22 +870,23 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
                             f"No controlled version for gate {cmd.op.type.name} in CaseExpr")
 
             # Left branch: bind x to payload wires, compile, emit anti-controlled
-            left_env = {**env, t.x: (payload_base, width(t.ty_x))}
-            # Compile left body to a sub-circuit
+            left_env = {**env, t.x: (0, width(t.ty_x))}  # x at wire 0 in sub-circuit
+            # Compile left body to a sub-circuit with env
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
             if left_w > 0:
-                # Compile left branch as a standalone circuit
-                left_cmds = list(compile(t.left, materialize=True).circuit.get_commands())
+                # Compile left branch with variable binding
+                left_cmds = list(compile(t.left, materialize=True, env=left_env).circuit.get_commands())
             else:
                 left_cmds = []
 
             # Right branch: bind y to payload wires, compile, emit controlled
-            right_env = {**env, t.y: (payload_base, width(t.ty_y))}
+            right_env = {**env, t.y: (0, width(t.ty_y))}  # y at wire 0 in sub-circuit
             right_dom, _ = type_of(t.right)
             right_w = width(right_dom)
             if right_w > 0:
-                right_cmds = list(compile(t.right, materialize=True).circuit.get_commands())
+                # Compile right branch with variable binding
+                right_cmds = list(compile(t.right, materialize=True, env=right_env).circuit.get_commands())
             else:
                 right_cmds = []
 
@@ -1017,20 +1018,43 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
 
             # Route body output to B_slot:
             # Body output is on [offset..offset+wB), need it on [offset+wA..offset+wA+wB)
-            # For wA == wB (endomorphisms), this is a block swap.
-            if wA > 0 and wB > 0 and wA == wB:
-                # Swap A_slot and B_slot blocks
-                # Permutation: [wA, wA+1, ..., 2wA-1, 0, 1, ..., wA-1]
-                local_perm = list(range(wA, 2 * wA)) + list(range(wA))
-                step = embed_local_perm(WirePerm(2 * wA, local_perm), offset)
+            #
+            # The lambda output layout is [A_slot | B_slot]:
+            #   - A_slot [0..wA): exposed argument input interface
+            #   - B_slot [wA..wA+wB): body result
+            #
+            # After body compiles, result is on [0..wB). We need to shift it right by wA.
+            total_width = wA + wB
+            if total_width > 0 and wB > 0:
+                # Build permutation: shift B wires right by wA positions
+                # new_to_old[i] = where wire i's content comes from
+                #
+                # For wires [0..wA): these become A_slot (identity, keep as-is)
+                # For wires [wA..wA+wB): these get content from [0..wB)
+                #   new wire (wA + j) gets old wire j, for j in 0..wB-1
+                #
+                # In new_to_old format:
+                #   perm[wA + j] = j  (B_slot gets body output)
+                #   perm[i] = wA + i for i in 0..wA-1 (A_slot gets what was after body output)
+                #
+                # But wait - after body, wires [0..wB) have result, [wB..wA+wB) are unchanged.
+                # We want: [0..wA) = A_slot (input interface), [wA..wA+wB) = body result
+                #
+                # For wA == wB: swap [0..wA) and [wA..2wA) -> works
+                # For wA != wB: need proper routing
+                #
+                # Correct routing:
+                #   - Body output [0..wB) → B_slot [wA..wA+wB)
+                #   - Original input interface was [0..wA), but body consumed it
+                #   - After routing, A_slot [0..wA) should be the "exposed" interface
+                #
+                # The permutation rotates: [0..wA+wB) → [wB, wB+1, ..., wA+wB-1, 0, 1, ..., wB-1]
+                # This puts body output (was at [0..wB)) at [wA..wA+wB)
+                local_perm = list(range(wB, total_width)) + list(range(wB))
+                step = embed_local_perm(WirePerm(total_width, local_perm), offset)
                 p = compose(step, p)
                 if explain:
-                    log.append(f"Lam '{t.name}': route body output to B_slot via swap")
-            elif wA != wB:
-                # Different widths - need rotation, not swap
-                # For now, only handle the wA == wB case
-                if explain:
-                    log.append(f"Lam '{t.name}': wA={wA} != wB={wB}, routing not yet implemented")
+                    log.append(f"Lam '{t.name}': route body output to B_slot, wA={wA}, wB={wB}")
 
             if explain:
                 log.append(f"Lam '{t.name}': x at [{x_start}, {x_start+wA}), B_slot at [{offset+wA}, {offset+wA+wB})")
@@ -1086,14 +1110,18 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
             # But Apply's output type is B (width wB), so we need to
             # route B_slot to [offset..offset+wB)
             #
-            # This is the inverse of Lam's routing: swap A_slot and B_slot back
-            if wA > 0 and wB > 0 and wA == wB:
-                # Swap back: [wA, wA+1, ..., 2wA-1, 0, 1, ..., wA-1]
-                local_perm = list(range(wA, 2 * wA)) + list(range(wA))
-                step = embed_local_perm(WirePerm(2 * wA, local_perm), offset)
+            # This is the inverse of Lam's routing.
+            # Lam did: rotate left by wB (body output [0..wB) → [wA..wA+wB))
+            # Apply undoes: rotate right by wB (B_slot [wA..wA+wB) → [0..wB))
+            total_width = wA + wB
+            if total_width > 0 and wB > 0:
+                # Inverse rotation: [wA, wA+1, ..., wA+wB-1, 0, 1, ..., wA-1]
+                # This puts B_slot (was at [wA..wA+wB)) back to [0..wB)
+                local_perm = list(range(wA, total_width)) + list(range(wA))
+                step = embed_local_perm(WirePerm(total_width, local_perm), offset)
                 p = compose(step, p)
                 if explain:
-                    log.append(f"Apply: route B_slot to output via swap")
+                    log.append(f"Apply: route B_slot to output, wA={wA}, wB={wB}")
 
             if explain:
                 log.append(f"Apply: arg at offset {offset}, f at offset {offset}, result at [{offset}, {offset+wB})")
@@ -1150,7 +1178,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False) -> 
 
         raise TypeError(f"Unknown term node: {t!r}")
 
-    go(term)
+    go(term, env=env if env else {})
 
     if materialize:
         swaps = swaps_for_perm(p)

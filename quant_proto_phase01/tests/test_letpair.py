@@ -309,5 +309,51 @@ class TestQSwitchInstantiated:
         assert result.circuit.n_gates >= 1
 
 
+# =============================================================================
+# CaseExpr with Variable Binding (tests env passing)
+# =============================================================================
+
+class TestCaseExprWithVarBinding:
+    """Tests for CaseExpr that reference bound variables.
+
+    This tests the fix for the env-passing bug where CaseExpr
+    created left_env/right_env but didn't pass them to compile().
+    """
+
+    def test_caseexpr_var_reference_in_branch(self):
+        """CaseExpr branch that references the bound variable compiles correctly."""
+        from lang.terms import CaseExpr
+
+        # Scrutinee: identity on Bool = I + I
+        bool_ty = Plus(Unit(), Unit())
+        scrut = Id(bool_ty)
+
+        # Left branch: apply H to x (where x is bound to the payload)
+        # Since payload is Unit (width 0), we use a different type
+        # Let's use Q + Q instead so payload has width
+        sum_q = Plus(Q(), Q())
+        scrut_q = Id(sum_q)
+
+        # Left branch: reference x and apply H
+        # x : Q is bound to payload wires
+        left_body = Seq(Var("x", Q()), H(0, Q()))
+
+        # Right branch: reference y and apply S
+        right_body = Seq(Var("y", Q()), S(0, Q()))
+
+        case_expr = CaseExpr(
+            scrut=scrut_q,
+            x="x", y="y",
+            ty_x=Q(), ty_y=Q(),
+            left=left_body,
+            right=right_body
+        )
+
+        # Should compile without error (tests env passing)
+        result = compile(case_expr)
+        # Should have controlled gates (anti-ctrl H, ctrl S)
+        assert result.circuit.n_gates >= 2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
