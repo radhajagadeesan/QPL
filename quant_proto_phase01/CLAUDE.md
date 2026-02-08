@@ -17,6 +17,31 @@
   4. For each option, specify: implementation effort, risk, impact on other code, maintenance burden
   5. Add test explicitly demonstrating fix
 
+## Review Process (For Non-Trivial Changes)
+
+**Work through iteratively, one section at a time, with at least 4 top issues in each:**
+
+1. **Architecture Review**
+   - System design and component boundaries
+   - Code organization and module structure
+   - Patterns and abstractions
+
+2. **Code Quality Review**
+   - Readability, testing, and debugging ease
+   - Technical debt and optimization opportunities
+   - Library choices and dependency management
+
+3. **Tests Review**
+   - API coverage gaps (unit, integration, e2e)
+   - Error handling and validation coverage
+   - Security edge-case coverage
+
+4. **Performance Review**
+   - Before/after metrics comparisons
+   - Maintainability analysis
+
+**For each stage:** Output explanation, pros/cons, and optimization recommendation. Ask for input on direction before proceeding to next stage.
+
 ## Truth Over Convenience (IMPORTANT)
 
 **Always provide actual results from real execution, not fabricated outputs.**
