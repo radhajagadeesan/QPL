@@ -18,6 +18,7 @@ dune build ocaml-demos/
 dune exec ocaml-demos/abstract_qswitch_e2e.exe
 dune exec ocaml-demos/qswitch_instantiated_e2e.exe
 dune exec ocaml-demos/zn_controlled_phase_e2e.exe
+dune exec ocaml-demos/short_circuit_e2e.exe
 ```
 
 ## Demos
@@ -49,6 +50,26 @@ Demonstrates coherent control over cyclic groups:
 - Z5: CRz binary decomposition with 5th roots of unity (3 gates)
 
 Key insight: Binary decomposition gives O(log n) gate count.
+
+### short_circuit_e2e.ml
+
+Implements short-circuit conjunction with witness routing and quantum phase marking:
+
+**Types:**
+- `Bool = I + I` (2-element type)
+- `W = I + Bool` (witness: short-circuited vs evaluated path)
+
+**Operations:**
+- `toggle_W = id_I ⊕ twist_{I,I}` : W → W (1 gate)
+- `ctrl_W(M_0, M_1)` : Bool ⊗ W → Bool ⊗ W (coherent control)
+- `and_sc` : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W (3 gates)
+
+**Quantum extension:**
+- `phase_W` applies -1 phase to short-circuit branch
+- Creates interference between execution paths
+
+Key insight: Classical short-circuit logic lifts to quantum coherent control
+using the same structural patterns as QSwitch.
 
 ## Architecture
 

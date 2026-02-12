@@ -9,3 +9,7 @@
 (executable
  (name zn_controlled_phase_e2e)
  (libraries qpl_surface str))
+
+(executable
+ (name short_circuit_e2e)
+ (libraries qpl_surface str))
