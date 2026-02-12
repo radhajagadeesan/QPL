@@ -704,6 +704,72 @@ class PlusMap:
     right: "Term"  # g : B → D
 
 
+@dataclass(frozen=True, slots=True)
+class PhasedPlusMap:
+    """Phase-weighted bifunctorial action on sums.
+
+    Like PlusMap, but applies a phase factor z = e^{iθ} to the left branch.
+    This is the phase-weighted bifunctor omap_z(f, g) from the spec.
+
+    Given:
+        theta : float (phase angle, z = e^{iθ})
+        left  : A → C
+        right : B → D
+
+    Produces a term of type (A + B) → (C + D) that:
+    - Applies `left` when in left summand, THEN multiplies by phase z
+    - Applies `right` when in right summand (no phase)
+    - Preserves the tag
+
+    Implementation:
+    For A ⊕ B with tag qubit(s), the phase on the left branch becomes a
+    controlled-phase gate on the tag qubit(s). For a binary sum (1 tag qubit):
+        X; P(θ); X  applies phase e^{iθ} when tag=0 (left branch)
+
+    For larger sums with multi-qubit tags, uses multi-controlled phase
+    targeting the left branch's tag encoding.
+
+    Type parameters:
+        theta:    Phase angle (z = e^{iθ}, validated |z| = 1 in OCaml)
+        ty_left:  A (left summand input type)
+        ty_right: B (right summand input type)
+    """
+    theta: float   # Phase angle (z = e^{iθ})
+    ty_left: Ty    # A (left input)
+    ty_right: Ty   # B (right input)
+    left: "Term"   # f : A → C
+    right: "Term"  # g : B → D
+
+
+@dataclass(frozen=True, slots=True)
+class PhasedControl:
+    """Phase-weighted n-ary coherent control.
+
+    Given an n-ary datatype D with arity k and phases [θ₀, ..., θ_{k-1}],
+    applies phase e^{iθᵢ} when control is in branch i.
+
+    Type: D ⊗ A → D ⊗ A
+
+    Uses efficient log₂(k) tag encoding. For each tag value i with binary
+    pattern b₀b₁...b_{n-1}:
+    - Apply X to bits that are 0 in the pattern
+    - Apply multi-controlled U1(θᵢ/π)
+    - Apply X to restore
+
+    Parameters:
+        name:     Datatype name (for debugging)
+        arity:    Number of branches k
+        phases:   List of phase angles [θ₀, ..., θ_{k-1}]
+        dt_rep:   Datatype representation (I^{⊕k})
+        a_ty:     Target type A
+    """
+    name: str
+    arity: int
+    phases: list  # List of floats (angles in radians)
+    dt_rep: Ty    # Datatype representation
+    a_ty: Ty      # Target type
+
+
 # -- Controlled combinator (inductive construction)
 
 @dataclass(frozen=True, slots=True)
@@ -789,6 +855,10 @@ Term = Union[
     CaseExpr,
     # Bifunctorial action on sums (⊕-Map)
     PlusMap,
+    # Phase-weighted bifunctorial action
+    PhasedPlusMap,
+    # Phase-weighted n-ary control
+    PhasedControl,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
     # Controlled combinator (inductive)

@@ -95,6 +95,10 @@ type term =
   | TApply of term * term  (* application: f arg, compiled via GOI *)
   (* Bifunctorial action on sums (⊕-Map) *)
   | TPlusMap of Rep.t * Rep.t * term * term  (* f ⊕ g : (A + B) → (C + D) *)
+  (* Phase-weighted bifunctorial action: applies phase z to left branch *)
+  | TPhasedPlusMap of float * Rep.t * Rep.t * term * term  (* phase θ, ty_left, ty_right, f, g *)
+  (* Phase-weighted n-ary control: applies phase zᵢ to branch i *)
+  | TPhasedControl of string * int * float list * Rep.t * Rep.t  (* name, arity, phases, dt_rep, a_ty *)
   (* Pattern-matching case on sums *)
   | TCase of Rep.t * Rep.t * term * term * term  (* case scrut of Left => left | Right => right *)
 
@@ -190,6 +194,16 @@ let rec term_to_json = function
   | TPlusMap (ty_left, ty_right, left, right) ->
     Printf.sprintf {|{"node": "PlusMap", "ty_left": %s, "ty_right": %s, "left": %s, "right": %s}|}
       (type_to_json ty_left) (type_to_json ty_right) (term_to_json left) (term_to_json right)
+  (* Phase-weighted bifunctorial action *)
+  | TPhasedPlusMap (theta, ty_left, ty_right, left, right) ->
+    Printf.sprintf {|{"node": "PhasedPlusMap", "theta": %f, "ty_left": %s, "ty_right": %s, "left": %s, "right": %s}|}
+      theta (type_to_json ty_left) (type_to_json ty_right) (term_to_json left) (term_to_json right)
+  (* Phase-weighted n-ary control *)
+  | TPhasedControl (name, arity, phases, dt_rep, a_ty) ->
+    let phases_json = Printf.sprintf "[%s]"
+      (String.concat ", " (List.map (Printf.sprintf "%f") phases)) in
+    Printf.sprintf {|{"node": "PhasedControl", "name": "%s", "arity": %d, "phases": %s, "dt_rep": %s, "a_ty": %s}|}
+      name arity phases_json (type_to_json dt_rep) (type_to_json a_ty)
   (* Pattern-matching case on sums *)
   | TCase (ty_left, ty_right, scrut, left, right) ->
     Printf.sprintf {|{"node": "CaseExpr", "ty_left": %s, "ty_right": %s, "scrut": %s, "left": %s, "right": %s}|}

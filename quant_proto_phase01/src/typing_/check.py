@@ -31,6 +31,8 @@ from lang.terms import (
     Case,
     CaseExpr,
     PlusMap,
+    PhasedPlusMap,
+    PhasedControl,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
     # Controlled combinator
@@ -309,6 +311,39 @@ def type_of(t: Term) -> DomCod:
         # Result type: (A + B) → (C + D), tag preserved
         dom = Plus(t.ty_left, t.ty_right)
         cod = Plus(left_cod, right_cod)
+        return (dom, cod)
+
+    # PhasedPlusMap: like PlusMap but with phase on left branch
+    if isinstance(t, PhasedPlusMap):
+        # Same typing as PlusMap, phase is runtime parameter
+        left_dom, left_cod = type_of(t.left)
+        right_dom, right_cod = type_of(t.right)
+
+        # Check that branch domains match declared types (by width)
+        if width(left_dom) != width(t.ty_left):
+            raise TypeCheckError(
+                f"PhasedPlusMap left branch domain mismatch:\n"
+                f"  declared ty_left = {pretty(t.ty_left)} (width {width(t.ty_left)})\n"
+                f"  actual left dom  = {pretty(left_dom)} (width {width(left_dom)})"
+            )
+        if width(right_dom) != width(t.ty_right):
+            raise TypeCheckError(
+                f"PhasedPlusMap right branch domain mismatch:\n"
+                f"  declared ty_right = {pretty(t.ty_right)} (width {width(t.ty_right)})\n"
+                f"  actual right dom  = {pretty(right_dom)} (width {width(right_dom)})"
+            )
+
+        # Result type: (A + B) → (C + D), tag preserved
+        dom = Plus(t.ty_left, t.ty_right)
+        cod = Plus(left_cod, right_cod)
+        return (dom, cod)
+
+    # PhasedControl: phase-weighted n-ary control
+    if isinstance(t, PhasedControl):
+        # Type: D ⊗ A → D ⊗ A where D = dt_rep
+        # phases is just runtime data, doesn't affect typing
+        dom = Ten(t.dt_rep, t.a_ty)
+        cod = Ten(t.dt_rep, t.a_ty)
         return (dom, cod)
 
     # CaseExpr: pattern-matching case with variable binding

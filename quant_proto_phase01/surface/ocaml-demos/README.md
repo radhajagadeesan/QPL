@@ -64,12 +64,19 @@ Implements short-circuit conjunction with witness routing and quantum phase mark
 - `ctrl_W(M_0, M_1)` : Bool ⊗ W → Bool ⊗ W (coherent control)
 - `and_sc` : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W (3 gates)
 
-**Quantum extension:**
-- `phase_W` applies -1 phase to short-circuit branch
+**Quantum phase extension (using phased_omap0):**
+- `phase_W = phased_omap0 (-1) (id_I) (id_Bool)` : W → W (5 gates)
+- Applies -1 phase to short-circuit branch (tag=00)
 - Creates interference between execution paths
 
+**N-ary phased control (using phased_control):**
+- `phased_control` generalizes to n-ary datatypes with per-branch phases
+- Example: W (3 branches) with phases [-1, +1, +i] uses efficient 2-tag-qubit encoding
+- Trivial phases (+1) are optimized away
+
 Key insight: Classical short-circuit logic lifts to quantum coherent control
-using the same structural patterns as QSwitch.
+using the same structural patterns as QSwitch. Phase-weighted combinators
+enable quantum interference by marking execution paths.
 
 ## Architecture
 

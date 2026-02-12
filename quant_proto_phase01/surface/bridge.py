@@ -38,6 +38,10 @@ from lang.terms import (
     ExpSwap, ExpInvolution,
     # Bifunctorial action on sums
     PlusMap,
+    # Phase-weighted bifunctorial action
+    PhasedPlusMap,
+    # Phase-weighted n-ary control
+    PhasedControl,
     # Case combinator
     Case,
 )
@@ -317,6 +321,25 @@ def parse_term(j: dict, ty_total: Ty = None) -> Term:
         left = parse_term(j["left"], ty_left)
         right = parse_term(j["right"], ty_right)
         return PlusMap(ty_left, ty_right, left, right)
+
+    # Phase-weighted bifunctorial action
+    elif node == "PhasedPlusMap":
+        theta = j["theta"]
+        ty_left = parse_type(j["ty_left"])
+        ty_right = parse_type(j["ty_right"])
+        # Branches operate on payload types, not full sum type
+        left = parse_term(j["left"], ty_left)
+        right = parse_term(j["right"], ty_right)
+        return PhasedPlusMap(theta, ty_left, ty_right, left, right)
+
+    # Phase-weighted n-ary control
+    elif node == "PhasedControl":
+        name = j["name"]
+        arity = j["arity"]
+        phases = j["phases"]  # List of floats (angles in radians)
+        dt_rep = parse_type(j["dt_rep"])
+        a_ty = parse_type(j["a_ty"])
+        return PhasedControl(name, arity, phases, dt_rep, a_ty)
 
     # Pattern-matching case expression from OCaml Linear DSL
     # CaseExpr = Seq(scrut, Case(ty_left, ty_right, left, right))

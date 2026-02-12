@@ -166,6 +166,20 @@ let and_sc =
     Applies -1 phase to the I branch (short-circuit path),
     identity (+1 phase) to the Bool branch (evaluation path).
 
+    DESIGN NOTE: The spec writes this as omap_{-1}(id_I, id_Bool), which is
+    a phase-weighted bifunctor. In the source DSL, we express this as:
+
+      phase_w = omap0 one bool_ty (phase (-1) one) (id bool_ty)
+
+    However, `phase z ty` on Unit type (0 qubits) currently emits identity
+    since global phase is unobservable in isolation. The phase becomes
+    meaningful only in controlled context (PlusMap), but this requires
+    additional infrastructure to propagate phase through the bifunctor.
+
+    For the demo, we provide both:
+    1. phase_w_source - the intended source-level expression
+    2. phase_w_bridge - direct Bridge implementation that works correctly
+
     In our encoding, W = I + Bool has 2 tag qubits (3 variants):
       Tag 00 = inl(unit)      <- short-circuit path
       Tag 01 = inr(inl(unit))
@@ -180,6 +194,22 @@ let and_sc =
     - X[1]; X[0] maps back |11⟩ → |00⟩
     - Net effect: -1 phase on |00⟩ only, identity on other states
 *)
+
+(** Source-level phase_W using phased_omap0.
+
+    This is the correct source-level implementation:
+      phase_w = phased_omap0 (-1) one bool_ty (id one) (id bool_ty)
+
+    The phased_omap0 combinator applies phase z = e^{iθ} to the left branch
+    (when tag=0), using controlled-phase gates on the tag qubit(s).
+*)
+let neg_one = Complex.neg Complex.one
+
+let phase_w : (unit, [`Lolli of [`Plus of [`One] * [`Plus of [`One] * [`One]]]
+                               * [`Plus of [`One] * [`Plus of [`One] * [`One]]]]) prog =
+  phased_omap0 neg_one one bool_ty (id one) (id bool_ty)
+
+(** Bridge-level phase_W - for comparison with source-level. *)
 let phase_w_bridge : Bridge.term =
   (* W has 2 tag qubits at indices 0 and 1 *)
   let x0 = Bridge.TX 0 in
@@ -194,14 +224,12 @@ let phase_w_bridge : Bridge.term =
 
 (** kick : (Bool ⊗ Bool) ⊗ W -> (Bool ⊗ Bool) ⊗ W
 
-    Applies phase_W to the witness wire while preserving the booleans.
-
-    Input type: (Bool ⊗ Bool) ⊗ W = 4 qubits
-    Wire layout: [b1_tag | b2_tag | w_tag0 | w_tag1]
-
-    We need to apply phase_W (which acts on wires 0,1) to the W part
-    (which is at wires 2,3). So we use wire indices 2 and 3.
+    Source-level: applies id to (Bool ⊗ Bool) and phase_W to W.
+    This is simply: kick = id_BB ⊗ phase_W = par0 (id bb_ty) phase_w
 *)
+let kick = par0 (id bb_ty) phase_w
+
+(** kick_bridge - for comparison with source-level. *)
 let kick_bridge : Bridge.term =
   (* W is at wires 2 and 3 in the (Bool ⊗ Bool) ⊗ W layout *)
   let x2 = Bridge.TX 2 in
@@ -215,6 +243,14 @@ let kick_bridge : Bridge.term =
 
 
 (** and_sc_quant : (Bool ⊗ Bool) ⊗ W -> (Bool ⊗ Bool) ⊗ W
+
+    Source-level quantum short-circuit conjunction:
+    and_sc_quant = and_sc ; kick
+*)
+let and_sc_quant = seq0 and_sc kick
+
+
+(** and_sc_quant_bridge - for comparison.
 
     Quantum short-circuit conjunction: structural routing followed by phase marking.
 
@@ -368,7 +404,16 @@ Quantum phase marking creates interference between paths:
     Applies -1 phase to inl branch (short-circuit occurred)
     Identity phase to inr branch (evaluation path)
 
-  Implementation for W with 2 tag qubits:
+  Spec notation: omap_{-1}(id_I, id_Bool) - phase-weighted bifunctor
+
+  Source-level expression:
+    phase_w = omap0 one bool_ty (phase (-1) one) (id bool_ty)
+
+  Note: phase on Unit type (0 qubits) currently emits identity since
+  global phase is unobservable in isolation. Proper support requires
+  propagating phase through PlusMap as controlled-phase on tag qubits.
+
+  Working implementation for W with 2 tag qubits:
     Tag 00 = inl(unit) <- short-circuit path
     Tag 01 = inr(inl(unit))
     Tag 10 = inr(inr(unit))
@@ -380,7 +425,19 @@ Quantum phase marking creates interference between paths:
     - Net effect: -1 phase on |00⟩ only
 ";
 
-  Printf.printf "\nphase_W on W (2 qubits):\n";
+  print_endline "\n--- Source-level phase_W (using phased_omap0) ---\n";
+  Printf.printf "phase_w = phased_omap0 neg_one one bool_ty (id one) (id bool_ty)\n";
+  Printf.printf "  Bridge: %s\n" (Bridge.term_to_json (emit phase_w));
+  (match Bridge.compile (emit phase_w) with
+   | Bridge.CompileOk (perm, size) ->
+       Printf.printf "  ✓ Gates: %d\n" size;
+       Printf.printf "    Perm:  [%s]\n"
+         (String.concat ", " (List.map string_of_int perm.new_to_old))
+   | Bridge.CompileError err ->
+       Printf.printf "  ✗ FAILED: %s\n" err);
+
+  print_endline "\n--- Bridge-level phase_W (for comparison) ---\n";
+  Printf.printf "phase_w_bridge = X[0]; X[1]; CZ[0,1]; X[1]; X[0]\n";
   Printf.printf "  Bridge: %s\n" (Bridge.term_to_json phase_w_bridge);
   (match Bridge.compile phase_w_bridge with
    | Bridge.CompileOk (perm, size) ->
@@ -392,12 +449,22 @@ Quantum phase marking creates interference between paths:
 
   print_endline "
 kick : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
-  Applies phase_W to witness wire (at indices 2,3)
-  Preserves boolean wires (at indices 0,1)
+  Source-level: kick = par0 (id bb_ty) phase_w
+  Applies phase_W to witness wire, preserves booleans
 ";
 
-  Printf.printf "\nkick on (Bool ⊗ Bool) ⊗ W (4 qubits):\n";
-  Printf.printf "  Bridge: %s\n" (Bridge.term_to_json kick_bridge);
+  print_endline "\n--- Source-level kick ---\n";
+  Printf.printf "kick = par0 (id bb_ty) phase_w\n";
+  (match Bridge.compile (emit kick) with
+   | Bridge.CompileOk (perm, size) ->
+       Printf.printf "  ✓ Gates: %d\n" size;
+       Printf.printf "    Perm:  [%s]\n"
+         (String.concat ", " (List.map string_of_int perm.new_to_old))
+   | Bridge.CompileError err ->
+       Printf.printf "  ✗ FAILED: %s\n" err);
+
+  print_endline "\n--- Bridge-level kick (for comparison) ---\n";
+  Printf.printf "kick_bridge = X[2]; X[3]; CZ[2,3]; X[3]; X[2]\n";
   (match Bridge.compile kick_bridge with
    | Bridge.CompileOk (perm, size) ->
        Printf.printf "  ✓ Gates: %d\n" size;
@@ -407,15 +474,25 @@ kick : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
        Printf.printf "  ✗ FAILED: %s\n" err);
 
   print_endline "
-and_sc_quant := and_sc ; kick
+and_sc_quant : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
+  Source-level: and_sc_quant = seq0 and_sc kick
   Structural routing followed by phase marking
-  Creates interference between execution paths
 ";
 
-  Printf.printf "\nand_sc_quant = and_sc ; kick:\n";
+  print_endline "\n--- Source-level and_sc_quant ---\n";
+  Printf.printf "and_sc_quant = seq0 and_sc kick\n";
+  (match Bridge.compile (emit and_sc_quant) with
+   | Bridge.CompileOk (perm, size) ->
+       Printf.printf "  ✓ Gates: %d (3 from and_sc + gates from kick)\n" size;
+       Printf.printf "    Perm:  [%s]\n"
+         (String.concat ", " (List.map string_of_int perm.new_to_old))
+   | Bridge.CompileError err ->
+       Printf.printf "  ✗ FAILED: %s\n" err);
+
+  print_endline "\n--- Bridge-level and_sc_quant (for comparison) ---\n";
   (match Bridge.compile and_sc_quant_bridge with
    | Bridge.CompileOk (perm, size) ->
-       Printf.printf "  ✓ Gates: %d (3 from and_sc + 5 from kick)\n" size;
+       Printf.printf "  ✓ Gates: %d\n" size;
        Printf.printf "    Perm:  [%s]\n"
          (String.concat ", " (List.map string_of_int perm.new_to_old))
    | Bridge.CompileError err ->
@@ -432,6 +509,62 @@ When run on superposition input |+⟩ ⊗ |b2⟩ ⊗ |w⟩:
 The -1 phase on the short-circuit path creates interference,
 encoding control-flow history in the quantum state.
 ";
+
+  (* ======================================================================= *)
+  banner "PART 8: N-ary Phased Control (phased_control)";
+
+  print_endline "
+The phased_control combinator generalizes phased_omap0 to n-ary datatypes:
+
+  phased_control : D → Complex.t array → A ty → (A → A) array → D ⊗ A → D ⊗ A
+
+For datatype D with arity k and phases [z₀; ...; z_{k-1}]:
+  - Applies phase zᵢ when control is in branch i
+  - Uses efficient log₂(k) tag encoding
+
+Example: W = I + Bool is a 3-element type (W_datatype with arity 3)
+  Tag 00 = inl(·)        short-circuit path
+  Tag 01 = inr(inl(·))   evaluation with false
+  Tag 10 = inr(inr(·))   evaluation with true
+
+Phases [-1, +1, +i] would apply:
+  - θ₀ = π   on tag 00  (branch 0)
+  - θ₁ = 0   on tag 01  (branch 1, trivial)
+  - θ₂ = π/2 on tag 10  (branch 2)
+";
+
+  (* Create a datatype descriptor for W *)
+  let w_datatype = datatype
+    ~name:"W"
+    ~arity:3
+    ~labels:["sc"; "eval_false"; "eval_true"]
+    ~ops:[]
+  in
+
+  (* Phases: -1 on branch 0, +1 on branch 1, +i on branch 2 *)
+  let pi = Float.pi in
+  let phases = [|
+    Complex.polar 1.0 pi;       (* -1 = e^{iπ} *)
+    Complex.one;                 (* +1 = e^{0} *)
+    Complex.polar 1.0 (pi /. 2.0)  (* +i = e^{iπ/2} *)
+  |] in
+
+  let phase_w_nary = phased_control w_datatype phases one [| id one; id one; id one |] in
+
+  print_endline "\n--- phased_control on W (3 branches, 2 tag qubits) ---\n";
+  Printf.printf "phases = [-1, +1, +i] = [e^{iπ}, e^{0}, e^{iπ/2}]\n";
+  Printf.printf "phase_w_nary = phased_control w_datatype phases one [id; id; id]\n\n";
+  (match Bridge.compile (emit phase_w_nary) with
+   | Bridge.CompileOk (perm, size) ->
+       Printf.printf "  ✓ Gates: %d\n" size;
+       Printf.printf "    Perm:  [%s]\n"
+         (String.concat ", " (List.map string_of_int perm.new_to_old));
+       print_endline "\n  Expected gate pattern:";
+       print_endline "    Branch 0 (tag=00, phase=π): X[0]; X[1]; CU1(1.0); X[1]; X[0]";
+       print_endline "    Branch 1 (tag=01, phase=0): skipped (trivial phase +1)";
+       print_endline "    Branch 2 (tag=10, phase=π/2): X[0]; CU1(0.5); X[0]"
+   | Bridge.CompileError err ->
+       Printf.printf "  ✗ FAILED: %s\n" err);
 
   (* ======================================================================= *)
   banner "SUMMARY";

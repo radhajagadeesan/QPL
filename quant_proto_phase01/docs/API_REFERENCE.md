@@ -135,6 +135,45 @@ On superposition inputs, both branches execute coherently (indefinite causal ord
 - Case: `[f, g] : (A + B) → C` — copairing, both branches produce same output type
 - PlusMap: `f ⊕ g : (A + B) → (C + D)` — bifunctor, branches can have different output types
 
+### Phase-Weighted Bifunctors
+
+| Term | Type | Description |
+|------|------|-------------|
+| `PhasedPlusMap(theta, ty_left, ty_right, left, right)` | (A + B) → (C + D) | Phase-weighted bifunctor |
+| `PhasedControl(name, arity, phases, dt_rep, a_ty)` | D ⊗ A → D ⊗ A | N-ary phased control |
+
+**PhasedPlusMap signature:**
+```python
+PhasedPlusMap(
+    theta: float,       # Phase angle (z = e^{iθ})
+    ty_left: Ty,        # Type A (left input type)
+    ty_right: Ty,       # Type B (right input type)
+    left: Term,         # Left branch: A → C
+    right: Term         # Right branch: B → D
+) -> Term
+# Returns: term of type (A + B) → (C + D)
+# Applies phase e^{iθ} to left branch, identity phase to right
+```
+
+**PhasedControl signature:**
+```python
+PhasedControl(
+    name: str,          # Datatype name (for diagnostics)
+    arity: int,         # Number of branches k
+    phases: list,       # List of k floats (angles θᵢ in radians)
+    dt_rep: Ty,         # Datatype representation (sum type)
+    a_ty: Ty            # Payload type A
+) -> Term
+# Returns: term of type D ⊗ A → D ⊗ A where D has k branches
+# Applies phase e^{iθᵢ} when control is in branch i
+# Uses efficient ⌈log₂(k)⌉ tag encoding
+```
+
+**Compilation:**
+- PhasedPlusMap: X gates to select tag pattern, controlled-U1 for phase, X gates restore
+- PhasedControl: For each non-trivial phase, applies same pattern with multi-controlled U1
+- Trivial phases (θ = 0, i.e., z = +1) are optimized away
+
 ### Gates
 
 All gates take wire indices and an ambient type `ty_total`.

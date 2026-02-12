@@ -185,6 +185,69 @@ The compiler:
 2. Decomposes P into disjoint transpositions
 3. Emits `ExpSwap` gates for each transposition
 
+### Phase-Weighted Bifunctors
+
+Phase-weighted combinators apply quantum phases to specific branches of sum types,
+enabling interference patterns for quantum control flow.
+
+#### phased_omap0 (Binary Sums)
+
+For binary sum types `A + B`, applies phase `z = e^{iθ}` to the left branch:
+
+```ocaml
+phased_omap0 : Complex.t → 'a ty → 'b ty → (A → C) → (B → D) → (A+B → C+D)
+```
+
+**Semantics:**
+- Left branch (tag=0): applies `z · f` (phase z times f)
+- Right branch (tag=1): applies `g` (no phase)
+
+**Example (OCaml):**
+```ocaml
+open Qpl_surface.Linear
+
+(* Apply -1 phase to left branch of Bool = I + I *)
+let neg_one = Complex.neg Complex.one
+let phase_w = phased_omap0 neg_one one bool_ty (id one) (id bool_ty)
+(* Compiles to: X[0]; X[1]; CU1(1.0); X[1]; X[0] for 2-tag-qubit type *)
+```
+
+**Requirements:**
+- Phase must have modulus 1: |z| = 1
+
+#### phased_control (N-ary Datatypes)
+
+Generalizes to n-ary datatypes with per-branch phases:
+
+```ocaml
+phased_control : datatype_desc → Complex.t array → 'a ty → (A → A) array → D ⊗ A → D ⊗ A
+```
+
+For a datatype `D` with k branches, applies phase `zᵢ` when control is in branch i.
+
+**Efficient encoding:** Uses ⌈log₂(k)⌉ tag qubits instead of nested binary sums.
+
+**Example (OCaml):**
+```ocaml
+(* W = I + Bool is a 3-element witness type *)
+let w_datatype = datatype ~name:"W" ~arity:3
+  ~labels:["sc"; "eval_false"; "eval_true"] ~ops:[]
+
+(* Apply phases [-1, +1, +i] to branches 0, 1, 2 *)
+let phases = [|
+  Complex.polar 1.0 Float.pi;       (* branch 0: -1 = e^{iπ} *)
+  Complex.one;                       (* branch 1: +1 = e^{0} - trivial *)
+  Complex.polar 1.0 (Float.pi/.2.0) (* branch 2: +i = e^{iπ/2} *)
+|]
+let phase_w_nary = phased_control w_datatype phases one [| id one; id one; id one |]
+(* Trivial phase (+1) on branch 1 is skipped - no gates emitted *)
+```
+
+**Compilation pattern** for applying phase `e^{iθ}` to tag value i (2 tag qubits):
+1. X gates flip bits that are 0 in the binary representation of i
+2. Multi-controlled U1(θ/π) gate (half-turns)
+3. X gates restore original state
+
 ### Qubit Encoding Isomorphism
 
 Convert between primitive qubit Q and encoded qubit I + I:
@@ -357,6 +420,7 @@ See `python-demos/README.md` for full details.
 | Abstract QSwitch | `abstract_qswitch_e2e.ml` | QSwitch pattern with anti-control compilation |
 | Instantiated QSwitch | `qswitch_instantiated_e2e.ml` | Compositional use of QSwitch combinator |
 | Zn Controlled Phase | `zn_controlled_phase_e2e.ml` | Z2, Z4, Z5 with binary decomposition |
+| **Short-Circuit Conjunction** | `short_circuit_e2e.ml` | Witness routing, phased_omap0, phased_control |
 
 ### Running Demos
 

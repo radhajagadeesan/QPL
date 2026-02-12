@@ -124,6 +124,10 @@ type (_, _) prog =
   | GateCX : (unit, [`Lolli of [`Tensor of [`Q] * [`Q]] * [`Tensor of [`Q] * [`Q]]]) prog
   | GateRz : float -> (unit, [`Lolli of [`Q] * [`Q]]) prog
 
+  (* Scalar phase: multiply by unit complex number *)
+  | Phase : float * 'a ty -> (unit, [`Lolli of 'a * 'a]) prog
+      (* Stores the angle θ where z = e^{iθ}; ty is the type being scaled *)
+
   (* Identity *)
   | Id : 'a ty -> (unit, [`Lolli of 'a * 'a]) prog
 
@@ -143,6 +147,16 @@ type (_, _) prog =
   (* Closed omap for datatype control - carries type witnesses for emission *)
   | OMap0 : Rep.t * Rep.t * (unit, [`Lolli of 'a * 'c]) prog * (unit, [`Lolli of 'b * 'd]) prog
          -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
+
+  (* Phase-weighted omap: applies phase z to left branch *)
+  | PhasedOMap0 : float * Rep.t * Rep.t * (unit, [`Lolli of 'a * 'c]) prog * (unit, [`Lolli of 'b * 'd]) prog
+              -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
+      (* Stores angle θ where z = e^{iθ}; ty_left and ty_right are type witnesses *)
+
+  (* Phase-weighted n-ary control: applies phase zᵢ to branch i *)
+  | PhasedCtrl : string * int * float array * Rep.t * Rep.t
+              -> (unit, [`Lolli of [`Tensor of 'b * 'a] * [`Tensor of 'b * 'a]]) prog
+      (* name, arity, phases (angles), dt_rep, a_ty *)
 
 (* ========== Smart Constructors ========== *)
 
@@ -182,6 +196,17 @@ let gate_t = GateT
 let gate_cx = GateCX
 let gate_rz theta = GateRz theta
 
+(* Scalar phase: multiply by unit complex number z = e^{iθ}
+   Validates |z| = 1 within tolerance *)
+let phase z ty =
+  let tolerance = 1e-10 in
+  let modulus = Complex.norm z in
+  if abs_float (modulus -. 1.0) > tolerance then
+    invalid_arg (Printf.sprintf "phase: complex number must have modulus 1, got |z| = %f" modulus)
+  else
+    let theta = Complex.arg z in
+    Phase (theta, ty)
+
 let id ty = Id ty
 
 let seq f g = Seq (f, g)
@@ -191,6 +216,17 @@ let seq0 f g = Seq0 (f, g)
 let par0 f g = Par0 (f, g)
 
 let omap0 ty_left ty_right f g = OMap0 (ty_left, ty_right, f, g)
+
+(* Phase-weighted omap: applies phase z to left branch
+   Validates |z| = 1 within tolerance *)
+let phased_omap0 z ty_left ty_right f g =
+  let tolerance = 1e-10 in
+  let modulus = Complex.norm z in
+  if abs_float (modulus -. 1.0) > tolerance then
+    invalid_arg (Printf.sprintf "phased_omap0: complex number must have modulus 1, got |z| = %f" modulus)
+  else
+    let theta = Complex.arg z in
+    PhasedOMap0 (theta, ty_left, ty_right, f, g)
 
 (* ========== Meta-level Combinators ========== *)
 
@@ -257,6 +293,22 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
   | GateCX -> Bridge.TCX (0, 1)
   | GateRz theta -> Bridge.TRz (theta, 0)
 
+  (* Scalar phase: for Unit type (0 qubits), emit Id (phase tracked separately).
+     For Q type, emit Rz which approximates global phase up to basis-dependent factor.
+     Note: True global phase support in controlled contexts requires PlusMap-level handling. *)
+  | Phase (theta, ty) ->
+      let w = Rep.wire_count ty in
+      if w = 0 then
+        (* Unit type: no qubits, emit identity. Phase is lost in isolation
+           but becomes controlled-phase in PlusMap context via tag qubits. *)
+        Bridge.TId ty
+      else if w = 1 then
+        (* Single qubit: emit Rz(theta) as approximation *)
+        Bridge.TRz (theta, 0)
+      else
+        (* Multi-qubit: emit Id (phase is global, unobservable in isolation) *)
+        Bridge.TId ty
+
   | Id ty -> Bridge.TId ty
   | Seq (f, g) -> Bridge.TSeq (emit_any f, emit_any g)
   | Seq0 (f, g) -> Bridge.TSeq (emit_any f, emit_any g)
@@ -265,6 +317,10 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
   | Prim (name, _dom, _cod) -> Bridge.TGate (name, [0], [])
   | OMap0 (ty_left, ty_right, f, g) ->
       Bridge.TPlusMap (ty_left, ty_right, emit_any f, emit_any g)
+  | PhasedOMap0 (theta, ty_left, ty_right, f, g) ->
+      Bridge.TPhasedPlusMap (theta, ty_left, ty_right, emit_any f, emit_any g)
+  | PhasedCtrl (name, arity, phases, dt_rep, a_ty) ->
+      Bridge.TPhasedControl (name, arity, Array.to_list phases, dt_rep, a_ty)
 
 (* Emit a closed program. Uses emit_any internally. *)
 let emit (p : (unit, 'a) prog) : Bridge.term = emit_any p
@@ -368,3 +424,34 @@ let control (dt : datatype_desc) (a_ty : 'a ty)
     let ctrl_name = Printf.sprintf "control_%s_%d" dt.name dt.arity in
     let da = Rep.Tensor (dt.rep, a_ty) in
     Prim (ctrl_name, da, da)
+
+
+(** Phase-weighted coherent control over n-ary datatype.
+    Applies phase zᵢ to branch i using efficient log₂(k) tag encoding. *)
+let phased_control (dt : datatype_desc) (phases : Complex.t array) (a_ty : 'a ty)
+                   (_branches : (unit, [`Lolli of 'a * 'a]) prog array)
+                   : (unit, [`Lolli of [`Tensor of 'b * 'a] * [`Tensor of 'b * 'a]]) prog =
+  (* Validate arity *)
+  if Array.length phases <> dt.arity then
+    failwith (Printf.sprintf "Datatype %s: phased_control requires %d phases, got %d"
+                dt.name dt.arity (Array.length phases));
+
+  (* Validate phases have modulus 1 and extract angles *)
+  let tolerance = 1e-10 in
+  let angles = Array.map (fun z ->
+    let modulus = Complex.norm z in
+    if abs_float (modulus -. 1.0) > tolerance then
+      invalid_arg (Printf.sprintf "phased_control: phase must have modulus 1, got |z| = %f" modulus)
+    else
+      Complex.arg z
+  ) phases in
+
+  (* For arity 1, no control needed - just apply phase to the single branch *)
+  if dt.arity = 1 then
+    (* phase on the whole tensor D ⊗ A *)
+    let theta = angles.(0) in
+    let da = Rep.Tensor (dt.rep, a_ty) in
+    Phase (theta, da)
+  else
+    (* Emit as PhasedCtrl for backend to handle *)
+    PhasedCtrl (dt.name, dt.arity, angles, dt.rep, a_ty)

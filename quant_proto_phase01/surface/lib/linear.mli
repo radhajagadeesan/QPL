@@ -147,6 +147,25 @@ val gate_cx : (unit, [`Lolli of [`Tensor of [`Q] * [`Q]] * [`Tensor of [`Q] * [`
 
 val gate_rz : float -> (unit, [`Lolli of [`Q] * [`Q]]) prog
 
+(** {2 Scalar Phase} *)
+
+(** Scalar multiplication by a unit complex number.
+
+    [phase z ty] multiplies the state by z where |z| = 1.
+
+    - On a qubit (Q), this is Rz(arg(z)) up to global phase
+    - On unit type (I), this is a pure scalar (becomes controlled phase in omap)
+    - On compound types, this is the scalar applied uniformly
+
+    Raises [Invalid_argument] if |z| ≠ 1 (within tolerance 1e-10).
+
+    Common phases:
+    - phase Complex.one ty      = identity
+    - phase (Complex.neg Complex.one) ty = multiply by -1
+    - phase Complex.i ty        = multiply by i
+*)
+val phase : Complex.t -> 'a ty -> (unit, [`Lolli of 'a * 'a]) prog
+
 (** {2 Composition (Derived)} *)
 
 (** Identity on a type: [id ty : Prog(∅, A ⊸ A)] *)
@@ -176,6 +195,33 @@ val omap0 : 'a ty -> 'b ty
          -> (unit, [`Lolli of 'a * 'c]) prog
          -> (unit, [`Lolli of 'b * 'd]) prog
          -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
+
+(** Phase-weighted omap: [phased_omap0 z ty_left ty_right f g]
+
+    Like [omap0], but applies phase weight [z] to the left branch.
+    This is the phase-weighted bifunctor omap_z(f, g) from the spec.
+
+    For sum type A ⊕ B with tag qubit(s):
+    - Left branch (tag encodes inl): apply f, then multiply by phase z
+    - Right branch (tag encodes inr): apply g (no phase)
+
+    The phase z must be a unit complex number (|z| = 1).
+    Raises [Invalid_argument] if |z| ≠ 1.
+
+    Example: Apply -1 phase to short-circuit branch of W = I + Bool:
+    {[
+      let neg_one = Complex.neg Complex.one
+      let phase_w = phased_omap0 neg_one one bool_ty (id one) (id bool_ty)
+    ]}
+
+    Implementation: emits controlled-phase gates on tag qubits after the
+    regular omap compilation. For binary sum (1 tag qubit), this is
+    X; P(θ); X where θ = arg(z). For larger sums, uses multi-controlled phase.
+*)
+val phased_omap0 : Complex.t -> 'a ty -> 'b ty
+               -> (unit, [`Lolli of 'a * 'c]) prog
+               -> (unit, [`Lolli of 'b * 'd]) prog
+               -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
 
 (** {1 Meta-level Combinators}
 
@@ -306,6 +352,35 @@ val op : datatype_desc -> string -> (unit, [`Lolli of 'a * 'b]) prog
 *)
 val control :
   datatype_desc ->
+  'a ty ->
+  (unit, [`Lolli of 'a * 'a]) prog array ->
+  (unit, [`Lolli of [`Tensor of 'b * 'a] * [`Tensor of 'b * 'a]]) prog
+
+(** Phase-weighted coherent control combinator.
+
+    Given datatype D with arity k, phases [z₀; ...; z_{k-1}],
+    and branches [f₀; ...; f_{k-1}] each of type A ⊸ A, produces:
+
+      phased_control : D ⊗ A ⊸ D ⊗ A
+
+    which applies fᵢ followed by phase zᵢ when control is in branch i.
+
+    Each phase zᵢ must be a unit complex number (|zᵢ| = 1).
+
+    Implementation uses efficient log₂(k) tag encoding:
+    - For tag value i (binary pattern b₀b₁...b_{n-1})
+    - Apply X to bits that are 0 in the pattern
+    - Apply multi-controlled U1(θᵢ) where θᵢ = arg(zᵢ)
+    - Apply X to restore
+
+    Example with Trit (k=3, 2 tag qubits):
+      Tag 00: X[0]; X[1]; CU1(θ₀); X[1]; X[0]
+      Tag 01: X[0]; CU1(θ₁); X[0]
+      Tag 10: X[1]; CU1(θ₂); X[1]
+*)
+val phased_control :
+  datatype_desc ->
+  Complex.t array ->
   'a ty ->
   (unit, [`Lolli of 'a * 'a]) prog array ->
   (unit, [`Lolli of [`Tensor of 'b * 'a] * [`Tensor of 'b * 'a]]) prog

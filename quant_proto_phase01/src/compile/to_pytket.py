@@ -32,6 +32,8 @@ from lang.terms import (
     Case,
     CaseExpr,
     PlusMap,
+    PhasedPlusMap,
+    PhasedControl,
     # Exponentials of structural involutions
     ExpSwap, ExpInvolution,
     # Controlled combinator
@@ -995,6 +997,178 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             if explain:
                 log.append(f"PlusMap: {len(left_cmds)} left gates (anti-ctrl), "
                            f"{len(right_cmds)} right gates (ctrl) at offset {offset}")
+            return
+
+        # PhasedPlusMap: like PlusMap but with phase z = e^{iθ} on left branch
+        if isinstance(t, PhasedPlusMap):
+            from lang.types import Plus, tag_width
+            from pytket.circuit import OpType
+
+            theta = t.theta
+            # Binary sum always uses 1 outer tag bit
+            k = 1
+            tag_phys = p.apply_new_to_old(offset)
+
+            # Map gate types to their controlled versions
+            _ctrl_gate = {
+                OpType.H: OpType.CH,
+                OpType.S: OpType.CS,
+                OpType.Sdg: OpType.CSdg,
+                OpType.X: OpType.CX,
+                OpType.Y: OpType.CY,
+                OpType.Z: OpType.CZ,
+                OpType.Rz: OpType.CRz,
+                OpType.Rx: OpType.CRx,
+                OpType.Ry: OpType.CRy,
+                OpType.CX: OpType.CCX,
+            }
+
+            def _emit_controlled_ppm(cmds, tag_q, payload_base):
+                """Emit each gate controlled on tag_q, with wires offset to payload."""
+                for cmd in cmds:
+                    phys_qubits = [p.apply_new_to_old(q.index[0] + payload_base)
+                                   for q in cmd.qubits]
+                    ctrl_op = _ctrl_gate.get(cmd.op.type)
+                    if ctrl_op is not None:
+                        circ.add_gate(ctrl_op, cmd.op.params,
+                                      [tag_q] + phys_qubits)
+                    else:
+                        raise NotImplementedError(
+                            f"No controlled version for gate {cmd.op.type.name} in PhasedPlusMap")
+
+            # Compile branches to sub-circuits
+            left_dom, _ = type_of(t.left)
+            left_w = width(left_dom)
+            left_cmds = list(compile(t.left, materialize=True).circuit.get_commands()) if left_w > 0 else []
+
+            right_dom, _ = type_of(t.right)
+            right_w = width(right_dom)
+            right_cmds = list(compile(t.right, materialize=True).circuit.get_commands()) if right_w > 0 else []
+
+            payload_base = offset + k
+
+            # Left branch: anti-controlled (tag=0) → X; ctrl-gates; X
+            if left_cmds:
+                circ.X(tag_phys)
+                _emit_controlled_ppm(left_cmds, tag_phys, payload_base)
+                circ.X(tag_phys)
+
+            # Right branch: controlled (tag=1) → ctrl-gates directly
+            if right_cmds:
+                _emit_controlled_ppm(right_cmds, tag_phys, payload_base)
+
+            # Apply phase e^{iθ} to left branch (tag=0):
+            # X; P(θ); X  where P(θ) = [[1, 0], [0, e^{iθ}]]
+            # This applies phase e^{iθ} specifically when tag=0
+            #
+            # For multi-qubit tags (nested sums), we need to apply phase when
+            # ALL tag bits are 0. For W = I + Bool (2 tag bits):
+            #   Tag 00 = left branch (inl)
+            #   Tags 01, 10 = right branch (inr variants)
+            # We use: X[all]; CnP(θ); X[all] where CnP is multi-controlled phase
+
+            # Get total tag width for the input sum type
+            sum_ty = Plus(t.ty_left, t.ty_right)
+            total_tag_bits = tag_width(sum_ty)
+
+            # pytket uses half-turns (units of π) for angles
+            # U1(λ) = [[1, 0], [0, e^{iλπ}]], so for e^{iθ} we need λ = θ/π
+            import math
+            half_turns = theta / math.pi
+
+            if total_tag_bits == 1:
+                # Simple case: single tag qubit
+                # X; U1(θ/π); X applies e^{iθ} to |0⟩
+                circ.X(tag_phys)
+                circ.add_gate(OpType.U1, [half_turns], [tag_phys])
+                circ.X(tag_phys)
+            else:
+                # Multi-qubit tag case
+                # Apply phase when ALL tag bits are 0 (left branch = inl)
+                # X[0]; X[1]; ... X[k-1]; C^{k-1}U1(θ/π); X[k-1]; ... X[1]; X[0]
+                tag_qubits = [p.apply_new_to_old(offset + i) for i in range(total_tag_bits)]
+
+                # Flip all tag qubits
+                for tq in tag_qubits:
+                    circ.X(tq)
+
+                # Apply multi-controlled phase (controlled on all tag bits being 1)
+                # Use CnU1 decomposition: last qubit is target, rest are controls
+                if total_tag_bits == 2:
+                    # CU1(θ/π) controlled on first tag, target second tag
+                    circ.add_gate(OpType.CU1, [half_turns], [tag_qubits[0], tag_qubits[1]])
+                else:
+                    # General case: decompose multi-controlled U1
+                    # For now, use a simple decomposition via CCX and ancilla
+                    # This is a simplified implementation; full decomposition is complex
+                    raise NotImplementedError(
+                        f"PhasedPlusMap with {total_tag_bits} tag bits not yet fully implemented. "
+                        "Only 1-2 tag bits supported.")
+
+                # Flip all tag qubits back
+                for tq in reversed(tag_qubits):
+                    circ.X(tq)
+
+            if explain:
+                log.append(f"PhasedPlusMap(θ={theta:.4f}): {len(left_cmds)} left gates (anti-ctrl), "
+                           f"{len(right_cmds)} right gates (ctrl), phase on {total_tag_bits} tag bits at offset {offset}")
+            return
+
+        # PhasedControl: phase-weighted n-ary control
+        if isinstance(t, PhasedControl):
+            from lang.types import tag_width
+            from pytket.circuit import OpType
+            import math
+
+            arity = t.arity
+            phases = t.phases  # List of angles in radians
+            n_tag_bits = tag_width(t.dt_rep)
+
+            # Convert radians to half-turns for pytket
+            half_turns = [theta / math.pi for theta in phases]
+
+            # For each branch i, apply phase e^{iθᵢ} when tag = i
+            # Tag i has binary representation, we apply X to bits that are 0,
+            # then multi-controlled U1, then X to restore.
+            for branch_idx in range(arity):
+                theta_ht = half_turns[branch_idx]
+
+                # Skip if phase is effectively 1 (theta ≈ 0 mod 2π)
+                if abs(theta_ht) < 1e-10 or abs(abs(theta_ht) - 2.0) < 1e-10:
+                    continue
+
+                # Get the tag qubits
+                tag_qubits = [p.apply_new_to_old(offset + i) for i in range(n_tag_bits)]
+
+                # Determine which bits need X gates (bits that are 0 in branch_idx)
+                bits_to_flip = []
+                for bit_pos in range(n_tag_bits):
+                    if (branch_idx >> bit_pos) & 1 == 0:
+                        bits_to_flip.append(bit_pos)
+
+                # Apply X to flip the 0-bits to 1
+                for bit_pos in bits_to_flip:
+                    circ.X(tag_qubits[bit_pos])
+
+                # Apply multi-controlled U1 (all tag bits should now be 1)
+                if n_tag_bits == 1:
+                    circ.add_gate(OpType.U1, [theta_ht], [tag_qubits[0]])
+                elif n_tag_bits == 2:
+                    circ.add_gate(OpType.CU1, [theta_ht], [tag_qubits[0], tag_qubits[1]])
+                else:
+                    # For 3+ tag qubits, need multi-controlled U1 decomposition
+                    # This is complex; for now raise NotImplementedError
+                    raise NotImplementedError(
+                        f"PhasedControl with {n_tag_bits} tag bits not yet fully implemented. "
+                        "Only 1-2 tag bits (arity ≤ 4) supported.")
+
+                # Apply X to restore the 0-bits
+                for bit_pos in reversed(bits_to_flip):
+                    circ.X(tag_qubits[bit_pos])
+
+            if explain:
+                non_trivial = sum(1 for ht in half_turns if abs(ht) >= 1e-10 and abs(abs(ht) - 2.0) >= 1e-10)
+                log.append(f"PhasedControl({t.name}, arity={arity}): {non_trivial} non-trivial phases on {n_tag_bits} tag bits at offset {offset}")
             return
 
         # Compact-closed: Cup and Cap (pure wiring, zero gates)
