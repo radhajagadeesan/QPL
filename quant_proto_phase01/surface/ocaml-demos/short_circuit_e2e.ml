@@ -161,27 +161,71 @@ let and_sc =
 (* Quantum Extension: Phase Marking                                          *)
 (* ========================================================================= *)
 
-(* phase_W := omap with -1 phase on left, +1 on right : W -> W
+(** phase_W : W -> W
 
-   Applies -1 phase to the I branch (short-circuit path),
-   identity to the Bool branch (evaluation path).
+    Applies -1 phase to the I branch (short-circuit path),
+    identity (+1 phase) to the Bool branch (evaluation path).
 
-   In our encoding, W = I + Bool has 2 tag qubits (3 variants).
-   The -1 phase on inl is implemented as controlled-Z operations
-   on the tag qubits when they indicate the left branch.
+    In our encoding, W = I + Bool has 2 tag qubits (3 variants):
+      Tag 00 = inl(unit)      <- short-circuit path
+      Tag 01 = inr(inl(unit))
+      Tag 10 = inr(inr(unit))
 
-   Implementation: X[0]; X[1]; CZ[0,1]; X[0]; X[1]
-   where CZ = H[1]; CX[0,1]; H[1]
+    To apply -1 phase specifically to |00⟩:
+      X[0]; X[1]; CZ[0,1]; X[1]; X[0]
 
-   This requires building the circuit at the right level.
-   For now, we implement it using controlled operations on the tag. *)
+    This works because:
+    - X[0]; X[1] maps |00⟩ → |11⟩
+    - CZ applies -1 phase to |11⟩
+    - X[1]; X[0] maps back |11⟩ → |00⟩
+    - Net effect: -1 phase on |00⟩ only, identity on other states
+*)
+let phase_w_bridge : Bridge.term =
+  (* W has 2 tag qubits at indices 0 and 1 *)
+  let x0 = Bridge.TX 0 in
+  let x1 = Bridge.TX 1 in
+  let cz = Bridge.TCZ (0, 1) in
+  (* X[0]; X[1]; CZ[0,1]; X[1]; X[0] *)
+  Bridge.TSeq (x0,
+    Bridge.TSeq (x1,
+      Bridge.TSeq (cz,
+        Bridge.TSeq (x1, x0))))
 
-(* Note: Direct phase_W implementation requires CZ gate which we'll
-   construct from H and CX. The phase applies to the 2-qubit tag register
-   when both qubits are 0 (indicating inl branch).
 
-   For the structural demo, we show and_sc works correctly.
-   The quantum phase extension demonstrates the principle. *)
+(** kick : (Bool ⊗ Bool) ⊗ W -> (Bool ⊗ Bool) ⊗ W
+
+    Applies phase_W to the witness wire while preserving the booleans.
+
+    Input type: (Bool ⊗ Bool) ⊗ W = 4 qubits
+    Wire layout: [b1_tag | b2_tag | w_tag0 | w_tag1]
+
+    We need to apply phase_W (which acts on wires 0,1) to the W part
+    (which is at wires 2,3). So we use wire indices 2 and 3.
+*)
+let kick_bridge : Bridge.term =
+  (* W is at wires 2 and 3 in the (Bool ⊗ Bool) ⊗ W layout *)
+  let x2 = Bridge.TX 2 in
+  let x3 = Bridge.TX 3 in
+  let cz = Bridge.TCZ (2, 3) in
+  (* X[2]; X[3]; CZ[2,3]; X[3]; X[2] *)
+  Bridge.TSeq (x2,
+    Bridge.TSeq (x3,
+      Bridge.TSeq (cz,
+        Bridge.TSeq (x3, x2))))
+
+
+(** and_sc_quant : (Bool ⊗ Bool) ⊗ W -> (Bool ⊗ Bool) ⊗ W
+
+    Quantum short-circuit conjunction: structural routing followed by phase marking.
+
+    and_sc_quant = and_sc ; kick
+
+    When run on superposition inputs, the -1 phase on the short-circuit
+    branch creates interference between paths where short-circuit occurred
+    and paths where it did not.
+*)
+let and_sc_quant_bridge : Bridge.term =
+  Bridge.TSeq (emit and_sc, kick_bridge)
 
 
 (* ========================================================================= *)
@@ -320,25 +364,74 @@ Short-circuit conjunction composes:
   print_endline "
 Quantum phase marking creates interference between paths:
 
-  phase_W := omap_{-1}(id_I, id_Bool) : W → W
-    - Applies -1 phase to inl branch (short-circuit occurred)
-    - Identity phase to inr branch (evaluation path)
+  phase_W : W → W
+    Applies -1 phase to inl branch (short-circuit occurred)
+    Identity phase to inr branch (evaluation path)
 
-  kick := λp. let (bb, w) = p in bb ⊗ (phase_W w)
+  Implementation for W with 2 tag qubits:
+    Tag 00 = inl(unit) <- short-circuit path
+    Tag 01 = inr(inl(unit))
+    Tag 10 = inr(inr(unit))
 
-  and_sc_quant := and_sc ; kick
-
-When run on superposition inputs, the -1 phase creates
-interference between short-circuit and evaluation paths.
-
-Implementation note: phase_W requires controlled-Z operations
-on the 2-qubit tag register of W when both qubits are 0.
-This demonstrates how control-flow history can be encoded
-in interference patterns.
+  Circuit: X[0]; X[1]; CZ[0,1]; X[1]; X[0]
+    - X gates map |00⟩ → |11⟩
+    - CZ applies -1 to |11⟩
+    - X gates map back
+    - Net effect: -1 phase on |00⟩ only
 ";
 
-  (* For the phase implementation, we'd need CZ which is H;CX;H.
-     The structural and_sc is the main contribution here. *)
+  Printf.printf "\nphase_W on W (2 qubits):\n";
+  Printf.printf "  Bridge: %s\n" (Bridge.term_to_json phase_w_bridge);
+  (match Bridge.compile phase_w_bridge with
+   | Bridge.CompileOk (perm, size) ->
+       Printf.printf "  ✓ Gates: %d\n" size;
+       Printf.printf "    Perm:  [%s]\n"
+         (String.concat ", " (List.map string_of_int perm.new_to_old))
+   | Bridge.CompileError err ->
+       Printf.printf "  ✗ FAILED: %s\n" err);
+
+  print_endline "
+kick : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
+  Applies phase_W to witness wire (at indices 2,3)
+  Preserves boolean wires (at indices 0,1)
+";
+
+  Printf.printf "\nkick on (Bool ⊗ Bool) ⊗ W (4 qubits):\n";
+  Printf.printf "  Bridge: %s\n" (Bridge.term_to_json kick_bridge);
+  (match Bridge.compile kick_bridge with
+   | Bridge.CompileOk (perm, size) ->
+       Printf.printf "  ✓ Gates: %d\n" size;
+       Printf.printf "    Perm:  [%s]\n"
+         (String.concat ", " (List.map string_of_int perm.new_to_old))
+   | Bridge.CompileError err ->
+       Printf.printf "  ✗ FAILED: %s\n" err);
+
+  print_endline "
+and_sc_quant := and_sc ; kick
+  Structural routing followed by phase marking
+  Creates interference between execution paths
+";
+
+  Printf.printf "\nand_sc_quant = and_sc ; kick:\n";
+  (match Bridge.compile and_sc_quant_bridge with
+   | Bridge.CompileOk (perm, size) ->
+       Printf.printf "  ✓ Gates: %d (3 from and_sc + 5 from kick)\n" size;
+       Printf.printf "    Perm:  [%s]\n"
+         (String.concat ", " (List.map string_of_int perm.new_to_old))
+   | Bridge.CompileError err ->
+       Printf.printf "  ✗ FAILED: %s\n" err);
+
+  print_endline "
+QUANTUM SEMANTICS
+-----------------
+When run on superposition input |+⟩ ⊗ |b2⟩ ⊗ |w⟩:
+
+  |0⟩|b2⟩|w⟩  →  |0⟩|b2⟩|toggle(w)⟩  →  -|0⟩|b2⟩|toggle(w)⟩  (phase -1)
+  |1⟩|b2⟩|w⟩  →  |1⟩|b2⟩|w⟩          →   |1⟩|b2⟩|w⟩          (phase +1)
+
+The -1 phase on the short-circuit path creates interference,
+encoding control-flow history in the quantum state.
+";
 
   (* ======================================================================= *)
   banner "SUMMARY";
@@ -347,27 +440,30 @@ in interference patterns.
 Demonstrated short-circuit conjunction in Linear DSL:
 
 1. TYPE STRUCTURE
-   Bool = I + I (2-element)
-   W = I + Bool (3-element witness)
+   Bool = I + I (2-element, 1 qubit)
+   W = I + Bool (3-element witness, 2 qubits)
 
-2. CORE OPERATIONS
-   toggle_W = id_I ⊕ twist_Bool : W → W
-   ctrl_W(M_0, M_1) : Bool ⊗ W → Bool ⊗ W
+2. STRUCTURAL OPERATIONS
+   toggle_W = id_I ⊕ twist_Bool : W → W         (1 gate)
+   ctrl_W(M_0, M_1) : Bool ⊗ W → Bool ⊗ W      (coherent control)
+   and_sc : (Bool ⊗ Bool) ⊗ W → ...            (3 gates)
 
-3. SHORT-CIRCUIT CONJUNCTION
-   and_sc routes witness based on first boolean
-   Uses structural isomorphisms for wire routing
+3. QUANTUM PHASE MARKING
+   phase_W : W → W                              (5 gates)
+     X[0]; X[1]; CZ[0,1]; X[1]; X[0]
+     Applies -1 phase to inl branch (tag 00)
 
-4. COMPOSITIONALITY
-   All operations compose via seq0
-   Types ensure correctness
+   kick : (Bool ⊗ Bool) ⊗ W → ...              (5 gates)
+     Applies phase_W to witness wires
 
-5. QUANTUM EXTENSION
-   Phase marking creates interference patterns
-   Encodes control-flow history in quantum state
+4. QUANTUM SHORT-CIRCUIT CONJUNCTION
+   and_sc_quant = and_sc ; kick                 (8 gates total)
+     Structural routing + phase marking
+     Creates interference between execution paths
 
 Key insight: Classical short-circuit logic lifts to quantum
-coherent control using the same structural patterns as QSwitch.
+coherent control. Phase marking encodes control-flow history
+in interference patterns.
 ";
 
   banner "DEMO COMPLETE"
