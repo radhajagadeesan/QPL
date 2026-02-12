@@ -11,7 +11,7 @@ from lang.terms import (
     Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
-    DistL, DistR,
+    DistL, DistR, UndistL, UndistR,
     Feedback,
     # Phase 0 gates
     H, S, CX,
@@ -94,6 +94,18 @@ def type_of(t: Term) -> DomCod:
     if isinstance(t, DistR):
         dom = Ten(t.a, Plus(t.b, t.c))
         cod = Plus(Ten(t.a, t.b), Ten(t.a, t.c))
+        return (dom, cod)
+
+    # UndistL: (a⊗c) ⊕ (b⊗c) → (a⊕b)⊗c (inverse of DistL)
+    if isinstance(t, UndistL):
+        dom = Plus(Ten(t.a, t.c), Ten(t.b, t.c))
+        cod = Ten(Plus(t.a, t.b), t.c)
+        return (dom, cod)
+
+    # UndistR: (a⊗b) ⊕ (a⊗c) → a⊗(b⊕c) (inverse of DistR)
+    if isinstance(t, UndistR):
+        dom = Plus(Ten(t.a, t.b), Ten(t.a, t.c))
+        cod = Ten(t.a, Plus(t.b, t.c))
         return (dom, cod)
 
     if isinstance(t, Feedback):

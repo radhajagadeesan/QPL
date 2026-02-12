@@ -39,8 +39,8 @@ let _closed_pair : (unit * unit, _) prog = pair gate_h gate_s
 let _x_var : ([`Q] * unit, [`Q]) prog = var
 
 (* Lambda removes variable from context *)
-(* lam : ('a * 'g, 'b) prog -> ('g, 'a ⊸ 'b) prog *)
-let id_lam : (unit, _) prog = lam q var
+(* lam : 'a ty -> 'b ty -> ('a * 'g, 'b) prog -> ('g, 'a ⊸ 'b) prog *)
+let id_lam : (unit, _) prog = lam q q var
 
 (* Apply closed gate to a variable: app splits context *)
 (* app : Prog(Γ1, A ⊸ B) -> Prog(Γ2, A) -> Prog(Γ1 * Γ2, B) *)
@@ -80,9 +80,8 @@ let _rz_sequence : (unit, _) prog =
 let bad_dup : _ prog = pair var var
 (* Error: var has context ('a * unit), but pair needs disjoint contexts *)
 
-(* Can't discard a variable - must be used *)
-let bad_drop : (unit, _) prog = lam q unit
-(* Error: body has context unit, but lam expects ('a * unit) *)
+(* Note: Unit intro/elim (unit, letunit) are not in the source language.
+   Unit exists only as a type for sum payloads like Bool = I + I. *)
 
 *)
 

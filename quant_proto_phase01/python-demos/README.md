@@ -1,6 +1,8 @@
-# Granthi Demos
+# Python Demos
 
-Demonstrations of Granthi language features and compilation.
+Demonstrations of Granthi language features and compilation using the Python API.
+
+> **Note:** For OCaml E2E demos that compile through the full pipeline to circuits, see `surface/ocaml-demos/`.
 
 ---
 
@@ -19,13 +21,6 @@ Demonstrations of Granthi language features and compilation.
 | ExpInvolution | `exp_twist_demo.py` | Exponentials of structural involutions |
 | Pauli Conjugation | `pauli_conjugation_demo.py` | Qubit as I+I, Pauli identity verification |
 
-### OCaml Demos
-
-| Demo | File | Description |
-|------|------|-------------|
-| QSwitch (OCaml) | `surface/demos/qswitch_demo.ml` | QSwitch in OCaml surface language |
-| QSwitch (HO) | `surface/demos/qswitch_ho_demo.ml` | Higher-order QSwitch showing type signature |
-
 ---
 
 ## QSwitch Demos
@@ -38,7 +33,7 @@ Comprehensive demo showing the full Granthi compiler pipeline on QSwitch:
 
 **Run:**
 ```bash
-PYTHONPATH=src python demos/quantum_switch_demo.py
+PYTHONPATH=src python python-demos/quantum_switch_demo.py
 ```
 
 **What it shows:**
@@ -55,7 +50,7 @@ Original QSwitch demo showing the combinator and compilation.
 
 **Run:**
 ```bash
-PYTHONPATH=src python demos/qswitch_demo.py
+PYTHONPATH=src python python-demos/qswitch_demo.py
 ```
 
 ### QSwitch (term) — `qswitch_term_demo.py`
@@ -68,7 +63,7 @@ QSwitch[H,S] = DistR(I,I,Q) ; Case(I⊗Q, I⊗Q, H;S, S;H)
 
 **Run:**
 ```bash
-PYTHONPATH=src python demos/qswitch_term_demo.py
+PYTHONPATH=src python python-demos/qswitch_term_demo.py
 ```
 
 **What it shows:**
@@ -87,7 +82,7 @@ QSwitch : (Q⊸Q) ⊗ (Q⊸Q) ⊗ Bool ⊗ Q → Bool ⊗ Q
 
 **Run:**
 ```bash
-PYTHONPATH=src python demos/qswitch_abstract_demo.py
+PYTHONPATH=src python python-demos/qswitch_abstract_demo.py
 ```
 
 **What it shows:**
@@ -123,7 +118,7 @@ QSwitch = λb. λf. λg. λx. case b of
 
 **Run:**
 ```bash
-PYTHONPATH=src python demos/qswitch_abstract_circuit_theory_demo.py
+PYTHONPATH=src python python-demos/qswitch_abstract_circuit_theory_demo.py
 ```
 
 **What it shows:**
@@ -142,7 +137,7 @@ Shows QSwitch instantiated with concrete functions, with **simplification analys
 
 **Run:**
 ```bash
-PYTHONPATH=src python demos/qswitch_instantiation_demo.py
+PYTHONPATH=src python python-demos/qswitch_instantiation_demo.py
 ```
 
 **What it shows:**
@@ -167,7 +162,7 @@ PYTHONPATH=src python demos/qswitch_instantiation_demo.py
 
 **Run:**
 ```bash
-PYTHONPATH=src python demos/qswitch_curried_theory_demo.py
+PYTHONPATH=src python python-demos/qswitch_curried_theory_demo.py
 ```
 
 **What it shows:**
@@ -189,7 +184,7 @@ Demonstrates the `Ctrl` combinator for controlled operations on cyclic groups:
 
 **Run:**
 ```bash
-PYTHONPATH=src python demos/zn_controlled_phase_demo.py
+PYTHONPATH=src python python-demos/zn_controlled_phase_demo.py
 ```
 
 **What it shows:**
@@ -229,7 +224,7 @@ exp_i(π/4, twist) ; exp_i(π/4, twist) = exp_i(π/2, twist) = i·SWAP
 **Run:**
 ```bash
 cd quant_proto_phase01
-PYTHONPATH=src python demos/exp_twist_demo.py
+PYTHONPATH=src python python-demos/exp_twist_demo.py
 ```
 
 **What it verifies (by extracting unitaries from compiled circuits):**
@@ -269,7 +264,7 @@ Where:
 **Run:**
 ```bash
 cd quant_proto_phase01
-PYTHONPATH=src python demos/pauli_conjugation_demo.py
+PYTHONPATH=src python python-demos/pauli_conjugation_demo.py
 ```
 
 **What it verifies:**
@@ -299,7 +294,7 @@ pip install pytket
 Run from the `quant_proto_phase01` directory:
 ```bash
 cd quant_proto_phase01
-PYTHONPATH=src python demos/<demo_name>.py
+PYTHONPATH=src python python-demos/<demo_name>.py
 ```
 
 ### Live Execution Confirmation
@@ -321,7 +316,7 @@ This confirms that compilations are actually running, not displaying pre-recorde
 Most demos support the `--circuits` flag to display ASCII circuit diagrams:
 
 ```bash
-PYTHONPATH=src python demos/case_demo.py --circuits
+PYTHONPATH=src python python-demos/case_demo.py --circuits
 ```
 
 This will show circuit diagrams like:

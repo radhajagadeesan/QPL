@@ -330,9 +330,13 @@ If P is not involutive, compilation fails with an error.
 
 ## Demos and Examples
 
-Granthi includes worked demonstrations in the `demos/` directory. These are the **best starting point** for understanding how programs behave end-to-end.
+Granthi includes worked demonstrations in two directories:
+- `python-demos/` — Python API demonstrations
+- `surface/ocaml-demos/` — OCaml E2E demos (full pipeline to circuits)
 
-See `demos/README.md` for full details. Key demos:
+See `python-demos/README.md` for full details.
+
+### Python Demos
 
 | Demo | File | What it Shows |
 |------|------|---------------|
@@ -342,16 +346,27 @@ See `demos/README.md` for full details. Key demos:
 | **QSwitch (abstract circuit)** | `qswitch_abstract_circuit_theory_demo.py` | THEORY: Abstract QSwitch circuit diagrams |
 | **QSwitch (instantiation)** | `qswitch_instantiation_demo.py` | QSwitch[H,H] vs QSwitch[H,S], simplification analysis |
 | **QSwitch (curried)** | `qswitch_curried_theory_demo.py` | THEORY: Curried λb.λf.λg.λx type derivation |
-| QSwitch (OCaml HO) | `surface/demos/qswitch_ho_demo.ml` | Higher-order QSwitch in OCaml |
 | **Zn Controlled Phase** | `zn_controlled_phase_demo.py` | Z2, Z4, Z5 controlled phase rotation via Ctrl combinator |
 | ExpInvolution | `exp_twist_demo.py` | Composition law: exp(θ);exp(θ) = exp(2θ) |
 | Pauli Conjugation | `pauli_conjugation_demo.py` | exp(π/4,X);Z;exp(-π/4,X) = Y on qubit as I+I |
 
+### OCaml E2E Demos
+
+| Demo | File | What it Shows |
+|------|------|---------------|
+| Abstract QSwitch | `abstract_qswitch_e2e.ml` | QSwitch pattern with anti-control compilation |
+| Instantiated QSwitch | `qswitch_instantiated_e2e.ml` | Compositional use of QSwitch combinator |
+| Zn Controlled Phase | `zn_controlled_phase_e2e.ml` | Z2, Z4, Z5 with binary decomposition |
+
 ### Running Demos
 
 ```bash
-PYTHONPATH=src python demos/<demo>.py            # Run demo
-PYTHONPATH=src python demos/<demo>.py --circuits # Show ASCII circuit diagrams
+# Python demos
+PYTHONPATH=src python python-demos/<demo>.py            # Run demo
+PYTHONPATH=src python python-demos/<demo>.py --circuits # Show ASCII circuit diagrams
+
+# OCaml E2E demos
+cd surface && dune exec ocaml-demos/<demo>.exe
 ```
 
 Most demos support the `--circuits` flag to display circuit diagrams. Demos marked "THEORY" explain types and wire layouts without compiling circuits.
@@ -547,4 +562,5 @@ See `surface/examples/datatype_demo.ml` for complete examples.
 - `COMPILER_API_GUIDE.md` — Python API for compiler embedding
 - `STAGING_SOUNDNESS.md` — Formal soundness arguments for OCaml staging
 - `IR_DESIGN.md` — Wire layouts and IR architecture
-- `demos/README.md` — Demo instructions
+- `python-demos/README.md` — Python demo instructions
+- `surface/ocaml-demos/README.md` — OCaml E2E demo instructions

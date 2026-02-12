@@ -133,6 +133,24 @@ class DistR:
     c: Ty
 
 
+# -- Inverse distributivity (structural only in Phases 0–1)
+
+@dataclass(frozen=True, slots=True)
+class UndistL:
+    """undist_L : (a⊗c) ⊕ (b⊗c) -> (a⊕b)⊗c (inverse of DistL)"""
+    a: Ty
+    b: Ty
+    c: Ty
+
+
+@dataclass(frozen=True, slots=True)
+class UndistR:
+    """undist_R : (a⊗b) ⊕ (a⊗c) -> a⊗(b⊕c) (inverse of DistR)"""
+    a: Ty
+    b: Ty
+    c: Ty
+
+
 # -- Feedback (Phase 3 GOI)
 
 @dataclass(frozen=True, slots=True)
@@ -749,7 +767,7 @@ Term = Union[
     Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
-    DistL, DistR,
+    DistL, DistR, UndistL, UndistR,
     Feedback,
     # Phase 0 gates
     H, S, CX,

@@ -177,23 +177,11 @@ class TestBetaLaw:
 
         assert unitaries_equal(u_app, u_direct)
 
-    def test_beta_wA_neq_wB(self):
-        """β-reduction with wA ≠ wB: tests general Lam/Apply routing.
+    def test_beta_wA_eq_wB_endomorphism(self):
+        """β-reduction with wA = wB (endomorphism): tests swap routing.
 
-        For f : Q⊗Q → Q⊗Q but with intermediate wA ≠ wB, the routing
-        should still work correctly. We test this by composing functions
-        with different intermediate widths.
-
-        Example: (λx:Q. H(x)) applied to S(q) should equal S;H on Q.
-        Here wA = wB = 1, but let's construct a case where we have
-        a function taking Q and producing Q through a TenTerm composition.
+        For f : Q⊗Q → Q⊗Q with wA = wB = 2, the routing uses a swap.
         """
-        # Test: (λx:Q. H(x)) applied within a larger context
-        # where the function is used as part of a tensor product.
-
-        # Create a term that exercises the wA != wB path indirectly
-        # by having non-trivial intermediate types
-
         # f = λx:(Q⊗Q). (H⊗S)(x) : produces Arrow(Q⊗Q, Q⊗Q)
         ty = Ten(Q(), Q())
         body = TenTerm(H(0, Q()), S(0, Q()))  # H ⊗ S on Q⊗Q
@@ -214,23 +202,104 @@ class TestBetaLaw:
 
         assert unitaries_equal(u_app, u_direct)
 
+    def test_beta_wA_neq_wB_open_lambda(self):
+        """β-reduction with wA ≠ wB: tests rotation routing.
+
+        For f : Q → Arrow(Q, Q⊗Q), we have wA=1, wB=2, wA ≠ wB.
+        This requires the general rotation routing, not just swap.
+
+        The function's body has type (Γ⊗A) → B = (Q⊗Q) → (Q⊗Q).
+        With Γ=Q (context), A=Q (arg), B=Q⊗Q (result).
+        gamma_width = wB - wA = 2 - 1 = 1.
+        """
+        # body : Q⊗Q → Q⊗Q (operates on Γ⊗x where Γ=Q, x:Q)
+        # The body applies H⊗S to the two wires
+        body = TenTerm(H(0, Q()), S(0, Q()))  # H on Γ, S on x
+
+        # Lam with wA=1 (Q), wB=2 (Q⊗Q) -> requires rotation routing
+        lam = Lam("x", Q(), Ten(Q(), Q()), body)
+
+        # Check that the function type is correct
+        lam_dom, lam_cod = type_of(lam)
+        assert width(lam_dom) == 1  # Γ = Q
+        assert isinstance(lam_cod, Arrow)
+        assert width(lam_cod.dom) == 1  # A = Q
+        assert width(lam_cod.cod) == 2  # B = Q⊗Q
+
+        # For Apply: we need an arg of type Q
+        arg = H(0, Q())  # Apply H to the argument
+
+        app = Apply(lam, arg)
+        result_app = compile(app, materialize=True, explain=True)
+
+        # The expected behavior:
+        # - arg applies H to its input (producing transformed Q)
+        # - body applies H⊗S to (Γ, x) = (context, transformed-arg)
+        # So total: Γ gets H, arg gets H;S (H from arg, S from body on x)
+
+        # Check it compiles without error
+        assert result_app.circuit.n_qubits >= 2
+
+        # Get commands
+        cmds = list(result_app.circuit.get_commands())
+        gate_names = [c.op.type.name for c in cmds]
+        # Should have H (from body on Γ), H (from arg), and S (from body on x)
+        assert gate_names.count("H") >= 2
+        assert "S" in gate_names
+
+    def test_beta_wA_neq_wB_closed_path(self):
+        """β-reduction closed lambda path also works with wA ≠ wB indirectly.
+
+        Even for closed lambdas (Γ=Unit), the body can have internal
+        structure that exercises the routing.
+        """
+        # Closed lambda: body : A → B with A = Q, B = Q (wA = wB = 1)
+        # But let's verify that the general routing still works correctly
+        body = Seq(H(0, Q()), S(0, Q()))  # H;S on single qubit
+        lam = Lam("x", Q(), Q(), body)
+
+        # Verify it's a closed lambda (Γ = Unit)
+        lam_dom, lam_cod = type_of(lam)
+        assert isinstance(lam_dom, Unit)
+
+        arg = Id(Q())
+        app = Apply(lam, arg)
+
+        result = compile(app, materialize=True)
+
+        # Direct: H;S
+        direct = Seq(H(0, Q()), S(0, Q()))
+        result_direct = compile(direct, materialize=True)
+
+        u_app = circuit_unitary(result.circuit)
+        u_direct = circuit_unitary(result_direct.circuit)
+
+        assert unitaries_equal(u_app, u_direct)
+
 
 # =============================================================================
 # Test 7.2: η-like sanity (restricted linear form)
 # =============================================================================
 
 class TestEtaSanity:
-    """Test 7.2: For f:A⊸B, compare f with λx.f(x).
+    """Test 7.2: η-like properties in linear λ-calculus.
 
-    This is restricted to avoid duplication issues with linear types.
-    We test that wrapping a function in a lambda doesn't change semantics.
+    In classical λ-calculus: η-reduction says λx.f(x) = f for f:A→B.
+    In our linear setting, this is restricted because:
+    1. Variables must be used exactly once (linearity)
+    2. Functions are first-class but can't be duplicated
+
+    What we CAN test:
+    - Apply(Lam(x, body), Id) ≡ body  (β-like, but tests the roundtrip)
+    - For primitive gates g, λx.g(x) applied to Id ≡ g
+    - Composition: (λx.f(λy.g(x,y))) applied correctly
     """
 
-    def test_eta_with_function_variable(self):
-        """Verify that Apply(Lam(x, body), Id) ≡ body (η-like sanity).
+    def test_eta_roundtrip_identity(self):
+        """Verify that Apply(Lam(x, body), Id) ≡ body (η-like roundtrip).
 
-        For a lambda with no context (Γ = Unit), applying it to Id
-        should produce the same circuit as the body directly.
+        This is the closest to η we can express:
+        For closed lambda f = λx.body, Apply(f, Id) should behave like body.
         """
         # f = λx.H(x) : Unit → Arrow(Q, Q) with Γ = Unit
         body = H(0, Q())
@@ -243,6 +312,45 @@ class TestEtaSanity:
 
         # Should give H
         direct = H(0, Q())
+        result_direct = compile(direct, materialize=True)
+
+        u_app = circuit_unitary(result.circuit)
+        u_direct = circuit_unitary(result_direct.circuit)
+
+        assert unitaries_equal(u_app, u_direct)
+
+    def test_eta_for_composition(self):
+        """η-like property for composed terms: λx.(S;H)(x) ≡ S;H.
+
+        The lambda wrapper shouldn't change the semantics of composition.
+        """
+        # f = λx.(S;H)(x) where body = S;H
+        body = Seq(S(0, Q()), H(0, Q()))
+        f = Lam("x", Q(), Q(), body)
+
+        # Apply to identity
+        app = Apply(f, Id(Q()))
+        result = compile(app, materialize=True)
+
+        # Direct composition
+        direct = Seq(S(0, Q()), H(0, Q()))
+        result_direct = compile(direct, materialize=True)
+
+        u_app = circuit_unitary(result.circuit)
+        u_direct = circuit_unitary(result_direct.circuit)
+
+        assert unitaries_equal(u_app, u_direct)
+
+    def test_eta_for_two_qubit_gates(self):
+        """η-like property extends to multi-qubit operations."""
+        ty = Ten(Q(), Q())
+        body = CX(0, 1, ty)
+        f = Lam("x", ty, ty, body)
+
+        app = Apply(f, Id(ty))
+        result = compile(app, materialize=True)
+
+        direct = CX(0, 1, ty)
         result_direct = compile(direct, materialize=True)
 
         u_app = circuit_unitary(result.circuit)

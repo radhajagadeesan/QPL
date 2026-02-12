@@ -60,15 +60,6 @@ val var : ('a * unit, 'a) prog
     The new variable x is unused (but must be consumed elsewhere). *)
 val weaken : ('g, 'a) prog -> ('b * 'g, 'a) prog
 
-(** {2 Unit} *)
-
-(** Unit introduction: [unit : Prog(∅, 1)] *)
-val unit : (unit, [`One]) prog
-
-(** Unit elimination: [letunit e1 e2 : Prog(Γ1 ⊎ Γ2, C)]
-    where [e1 : Prog(Γ1, 1)] and [e2 : Prog(Γ2, C)] *)
-val letunit : ('g1, [`One]) prog -> ('g2, 'c) prog -> ('g1 * 'g2, 'c) prog
-
 (** {2 Tensor} *)
 
 (** Tensor introduction: [pair e1 e2 : Prog(Γ1 ⊎ Γ2, A ⊗ B)]
@@ -83,11 +74,12 @@ val letpair : ('g1, [`Tensor of 'a * 'b]) prog
 
 (** {2 Linear Implication} *)
 
-(** Lambda abstraction: [lam ty body]
+(** Lambda abstraction: [lam dom cod body]
     where [body : Prog(x:A, Γ, B)].
     [lam : Prog(x:A, Γ, B) -> Prog(Γ, A ⊸ B)]
-    The bound variable x is at the top of the body's context. *)
-val lam : 'a ty -> ('a * 'g, 'b) prog -> ('g, [`Lolli of 'a * 'b]) prog
+    The bound variable x is at the top of the body's context.
+    Both domain and codomain types are required for correct emission. *)
+val lam : 'a ty -> 'b ty -> ('a * 'g, 'b) prog -> ('g, [`Lolli of 'a * 'b]) prog
 
 (** Application: [app f e : Prog(Γ1 ⊎ Γ2, B)]
     Context is split between function and argument. *)
@@ -95,9 +87,11 @@ val app : ('g1, [`Lolli of 'a * 'b]) prog -> ('g2, 'a) prog -> ('g1 * 'g2, 'b) p
 
 (** {2 Sum (Monoidal ⊕)} *)
 
-(** Bifunctorial action on sums: [omap f g : Prog(Γ1 ⊎ Γ2, (A⊕B) ⊸ (C⊕D))]
-    where [f : Prog(Γ1, A ⊸ C)] and [g : Prog(Γ2, B ⊸ D)] *)
-val omap : ('g1, [`Lolli of 'a * 'c]) prog
+(** Bifunctorial action on sums: [omap ty_left ty_right f g : Prog(Γ1 ⊎ Γ2, (A⊕B) ⊸ (C⊕D))]
+    where [f : Prog(Γ1, A ⊸ C)] and [g : Prog(Γ2, B ⊸ D)].
+    Type witnesses are required for correct PlusMap emission. *)
+val omap : 'a ty -> 'b ty
+        -> ('g1, [`Lolli of 'a * 'c]) prog
         -> ('g2, [`Lolli of 'b * 'd]) prog
         -> ('g1 * 'g2, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
 
@@ -123,10 +117,20 @@ val assoc_tensor_l : 'a ty -> 'b ty -> 'c ty ->
 val assoc_tensor_r : 'a ty -> 'b ty -> 'c ty ->
   (unit, [`Lolli of [`Tensor of 'a * [`Tensor of 'b * 'c]] * [`Tensor of [`Tensor of 'a * 'b] * 'c]]) prog
 
+val assoc_plus_l : 'a ty -> 'b ty -> 'c ty ->
+  (unit, [`Lolli of [`Plus of [`Plus of 'a * 'b] * 'c] * [`Plus of 'a * [`Plus of 'b * 'c]]]) prog
+val assoc_plus_r : 'a ty -> 'b ty -> 'c ty ->
+  (unit, [`Lolli of [`Plus of 'a * [`Plus of 'b * 'c]] * [`Plus of [`Plus of 'a * 'b] * 'c]]) prog
+
 val dist_l : 'a ty -> 'b ty -> 'c ty ->
   (unit, [`Lolli of [`Tensor of [`Plus of 'a * 'b] * 'c] * [`Plus of [`Tensor of 'a * 'c] * [`Tensor of 'b * 'c]]]) prog
 val dist_r : 'a ty -> 'b ty -> 'c ty ->
   (unit, [`Lolli of [`Tensor of 'a * [`Plus of 'b * 'c]] * [`Plus of [`Tensor of 'a * 'b] * [`Tensor of 'a * 'c]]]) prog
+
+val undist_l : 'a ty -> 'b ty -> 'c ty ->
+  (unit, [`Lolli of [`Plus of [`Tensor of 'a * 'c] * [`Tensor of 'b * 'c]] * [`Tensor of [`Plus of 'a * 'b] * 'c]]) prog
+val undist_r : 'a ty -> 'b ty -> 'c ty ->
+  (unit, [`Lolli of [`Plus of [`Tensor of 'a * 'b] * [`Tensor of 'a * 'c]] * [`Tensor of 'a * [`Plus of 'b * 'c]]]) prog
 
 (** {2 Unitary Constants (Closed Endomorphisms)} *)
 
@@ -165,6 +169,13 @@ val seq0 : (unit, [`Lolli of 'a * 'b]) prog
 val par0 : (unit, [`Lolli of 'a * 'b]) prog
         -> (unit, [`Lolli of 'c * 'd]) prog
         -> (unit, [`Lolli of [`Tensor of 'a * 'c] * [`Tensor of 'b * 'd]]) prog
+
+(** Closed omap for sum types: [omap0 ty_left ty_right f g : Prog(∅, (A⊕B) ⊸ (C⊕D))]
+    Both f and g must be closed. Type witnesses needed for emission. *)
+val omap0 : 'a ty -> 'b ty
+         -> (unit, [`Lolli of 'a * 'c]) prog
+         -> (unit, [`Lolli of 'b * 'd]) prog
+         -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
 
 (** {1 Meta-level Combinators}
 

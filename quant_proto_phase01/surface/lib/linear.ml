@@ -68,21 +68,17 @@ type (_, _) prog =
   | Var : ('a * unit, 'a) prog
   | Weaken : ('g, 'a) prog -> ('b * 'g, 'a) prog
 
-  (* Unit *)
-  | Unit : (unit, [`One]) prog
-  | LetUnit : ('g1, [`One]) prog * ('g2, 'c) prog -> ('g1 * 'g2, 'c) prog
-
   (* Tensor *)
   | Pair : ('g1, 'a) prog * ('g2, 'b) prog -> ('g1 * 'g2, [`Tensor of 'a * 'b]) prog
   | LetPair : ('g1, [`Tensor of 'a * 'b]) prog * ('a * ('b * 'g2), 'c) prog
            -> ('g1 * 'g2, 'c) prog
 
-  (* Linear implication *)
-  | Lam : 'a ty * ('a * 'g, 'b) prog -> ('g, [`Lolli of 'a * 'b]) prog
+  (* Linear implication - stores both domain AND codomain types for emission *)
+  | Lam : 'a ty * 'b ty * ('a * 'g, 'b) prog -> ('g, [`Lolli of 'a * 'b]) prog
   | App : ('g1, [`Lolli of 'a * 'b]) prog * ('g2, 'a) prog -> ('g1 * 'g2, 'b) prog
 
-  (* Sum *)
-  | OMap : ('g1, [`Lolli of 'a * 'c]) prog * ('g2, [`Lolli of 'b * 'd]) prog
+  (* Sum - stores type witnesses for correct PlusMap emission *)
+  | OMap : 'a ty * 'b ty * ('g1, [`Lolli of 'a * 'c]) prog * ('g2, [`Lolli of 'b * 'd]) prog
         -> ('g1 * 'g2, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
   (* Case with type witnesses for emission *)
   | Case : Rep.t * Rep.t * ('g0, [`Plus of 'a * 'b]) prog * ('a * 'g1, 'c) prog * ('b * 'g2, 'd) prog
@@ -99,12 +95,24 @@ type (_, _) prog =
   | AssocTensorR : 'a ty * 'b ty * 'c ty
                 -> (unit, [`Lolli of [`Tensor of 'a * [`Tensor of 'b * 'c]]
                                    * [`Tensor of [`Tensor of 'a * 'b] * 'c]]) prog
+  | AssocPlusL : 'a ty * 'b ty * 'c ty
+             -> (unit, [`Lolli of [`Plus of [`Plus of 'a * 'b] * 'c]
+                                * [`Plus of 'a * [`Plus of 'b * 'c]]]) prog
+  | AssocPlusR : 'a ty * 'b ty * 'c ty
+             -> (unit, [`Lolli of [`Plus of 'a * [`Plus of 'b * 'c]]
+                                * [`Plus of [`Plus of 'a * 'b] * 'c]]) prog
   | DistL : 'a ty * 'b ty * 'c ty
          -> (unit, [`Lolli of [`Tensor of [`Plus of 'a * 'b] * 'c]
                             * [`Plus of [`Tensor of 'a * 'c] * [`Tensor of 'b * 'c]]]) prog
   | DistR : 'a ty * 'b ty * 'c ty
          -> (unit, [`Lolli of [`Tensor of 'a * [`Plus of 'b * 'c]]
                             * [`Plus of [`Tensor of 'a * 'b] * [`Tensor of 'a * 'c]]]) prog
+  | UndistL : 'a ty * 'b ty * 'c ty
+           -> (unit, [`Lolli of [`Plus of [`Tensor of 'a * 'c] * [`Tensor of 'b * 'c]]
+                              * [`Tensor of [`Plus of 'a * 'b] * 'c]]) prog
+  | UndistR : 'a ty * 'b ty * 'c ty
+           -> (unit, [`Lolli of [`Plus of [`Tensor of 'a * 'b] * [`Tensor of 'a * 'c]]
+                              * [`Tensor of 'a * [`Plus of 'b * 'c]]]) prog
 
   (* Unitary constants (closed endomorphisms) *)
   | GateH : (unit, [`Lolli of [`Q] * [`Q]]) prog
@@ -142,19 +150,15 @@ let var = Var
 
 let weaken p = Weaken p
 
-let unit = Unit
-
-let letunit e1 e2 = LetUnit (e1, e2)
-
 let pair e1 e2 = Pair (e1, e2)
 
 let letpair e1 e2 = LetPair (e1, e2)
 
-let lam ty body = Lam (ty, body)
+let lam dom cod body = Lam (dom, cod, body)
 
 let app f e = App (f, e)
 
-let omap f g = OMap (f, g)
+let omap ty_left ty_right f g = OMap (ty_left, ty_right, f, g)
 
 let case_ ty_left ty_right scrut left right = Case (ty_left, ty_right, scrut, left, right)
 
@@ -162,8 +166,12 @@ let twist_tensor a b = TwistTensor (a, b)
 let twist_plus a b = TwistPlus (a, b)
 let assoc_tensor_l a b c = AssocTensorL (a, b, c)
 let assoc_tensor_r a b c = AssocTensorR (a, b, c)
+let assoc_plus_l a b c = AssocPlusL (a, b, c)
+let assoc_plus_r a b c = AssocPlusR (a, b, c)
 let dist_l a b c = DistL (a, b, c)
 let dist_r a b c = DistR (a, b, c)
+let undist_l a b c = UndistL (a, b, c)
+let undist_r a b c = UndistR (a, b, c)
 
 let gate_h = GateH
 let gate_s = GateS
@@ -182,7 +190,7 @@ let seq0 f g = Seq0 (f, g)
 
 let par0 f g = Par0 (f, g)
 
-let omap0 ty_left ty_right f g = OMap0 (ty_left, ty_right, f, g) [@@warning "-32"]
+let omap0 ty_left ty_right f g = OMap0 (ty_left, ty_right, f, g)
 
 (* ========== Meta-level Combinators ========== *)
 
@@ -219,16 +227,13 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
   | Var -> Bridge.TId (Rep.var 0)
   | Weaken p -> emit_any p
 
-  | Unit -> Bridge.TId Rep.Unit
-  | LetUnit (e1, e2) -> Bridge.TSeq (emit_any e1, emit_any e2)
-
   | Pair (e1, e2) -> Bridge.TTenTerm (emit_any e1, emit_any e2)
   | LetPair (e1, body) -> Bridge.TSeq (emit_any e1, emit_any body)
 
-  | Lam (ty, body) -> Bridge.TLam ("x", ty, ty, emit_any body)
+  | Lam (dom, cod, body) -> Bridge.TLam ("x", dom, cod, emit_any body)
   | App (f, arg) -> Bridge.TApply (emit_any f, emit_any arg)
 
-  | OMap (f, g) -> Bridge.TTenTerm (emit_any f, emit_any g)
+  | OMap (ty_left, ty_right, f, g) -> Bridge.TPlusMap (ty_left, ty_right, emit_any f, emit_any g)
   | Case (ty_left, ty_right, scrut, left, right) ->
       Bridge.TCase (ty_left, ty_right, emit_any scrut, emit_any left, emit_any right)
 
@@ -236,8 +241,12 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
   | TwistPlus (a, b) -> Bridge.TTwistPlus (a, b)
   | AssocTensorL (a, b, c) -> Bridge.TAssocTenL (a, b, c)
   | AssocTensorR (a, b, c) -> Bridge.TAssocTenR (a, b, c)
+  | AssocPlusL (a, b, c) -> Bridge.TAssocPlusL (a, b, c)
+  | AssocPlusR (a, b, c) -> Bridge.TAssocPlusR (a, b, c)
   | DistL (a, b, c) -> Bridge.TDistL (a, b, c)
   | DistR (a, b, c) -> Bridge.TDistR (a, b, c)
+  | UndistL (a, b, c) -> Bridge.TUndistL (a, b, c)
+  | UndistR (a, b, c) -> Bridge.TUndistR (a, b, c)
 
   | GateH -> Bridge.TH 0
   | GateS -> Bridge.TS 0

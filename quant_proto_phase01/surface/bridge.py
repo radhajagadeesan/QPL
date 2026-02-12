@@ -26,7 +26,7 @@ from lang.terms import (
     Term, Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
-    DistL, DistR,
+    DistL, DistR, UndistL, UndistR,
     H, S, Sdg, T, Tdg, X, Y, Z,
     Rx, Ry, Rz, Phase,
     CX, CZ, CRz, CCX,
@@ -225,6 +225,13 @@ def parse_term(j: dict, ty_total: Ty = None) -> Term:
 
     elif node == "DistR":
         return DistR(parse_type(j["a"]), parse_type(j["b"]), parse_type(j["c"]))
+
+    # Inverse distributivity
+    elif node == "UndistL":
+        return UndistL(parse_type(j["a"]), parse_type(j["b"]), parse_type(j["c"]))
+
+    elif node == "UndistR":
+        return UndistR(parse_type(j["a"]), parse_type(j["b"]), parse_type(j["c"]))
 
     # Single-qubit gates
     elif node == "H":

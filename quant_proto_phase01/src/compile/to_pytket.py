@@ -12,7 +12,7 @@ from lang.terms import (
     Term, Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
-    DistL, DistR,
+    DistL, DistR, UndistL, UndistR,
     Feedback,
     # Phase 0 gates
     H, S, CX,
@@ -67,8 +67,8 @@ class Compiled:
 
 
 def _contains_dist(t: Term) -> bool:
-    """Check if term contains DistL or DistR anywhere."""
-    if isinstance(t, (DistL, DistR)):
+    """Check if term contains DistL, DistR, UndistL, or UndistR anywhere."""
+    if isinstance(t, (DistL, DistR, UndistL, UndistR)):
         return True
     if isinstance(t, Seq):
         return _contains_dist(t.f) or _contains_dist(t.g)
@@ -205,6 +205,18 @@ def _compile_structural_to_perm(t: Term) -> WirePerm:
 
         if isinstance(term, DistR):
             tagged = dist_R_perm(term.a, term.b, term.c)
+            step = embed_local_perm(tagged.perm, offset)
+            p = compose(step, p)
+            return
+
+        if isinstance(term, UndistL):
+            tagged = undist_L_perm(term.a, term.b, term.c)
+            step = embed_local_perm(tagged.perm, offset)
+            p = compose(step, p)
+            return
+
+        if isinstance(term, UndistR):
+            tagged = undist_R_perm(term.a, term.b, term.c)
             step = embed_local_perm(tagged.perm, offset)
             p = compose(step, p)
             return
@@ -559,6 +571,20 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             apply_tagged_perm(tagged, offset)
             if explain:
                 log.append(f"DistR perm={tagged.perm.new_to_old} (tag moves to front)")
+            return
+
+        # Inverse distributivity: now supported with tagged layout
+        if isinstance(t, UndistL):
+            tagged = undist_L_perm(t.a, t.b, t.c)
+            apply_tagged_perm(tagged, offset)
+            if explain:
+                log.append(f"UndistL perm={tagged.perm.new_to_old} (identity)")
+            return
+        if isinstance(t, UndistR):
+            tagged = undist_R_perm(t.a, t.b, t.c)
+            apply_tagged_perm(tagged, offset)
+            if explain:
+                log.append(f"UndistR perm={tagged.perm.new_to_old} (tag moves back)")
             return
 
         if isinstance(t, H):

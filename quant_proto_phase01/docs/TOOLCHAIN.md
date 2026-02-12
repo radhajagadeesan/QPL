@@ -97,6 +97,9 @@ OCaml serializes the Core IR to JSON. Python's `bridge.py` deserializes it to `l
 # Run OCaml demo that outputs JSON
 cd surface && dune exec demos/qswitch_demo.exe
 
+# Run OCaml E2E demo (full pipeline to circuits)
+cd surface && dune exec ocaml-demos/abstract_qswitch_e2e.exe
+
 # Python reads JSON and compiles
 PYTHONPATH=src python -c "from bridge import load_term; ..."
 ```
@@ -113,7 +116,7 @@ The Python compiler performs direct recursive-descent over the Core IR, producin
 
 ```bash
 cd quant_proto_phase01
-PYTHONPATH=src python demos/qswitch_demo.py
+PYTHONPATH=src python python-demos/qswitch_demo.py
 PYTHONPATH=src pytest  # Run tests
 ```
 
@@ -161,7 +164,8 @@ quant_proto_phase01/
 │   │   ├── elaborate.ml    # Elaboration to Core IR
 │   │   ├── core.ml         # Core IR types
 │   │   └── bridge.ml       # JSON serialization
-│   ├── demos/              # OCaml demos
+│   ├── demos/              # OCaml demos (AST → Core IR only)
+│   ├── ocaml-demos/        # OCaml E2E demos (full pipeline to circuits)
 │   └── dune-project
 │
 ├── src/                     # Python core compiler
@@ -177,7 +181,7 @@ quant_proto_phase01/
 │   └── bridge.py           # JSON → Python AST
 │
 ├── tests/                   # pytest test suite
-├── demos/                   # Python demos with outputs
+├── python-demos/            # Python demos with outputs
 └── docs/                    # Documentation
 ```
 
@@ -227,13 +231,18 @@ result = compile(term)
 ```bash
 # Python demos
 cd quant_proto_phase01
-PYTHONPATH=src python demos/qswitch_demo.py
-PYTHONPATH=src python demos/exp_twist_demo.py
-PYTHONPATH=src python demos/pauli_conjugation_demo.py
+PYTHONPATH=src python python-demos/qswitch_demo.py
+PYTHONPATH=src python python-demos/exp_twist_demo.py
+PYTHONPATH=src python python-demos/pauli_conjugation_demo.py
 
-# OCaml demos
+# OCaml demos (AST → Core IR)
 cd surface
 dune exec demos/qswitch_demo.exe
+
+# OCaml E2E demos (full pipeline to circuits)
+cd surface
+dune exec ocaml-demos/abstract_qswitch_e2e.exe
+dune exec ocaml-demos/zn_controlled_phase_e2e.exe
 ```
 
 ---
@@ -245,8 +254,9 @@ dune exec demos/qswitch_demo.exe
 | Build OCaml | `cd surface && dune build` |
 | Run OCaml tests | `cd surface && dune test` |
 | Run Python tests | `cd quant_proto_phase01 && PYTHONPATH=src pytest` |
-| Run Python demo | `PYTHONPATH=src python demos/<demo>.py` |
+| Run Python demo | `PYTHONPATH=src python python-demos/<demo>.py` |
 | Run OCaml demo | `cd surface && dune exec demos/<demo>.exe` |
+| Run OCaml E2E demo | `cd surface && dune exec ocaml-demos/<demo>.exe` |
 | Type-check OCaml | `cd surface && dune build @check` |
 
 ---

@@ -56,7 +56,8 @@
 ## Development Workflow
 
 - Always run `PYTHONPATH=src pytest` after code changes
-- Run demos with `PYTHONPATH=src python demos/<demo>.py`
+- Run Python demos with `PYTHONPATH=src python python-demos/<demo>.py`
+- Run OCaml E2E demos with `cd surface && dune exec ocaml-demos/<demo>.exe`
 
 ## Documentation (IMPORTANT)
 
@@ -66,7 +67,8 @@ Documentation files to maintain:
 - `docs/PROGRAMMING_GUIDE.md` - User-facing guide covering all language features
 - `docs/COMPILER_API_GUIDE.md` - Compiler and compilation API
 - `docs/API_REFERENCE.md` - API reference
-- `demos/README.md` - Update when adding new demos
+- `python-demos/README.md` - Python demo documentation
+- `surface/ocaml-demos/README.md` - OCaml E2E demo documentation
 
 Update docs when:
 - Adding new language features (types, terms, combinators)
@@ -78,7 +80,8 @@ Update docs when:
 
 - `src/` - Python core (types, terms, compilation)
 - `surface/` - OCaml surface language
-- `demos/` - Executable demonstrations
+  - `surface/ocaml-demos/` - OCaml E2E demos (full pipeline to circuits)
+- `python-demos/` - Python executable demonstrations
 - `tests/` - pytest test suite
 - `docs/` - User-facing documentation
 
@@ -88,14 +91,19 @@ Update docs when:
 # Run all tests
 PYTHONPATH=src pytest
 
-# Run a specific demo
-PYTHONPATH=src python demos/qswitch_demo.py
+# Run a Python demo
+PYTHONPATH=src python python-demos/qswitch_demo.py
 
 # Build OCaml surface language
 cd surface && dune build
 
 # Run OCaml tests
 cd surface && dune test
+
+# Run OCaml E2E demo (full pipeline to circuits)
+cd surface && dune exec ocaml-demos/abstract_qswitch_e2e.exe
+cd surface && dune exec ocaml-demos/qswitch_instantiated_e2e.exe
+cd surface && dune exec ocaml-demos/zn_controlled_phase_e2e.exe
 ```
 
 ## Conventions

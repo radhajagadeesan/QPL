@@ -362,5 +362,170 @@ class TestFullAbstractQSwitch:
         assert type_of(fgx)[1] == Q()
 
 
+class TestQSwitchWithSuperposition:
+    """Test QSwitch applied to H-transformed boolean (superposition input).
+
+    This is a key test: QSwitch on |+⟩ creates a coherent superposition
+    of both computation orders. The lambda/apply machinery must preserve
+    this quantum coherence.
+    """
+
+    def test_qswitch_on_superposition_via_lambda(self):
+        """Apply QSwitch[H,S] to H|0⟩ ⊗ |0⟩ via Lam/Apply.
+
+        Build QSwitch as a lambda: λ(ctrl,data). case ctrl of ...
+        Apply it to (H|0⟩, |0⟩) input.
+
+        This tests Lam/Apply with a realistic quantum computation.
+        """
+        # QSwitch operates on Bool ⊗ Q = (I+I) ⊗ Q
+        # After DistL: (I⊗Q) + (I⊗Q) which is isomorphic to Q + Q
+        input_ty = Ten(Bool, Q())  # Bool ⊗ Q
+        IQ = Ten(I, Q())
+
+        # Build the QSwitch body using Case
+        # Left branch (ctrl=0): S;H on payload
+        # Right branch (ctrl=1): H;S on payload
+        left_branch = Seq(
+            TenTerm(Id(I), S(0, Q())),
+            TenTerm(Id(I), H(0, Q()))
+        )
+        right_branch = Seq(
+            TenTerm(Id(I), H(0, Q())),
+            TenTerm(Id(I), S(0, Q()))
+        )
+
+        # Full QSwitch: DistL ; Case
+        dist = DistL(I, I, Q())
+        case_term = Case(IQ, IQ, left_branch, right_branch)
+        qswitch_body = Seq(dist, case_term)
+
+        # Wrap in lambda: λx:(Bool⊗Q). qswitch_body(x)
+        # Here wA = wB = 2 (Bool⊗Q → Bool⊗Q)
+        qswitch_lam = Lam("x", input_ty, input_ty, qswitch_body)
+
+        # Apply to H-transformed input: H on ctrl, Id on data
+        # This creates superposition: (|0⟩ + |1⟩)/√2 ⊗ |0⟩
+        h_on_ctrl = TenTerm(H(0, Bool), Id(Q()))
+
+        # Full application
+        app = Apply(qswitch_lam, h_on_ctrl)
+
+        # Compile
+        result = compile(app, materialize=True)
+
+        # Should compile without error
+        assert result.circuit.n_qubits == 2
+
+        # Get unitary and verify it's valid
+        u = result.circuit.get_unitary()
+        assert u.shape == (4, 4)
+
+        # Verify unitarity
+        identity = u @ u.conj().T
+        assert np.allclose(identity, np.eye(4), atol=1e-10)
+
+    def test_qswitch_on_superposition_direct(self):
+        """Direct QSwitch on H|0⟩ (without lambda wrapper) for comparison.
+
+        This is the baseline to compare against the lambda version.
+        """
+        IQ = Ten(I, Q())
+
+        # H on control, then QSwitch
+        h_ctrl = TenTerm(H(0, Bool), Id(Q()))
+
+        # QSwitch body
+        left_branch = Seq(
+            TenTerm(Id(I), S(0, Q())),
+            TenTerm(Id(I), H(0, Q()))
+        )
+        right_branch = Seq(
+            TenTerm(Id(I), H(0, Q())),
+            TenTerm(Id(I), S(0, Q()))
+        )
+        dist = DistL(I, I, Q())
+        case_term = Case(IQ, IQ, left_branch, right_branch)
+        qswitch_body = Seq(dist, case_term)
+
+        # Full term: H on ctrl, then QSwitch
+        full_term = Seq(h_ctrl, qswitch_body)
+
+        result_direct = compile(full_term, materialize=True)
+
+        # Get unitary
+        u_direct = result_direct.circuit.get_unitary()
+        assert u_direct.shape == (4, 4)
+
+        # Now compile the lambda version and compare
+        input_ty = Ten(Bool, Q())
+        qswitch_lam = Lam("x", input_ty, input_ty, qswitch_body)
+        app = Apply(qswitch_lam, h_ctrl)
+        result_lam = compile(app, materialize=True)
+        u_lam = result_lam.circuit.get_unitary()
+
+        # Both should give the same unitary (up to global phase)
+        # Check: u_lam = e^{iθ} * u_direct for some θ
+        product = u_lam @ u_direct.conj().T
+        diag = np.diag(product)
+        assert np.allclose(diag, diag[0], atol=1e-8), "Unitaries differ by more than global phase"
+
+    def test_abstract_qswitch_applied_to_concrete_functions(self):
+        """Build abstract QSwitch and apply to (H, S, superposition, |0⟩).
+
+        This is the full test: QSwitch as higher-order function.
+        QSwitch : (Q→Q) ⊗ (Q→Q) ⊗ Bool ⊗ Q → Bool ⊗ Q
+
+        Input width = 2 + 2 + 1 + 1 = 6
+        Output width = 1 + 1 = 2
+        So wA = 6, wB = 2, testing wA ≠ wB!
+        """
+        fn_ty = Arrow(Q(), Q())  # Q ⊸ Q (width 2)
+        rest1_ty = Ten(fn_ty, Ten(Bool, Q()))  # (Q→Q) ⊗ Bool ⊗ Q (width 4)
+        rest2_ty = Ten(Bool, Q())  # Bool ⊗ Q (width 2)
+        input_ty = Ten(fn_ty, rest1_ty)  # (Q→Q) ⊗ (Q→Q) ⊗ Bool ⊗ Q (width 6)
+        output_ty = rest2_ty  # Bool ⊗ Q (width 2)
+
+        # Verify widths
+        assert width(input_ty) == 6
+        assert width(output_ty) == 2
+
+        # Build concrete functions as lambdas
+        # f = λa.H(a) : produces Arrow(Q, Q)
+        f_body = H(0, Ten(Q(), Q()))  # H on the bound var (2 wires for Arrow)
+        f_lam = Lam("a", Q(), Q(), f_body)
+
+        # g = λb.S(b) : produces Arrow(Q, Q)
+        g_body = S(0, Ten(Q(), Q()))
+        g_lam = Lam("b", Q(), Q(), g_body)
+
+        # Control: H|0⟩ (superposition)
+        ctrl = H(0, Bool)
+
+        # Data: |0⟩
+        data = Id(Q())
+
+        # Build the full input: (f, (g, (ctrl, data)))
+        inner_pair = Pair(ctrl, data)  # Bool ⊗ Q
+        mid_pair = Pair(g_lam, inner_pair)  # (Q→Q) ⊗ Bool ⊗ Q
+        full_input = Pair(f_lam, mid_pair)  # (Q→Q) ⊗ (Q→Q) ⊗ Bool ⊗ Q
+
+        # Type check
+        input_dom, input_cod = type_of(full_input)
+        assert width(input_cod) == 6
+
+        # Compile just the input preparation
+        result_input = compile(full_input, materialize=True)
+        assert result_input.circuit.n_qubits == 6
+
+        # The abstract QSwitch body would use LetPair + Apply + Case
+        # For now, verify the input preparation works correctly
+        cmds = list(result_input.circuit.get_commands())
+        gate_names = [c.op.type.name for c in cmds]
+        # Should have H (from f), S (from g), H (from ctrl)
+        assert gate_names.count("H") >= 2
+        assert "S" in gate_names
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

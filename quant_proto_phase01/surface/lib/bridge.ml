@@ -35,7 +35,7 @@ let set_project_root path = project_root := path
 (** Convert a Rep.t to JSON type representation *)
 let rec type_to_json = function
   | Rep.Var _ -> {|{"node": "Q"}|}  (* Variables become Q for now *)
-  | Rep.Unit -> {|{"node": "Q"}|}   (* Unit becomes Q for now *)
+  | Rep.Unit -> {|{"node": "Unit"}|}
   | Rep.Tensor (a, b) ->
     Printf.sprintf {|{"node": "Ten", "left": %s, "right": %s}|}
       (type_to_json a) (type_to_json b)
@@ -58,6 +58,9 @@ type term =
   (* Distributivity (unitary-level) *)
   | TDistL of Rep.t * Rep.t * Rep.t
   | TDistR of Rep.t * Rep.t * Rep.t
+  (* Inverse distributivity *)
+  | TUndistL of Rep.t * Rep.t * Rep.t
+  | TUndistR of Rep.t * Rep.t * Rep.t
   (* Single-qubit gates *)
   | TH of int
   | TS of int
@@ -130,6 +133,13 @@ let rec term_to_json = function
       (type_to_json a) (type_to_json b) (type_to_json c)
   | TDistR (a, b, c) ->
     Printf.sprintf {|{"node": "DistR", "a": %s, "b": %s, "c": %s}|}
+      (type_to_json a) (type_to_json b) (type_to_json c)
+  (* Inverse distributivity *)
+  | TUndistL (a, b, c) ->
+    Printf.sprintf {|{"node": "UndistL", "a": %s, "b": %s, "c": %s}|}
+      (type_to_json a) (type_to_json b) (type_to_json c)
+  | TUndistR (a, b, c) ->
+    Printf.sprintf {|{"node": "UndistR", "a": %s, "b": %s, "c": %s}|}
       (type_to_json a) (type_to_json b) (type_to_json c)
   (* Single-qubit gates *)
   | TH i -> Printf.sprintf {|{"node": "H", "i": %d}|} i
