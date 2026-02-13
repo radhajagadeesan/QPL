@@ -4,6 +4,18 @@ Complete reference for types, terms, and compilation functions.
 
 ---
 
+## Linearity Warning
+
+> **⚠️ The Python Core API performs type checking but NOT linearity checking.**
+>
+> - **Type checking:** ✅ Domain/codomain matching, wire bounds, structural signatures
+> - **Linearity checking:** ❌ Variables can be duplicated or discarded without error
+>
+> Ill-formed terms compile to **incorrect circuits**. See `COMPILER_API_GUIDE.md` for details
+> and recommendations. For linearity guarantees, use the OCaml surface language or Linear GADT module.
+
+---
+
 ## Types (`src/lang/types.py`)
 
 | Type | Description | Width |

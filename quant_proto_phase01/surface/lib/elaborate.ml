@@ -320,6 +320,66 @@ let rec free_vars = function
   | Ast.GateRz _ -> []
   | Ast.ExpI (_, j) -> free_vars j
 
+(** Count occurrences of a variable in a term.
+    Used for linearity checking: each linear variable must be used exactly once. *)
+let rec count_var_uses (x : string) (term : Ast.term) : int =
+  match term with
+  | Ast.Var y -> if x = y then 1 else 0
+  | Ast.Lam (y, _, body) ->
+    if x = y then 0  (* x is shadowed *)
+    else count_var_uses x body
+  | Ast.App (f, e) -> count_var_uses x f + count_var_uses x e
+  | Ast.Let (y, e1, e2) ->
+    count_var_uses x e1 + (if x = y then 0 else count_var_uses x e2)
+  | Ast.LetTen (y1, y2, _, _, e1, e2) ->
+    count_var_uses x e1 + (if x = y1 || x = y2 then 0 else count_var_uses x e2)
+  | Ast.Case (e, branches) ->
+    count_var_uses x e + List.fold_left (fun acc (pat, body) ->
+      let bound = match pat with
+        | Ast.PatCtor (_, v) -> [v]
+        | Ast.PatWild -> []
+      in
+      if List.mem x bound then acc
+      else acc + count_var_uses x body
+    ) 0 branches
+  | Ast.Ctor (_, e) -> count_var_uses x e
+  | Ast.Seq (f, g) | Ast.Ten (f, g) -> count_var_uses x f + count_var_uses x g
+  | Ast.Id _ | Ast.TwistT _ | Ast.TwistP _
+  | Ast.AssocTL _ | Ast.AssocTR _ | Ast.AssocPL _ | Ast.AssocPR _
+  | Ast.DistL _ | Ast.DistR _
+  | Ast.GateH _ | Ast.GateS _ | Ast.GateCX _
+  | Ast.GateX _ | Ast.GateY _ | Ast.GateZ _ | Ast.GateT _
+  | Ast.GateRz _ -> 0
+  | Ast.ExpI (_, j) -> count_var_uses x j
+
+(** Check linearity for a bound variable.
+    A linear variable must be used exactly once in the term.
+    - 0 uses: raise UnusedVariable
+    - 1 use: OK
+    - >1 uses: raise NonLinearUse *)
+let check_linear_use (x : string) (term : Ast.term) : unit =
+  let count = count_var_uses x term in
+  if count = 0 then
+    raise (ElaborateError (UnusedVariable x))
+  else if count > 1 then
+    raise (ElaborateError (NonLinearUse x))
+  (* count = 1 is OK *)
+
+(** Check linearity for multiple bound variables.
+    Each variable must be used exactly once. *)
+let check_linear_uses (vars : string list) (term : Ast.term) : unit =
+  List.iter (fun x -> check_linear_use x term) vars
+
+(** Check that two terms have disjoint free variables (context splitting).
+    This is required for tensor introduction: x ⊗ y requires Γ1 ⊎ Γ2. *)
+let check_disjoint_vars (t1 : Ast.term) (t2 : Ast.term) : unit =
+  let fv1 = free_vars t1 in
+  let fv2 = free_vars t2 in
+  let overlap = List.filter (fun v -> List.mem v fv2) fv1 in
+  match overlap with
+  | [] -> ()
+  | v :: _ -> raise (ElaborateError (NonLinearUse v))
+
 (** Check that all variables in a term are bound *)
 let check_scope env term =
   let fvs = free_vars term in
@@ -358,6 +418,8 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
        - Function type: Keep as Core.Lam (Int construction)
        - Other types: Standalone lambda is an error (should be applied) *)
     check_ty tyvar_env ty;
+    (* Check linearity: x must be used exactly once in body *)
+    check_linear_use x body;
     (match get_arrow_parts ty with
      | Some (a, b) ->
        (* Argument has function type: keep the lambda *)
@@ -384,11 +446,14 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
          | _ -> false)
       | _ -> false
     in
-    if is_higher_order_arg then
-      (* Higher-order argument: use Int/GOI application *)
+    if is_higher_order_arg then begin
+      (* Higher-order argument: use Int/GOI application.
+         Check linearity: f and arg must have disjoint free variables. *)
+      check_disjoint_vars f arg;
       let f' = elaborate ~base tyvar_env ty_env dt_env f in
       let arg' = elaborate ~base tyvar_env ty_env dt_env arg in
       Core.Apply (f', arg')
+    end
     else
       (* First-order argument (including gates): β-reduce if f is a lambda *)
       (match f with
@@ -400,7 +465,9 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
          failwith (Printf.sprintf "elaborate: non-λ application: %s" (Ast.term_to_string f)))
 
   | Ast.Let (x, e1, e2) ->
-    (* Let is just substitution at the surface level *)
+    (* Let is just substitution at the surface level.
+       Check linearity: x must be used exactly once in e2. *)
+    check_linear_use x e2;
     let e2' = subst x e1 e2 in
     elaborate ~base tyvar_env ty_env dt_env e2'
 
@@ -414,6 +481,8 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
        We track wire offsets in the type environment so case
        expressions can use the correct base when casing on x2.
     *)
+    (* Check linearity: both x1 and x2 must be used exactly once in e2 *)
+    check_linear_uses [x1; x2] e2;
     let e1' = elaborate ~base tyvar_env ty_env dt_env e1 in
 
     (* Calculate offset for x2: it starts after x1's wires *)
@@ -446,6 +515,8 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
               elaborate ~base tyvar_env ty_env dt_env g)
 
   | Ast.Ten (f, g) ->
+    (* Check linearity: variables must be disjoint between f and g (context splitting) *)
+    check_disjoint_vars f g;
     Core.Ten (elaborate ~base tyvar_env ty_env dt_env f,
               elaborate ~base tyvar_env ty_env dt_env g)
 
@@ -610,6 +681,8 @@ and elaborate_classical_case ~base tyvar_env ty_env dt_env scrutinee branches =
     ) branches in
     (match matching_branch with
      | Some (Ast.PatCtor (_, var), body) ->
+       (* Check linearity: pattern variable must be used exactly once in body *)
+       check_linear_use var body;
        (* Substitute payload for pattern variable and elaborate at payload_base *)
        let body' = subst var payload body in
        elaborate ~base:payload_base tyvar_env ty_env dt_env body'
@@ -676,6 +749,10 @@ and elaborate_quantum_case_2 ~base tyvar_env ty_env dt_env scrutinee branches =
     | Ast.PatCtor (_, v) -> v
     | Ast.PatWild -> "_"
   in
+
+  (* Check linearity: pattern variables must be used exactly once in their branches. *)
+  if left_var <> "_" then check_linear_use left_var left_body;
+  if right_var <> "_" then check_linear_use right_var right_body;
 
   (* Detect if a branch body is a constructor wrapping the pattern variable.
      Returns (output_ctor_name option, inner_body) *)

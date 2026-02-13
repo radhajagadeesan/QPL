@@ -6,6 +6,62 @@ For compiler API details, see `COMPILER_API_GUIDE.md`.
 
 ---
 
+## Linearity Checking
+
+> **⚠️ CAUTION: Platform Differences in Safety Checking**
+>
+> The quantum programming model requires **linearity**: every variable must be used
+> exactly once (no duplication, no discarding). Violating linearity produces
+> **incorrect quantum circuits** — this is not a cosmetic issue but a semantic error.
+>
+> ### What Each Platform Checks
+>
+> | Check | OCaml Surface | OCaml Linear GADT | Python Core |
+> |-------|---------------|-------------------|-------------|
+> | **Type checking** (domain/codomain match) | ✅ Yes | ✅ Yes (compile-time) | ✅ Yes |
+> | **Linearity** (variables used exactly once) | ✅ Yes (runtime) | ✅ Yes (compile-time) | ❌ **NO** |
+> | **Context splitting** (disjoint variable sets) | ✅ Yes | ✅ Yes | ❌ **NO** |
+>
+> ### Python Core API: What It Does and Doesn't Do
+>
+> **Python DOES:**
+> - Type check that domain and codomain types match in compositions
+> - Verify gate indices are within wire bounds
+> - Check structural operations have correct type signatures
+>
+> **Python DOES NOT:**
+> - Check that variables are used exactly once
+> - Prevent duplicate variable use (contraction)
+> - Prevent unused variables (weakening)
+> - Enforce context splitting in tensor/arrow constructs
+>
+> **Consequence:** If you write `Pair(Var("x", Q()), Var("x", Q()))` in Python, it will
+> compile without error but produce a **semantically incorrect circuit**. The Python
+> compiler trusts that you have already verified linearity.
+>
+> ### Recommendations
+>
+> 1. **For production code:** Use the **OCaml surface language** or **Linear GADT module**
+>    which enforce linearity automatically.
+>
+> 2. **For Python API usage:** Either:
+>    - Generate terms from OCaml (linearity checked) and bridge to Python
+>    - Manually verify linearity before calling `compile()`
+>    - Use only combinator-style construction (no explicit variables)
+>
+> 3. **For testing:** The conformance test suite (`RadhaMSG/SRC_TESTS.md`) documents
+>    linearity rejection tests (T3, T6, T8, T10, T12, T14, T15) that apply **only to OCaml**.
+>
+> ### OCaml Options
+>
+> - **Linear GADT module** (`Qpl_surface.Linear`): Linearity enforced at **OCaml compile time**
+>   via GADTs. Non-linear code cannot be written — it's a type error.
+>
+> - **Ast + Elaborate**: Linearity enforced at **runtime** during elaboration.
+>   Errors: `UnusedVariable`, `NonLinearUse`.
+
+---
+
 ## Types
 
 ### Primitive Types

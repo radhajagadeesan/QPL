@@ -13,3 +13,7 @@
 (test
  (name test_case_linear)
  (libraries qpl_surface))
+
+(test
+ (name test_src_conformance)
+ (libraries qpl_surface))

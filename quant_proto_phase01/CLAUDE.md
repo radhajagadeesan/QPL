@@ -129,6 +129,36 @@ cd surface && dune exec ocaml-demos/zn_controlled_phase_e2e.exe
   - `Pair(fst, snd)` — tensor introduction
   - `LetPair(x, y, ty_x, ty_y, pair, body)` — tensor elimination, destructures pairs
   - Compilation tracks `Env = dict[str, (start, width)]` mapping vars to wire ranges
+
+## Linearity Checking (Platform Differences)
+
+**OCaml Surface Language** (`surface/lib/elaborate.ml`):
+- Full linearity checking at elaboration time
+- `NonLinearUse` error: variable used more than once
+- `UnusedVariable` error: bound variable not used
+- Context splitting enforced for tensor and higher-order constructs
+- Conformance tests: `surface/test/test_src_conformance.ml`
+
+**OCaml Linear GADT Module** (`Qpl_surface.Linear`):
+- Linearity enforced at **OCaml compile time** via GADTs
+- Non-linear code cannot be written — it's a type error
+- Context tracked in type `('g, 'a) prog`
+- Conformance tests rewritten using Linear module
+
+**Python Core API** (`src/`):
+- **Type checking:** ✅ domain/codomain matching, wire bounds, structural signatures
+- **Linearity checking:** ❌ NO — terms trusted to be well-formed
+- Ill-formed terms compile without error but produce **incorrect circuits**
+- Variables can be duplicated (contraction) or discarded (weakening) without error
+- User responsibility to ensure linearity before calling `compile()`
+
+**For linearity guarantees**, use:
+1. OCaml Linear GADT module (compile-time GADT enforcement — strongest)
+2. OCaml surface language + elaborate (runtime checking)
+3. Generate from OCaml and bridge to Python
+
+See `RadhaMSG/SRC_TESTS.md` for conformance test suite with platform notes.
+
 ## Compilation Pipeline: OCaml → Python → Circuit
 
 ### Two-Stage Architecture

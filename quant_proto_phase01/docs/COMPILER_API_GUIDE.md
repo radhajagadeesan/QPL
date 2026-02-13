@@ -7,6 +7,54 @@ For IR architecture details, see `IR_DESIGN.md`.
 
 ---
 
+## Linearity Checking Warning
+
+> **⚠️ CAUTION: The Python Core API does NOT perform linearity checking.**
+>
+> ### What Python Checks
+>
+> The Python compiler **DOES** perform:
+> - **Type checking:** Domain and codomain types must match in sequential composition
+> - **Wire bounds:** Gate indices must be within the ambient type's width
+> - **Structural signatures:** Twist, Assoc, Dist have correct input/output types
+>
+> ### What Python Does NOT Check
+>
+> The Python compiler **DOES NOT** perform:
+> - **Linearity:** Variables can be used zero times (weakening) or multiple times (contraction)
+> - **Context splitting:** The same variable can appear in both sides of a tensor
+> - **Unused detection:** Bound variables that are never referenced are silently allowed
+>
+> ### Consequences
+>
+> Ill-formed terms compile and produce circuits, but those circuits are **semantically incorrect**.
+> For example:
+> ```python
+> # WRONG: x used twice - compiles but produces incorrect circuit
+> Pair(Var("x", Q()), Var("x", Q()))
+>
+> # WRONG: y never used - compiles but loses information
+> LetPair("x", "y", Q(), Q(), pair, Var("x", Q()))
+> ```
+>
+> **The Python compiler trusts that linearity has been verified externally.**
+>
+> ### Recommendations
+>
+> 1. **Generate from OCaml:** Use the OCaml surface language (runtime checking) or
+>    Linear GADT module (compile-time checking), then bridge to Python.
+>
+> 2. **Combinator style:** Avoid explicit variables. Use `Seq`, `TenTerm`, `Case` etc.
+>    directly on gates and structural operations.
+>
+> 3. **Manual verification:** If constructing terms with Var/LetPair, carefully audit
+>    that each variable is used exactly once.
+>
+> See `RadhaMSG/SRC_TESTS.md` for the conformance test suite. Linearity rejection tests
+> (T3, T6, T8, T10, T12, T14, T15) apply **only to OCaml**, not Python.
+
+---
+
 ## Overview
 
 The compiler has two entry points:
