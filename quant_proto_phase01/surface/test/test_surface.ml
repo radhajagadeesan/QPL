@@ -472,15 +472,15 @@ let test_both_flip () =
   let result_str = Elaborate.Core.term_to_string elaborated in
   print_endline ("  Elaborated: " ^ result_str);
 
-  (* Should contain X[0] for the tag flip *)
-  let has_tag_x =
-    try let _ = Str.search_forward (Str.regexp "X\\[0\\]") result_str 0 in true
+  (* With Core.Case approach, both-flip emits case(...) ; twist+[...] *)
+  let has_twist =
+    try let _ = Str.search_forward (Str.regexp "twist\\+") result_str 0 in true
     with Not_found -> false
   in
-  if has_tag_x then
-    print_endline "  ✓ Both-flip correctly emits X[tag] (structural swap)"
+  if has_twist then
+    print_endline "  ✓ Both-flip correctly emits case ; twist+ (structural swap)"
   else
-    print_endline "  ✗ Expected X[0] for tag flip, not found";
+    print_endline "  ✗ Expected twist+ for tag flip, not found";
 
   print_endline ""
 
@@ -837,10 +837,15 @@ let test_eta_expanded_structural () =
   let asymmetric_str = Elaborate.Core.term_to_string asymmetric_result in
   print_endline ("  Asymmetric result: " ^ asymmetric_str);
 
-  if Str.string_match (Str.regexp ".*C[0-9]-.*") asymmetric_str 0 then
-    print_endline "  ✓ Asymmetric case produces controlled gates (correct)"
+  (* With Core.Case approach, asymmetric case emits Core.Case term *)
+  let has_case =
+    try let _ = Str.search_forward (Str.regexp "case(") asymmetric_str 0 in true
+    with Not_found -> false
+  in
+  if has_case then
+    print_endline "  ✓ Asymmetric case produces Core.Case (Python handles controlled gates)"
   else
-    print_endline "  ✗ Asymmetric case should have controlled gates";
+    print_endline "  ✗ Asymmetric case should produce Core.Case term";
 
   print_endline ""
 

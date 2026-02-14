@@ -289,6 +289,48 @@ def _internal_width(t: Term) -> int:
     return max(type_width(dom), type_width(cod))
 
 
+def _emit_tag_perm_unitary(circ, p, tag_perm, k, offset, explain, log):
+    """Emit a unitary implementing a summand-index permutation on the tag register.
+
+    For nested sums with n > 2 summands, tag_perm is an arbitrary permutation
+    of {0, ..., n-1}. This builds the corresponding permutation matrix on the
+    k = ceil(log2(n)) tag qubits and emits it via Unitary2qBox / Unitary3qBox.
+
+    Unused computational basis states (n <= idx < 2^k) map to themselves.
+    """
+    import math
+    import numpy as np
+    from pytket.circuit import Unitary2qBox
+
+    n = len(tag_perm)
+    dim = 2 ** k
+
+    # Build dim x dim permutation matrix.
+    # U|i⟩ = |tag_perm[i]⟩ for i < n, U|i⟩ = |i⟩ for i >= n.
+    U = np.zeros((dim, dim), dtype=complex)
+    for i in range(n):
+        U[tag_perm[i], i] = 1.0
+    for i in range(n, dim):
+        U[i, i] = 1.0
+
+    # Get physical wire positions for the tag qubits
+    tag_phys = [p.apply_new_to_old(offset + j) for j in range(k)]
+
+    if k == 2:
+        box = Unitary2qBox(U)
+        circ.add_unitary2qbox(box, tag_phys[0], tag_phys[1])
+    elif k == 3:
+        from pytket.circuit import Unitary3qBox
+        box = Unitary3qBox(U)
+        circ.add_unitary3qbox(box, tag_phys[0], tag_phys[1], tag_phys[2])
+    else:
+        raise NotImplementedError(
+            f"tag_perm on {k} tag qubits (> 3) not yet supported")
+
+    if explain:
+        log.append(f"TagPerm {tag_perm} on {k} qubits, phys={tag_phys}")
+
+
 def compile(term: Term, *, materialize: bool = False, explain: bool = False, env: Env = None) -> Compiled:
     # Check for Feedback - not currently supported
     if _contains_feedback(term):
@@ -471,7 +513,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
         return WirePerm(n, global_perm)
 
     def apply_tagged_perm(tagged: TaggedPerm, offset: int) -> None:
-        """Apply a TaggedPerm: update global perm and emit X gates for tag flips."""
+        """Apply a TaggedPerm: update global perm and emit X gates for tag flips.
+
+        Also handles general tag_perm (summand index permutation) for nested
+        sums where a simple X flip is insufficient.
+        """
         nonlocal p
         # Embed the wire permutation
         step = embed_local_perm(tagged.perm, offset)
@@ -486,6 +532,19 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             circ.X(phys)
             if explain:
                 log.append(f"Tag flip at local {local_pos} + offset {offset} = global {global_pos} -> physical {phys}")
+
+        # Handle general tag_perm for nested sums (n > 2 summands).
+        # tag_flips handles the binary case (n=2); for n>2, tag_perm encodes
+        # a general permutation on summand indices that must be synthesized
+        # as a unitary on the log-encoded tag register.
+        if tagged.tag_perm is not None and not tagged.tag_flips:
+            import math
+            tp = tagged.tag_perm
+            n_summands = len(tp)
+            k = math.ceil(math.log2(n_summands)) if n_summands > 1 else 0
+            # Only emit if non-identity
+            if k > 0 and tp != tuple(range(n_summands)):
+                _emit_tag_perm_unitary(circ, p, tp, k, offset, explain, log)
 
     def go(t: Term, offset: int = 0, env: Env = None) -> None:
         """Compile term t at given wire offset with variable environment.
@@ -815,6 +874,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
             def _emit_controlled(cmds, tag_q, payload_base):
                 """Emit each gate controlled on tag_q, with wires offset to payload."""
+                from pytket.circuit import QControlBox, Op
                 for cmd in cmds:
                     phys_qubits = [p.apply_new_to_old(q.index[0] + payload_base)
                                    for q in cmd.qubits]
@@ -823,8 +883,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                         circ.add_gate(ctrl_op, cmd.op.params,
                                       [tag_q] + phys_qubits)
                     else:
-                        raise NotImplementedError(
-                            f"No controlled version for gate {cmd.op.type.name} in Case")
+                        base_op = Op.create(cmd.op.type, cmd.op.params)
+                        qcb = QControlBox(base_op, 1)
+                        circ.add_qcontrolbox(qcb, [tag_q] + phys_qubits)
 
             # Compile branches to sub-circuits
             left_dom, _ = type_of(t.left)
@@ -886,6 +947,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
             def _emit_controlled_case(cmds, tag_q, payload_base_local):
                 """Emit each gate controlled on tag_q, with wires offset to payload."""
+                from pytket.circuit import QControlBox, Op
                 for cmd in cmds:
                     phys_qubits = [p.apply_new_to_old(q.index[0] + payload_base_local)
                                    for q in cmd.qubits]
@@ -894,8 +956,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                         circ.add_gate(ctrl_op, cmd.op.params,
                                       [tag_q] + phys_qubits)
                     else:
-                        raise NotImplementedError(
-                            f"No controlled version for gate {cmd.op.type.name} in CaseExpr")
+                        base_op = Op.create(cmd.op.type, cmd.op.params)
+                        qcb = QControlBox(base_op, 1)
+                        circ.add_qcontrolbox(qcb, [tag_q] + phys_qubits)
 
             # Left branch: bind x to payload wires, compile, emit anti-controlled
             left_env = {**env, t.x: (0, width(t.ty_x))}  # x at wire 0 in sub-circuit
@@ -937,14 +1000,24 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
         # PlusMap (⊕-Map): f ⊕ g : (A + B) → (C + D)
         # Bifunctorial action on sums. Same anti-control pattern as Case.
-        # Layout: [outer_tag | payload]. Outer tag (1 bit) controls which branch.
-        # Note: Even for nested sums, PlusMap sees a binary sum A + B with 1 outer tag.
+        #
+        # For nested sums (k > 1 tag bits), uses Strategy A from COH-PLUSMAP-02:
+        # Tag permutation sandwich — synthesize permutation P mapping left-set
+        # to MSB=0 half, emit P; PlusMap_bit on MSB; P⁻¹.
+        #
+        # Wire layout: [tag₀ | tag₁ | ... | tag_{k-1} | payload]
+        # In pytket ILO convention: tag₀ is LSB, tag_{k-1} is MSB.
+        # After P: MSB=0 → left summands, MSB=1 → right summands.
         if isinstance(t, PlusMap):
-            from lang.types import Plus
+            from lang.types import Plus, flatten_plus, tag_width as tw_fn, payload_width
             from pytket.circuit import OpType
-            # Binary sum always uses 1 outer tag bit (regardless of nested structure)
-            k = 1
-            tag_phys = p.apply_new_to_old(offset)
+            import math
+
+            # Compute structure of the sum type
+            n_left = len(flatten_plus(t.ty_left)) if isinstance(t.ty_left, Plus) else 1
+            n_right = len(flatten_plus(t.ty_right)) if isinstance(t.ty_right, Plus) else 1
+            n = n_left + n_right
+            k = math.ceil(math.log2(n)) if n > 1 else 0
 
             # Map gate types to their controlled versions
             _ctrl_gate = {
@@ -960,19 +1033,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 OpType.CX: OpType.CCX,
             }
 
-            def _emit_controlled_pm(cmds, tag_q, payload_base):
-                """Emit each gate controlled on tag_q, with wires offset to payload."""
-                for cmd in cmds:
-                    phys_qubits = [p.apply_new_to_old(q.index[0] + payload_base)
-                                   for q in cmd.qubits]
-                    ctrl_op = _ctrl_gate.get(cmd.op.type)
-                    if ctrl_op is not None:
-                        circ.add_gate(ctrl_op, cmd.op.params,
-                                      [tag_q] + phys_qubits)
-                    else:
-                        raise NotImplementedError(
-                            f"No controlled version for gate {cmd.op.type.name} in PlusMap")
-
             # Compile branches to sub-circuits
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
@@ -982,32 +1042,209 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             right_w = width(right_dom)
             right_cmds = list(compile(t.right, materialize=True).circuit.get_commands()) if right_w > 0 else []
 
-            payload_base = offset + k
+            if k <= 1:
+                # Simple binary case: 1 outer tag bit, existing approach
+                tag_phys = p.apply_new_to_old(offset)
+                payload_base = offset + max(k, 1)
 
-            # Left branch: anti-controlled (tag=0) → X; ctrl-gates; X
+                def _emit_controlled_pm_k1(cmds, tag_q, pb):
+                    from pytket.circuit import QControlBox, Op
+                    for cmd in cmds:
+                        phys_qubits = [p.apply_new_to_old(q.index[0] + pb)
+                                       for q in cmd.qubits]
+                        ctrl_op = _ctrl_gate.get(cmd.op.type)
+                        if ctrl_op is not None:
+                            circ.add_gate(ctrl_op, cmd.op.params,
+                                          [tag_q] + phys_qubits)
+                        else:
+                            base_op = Op.create(cmd.op.type, cmd.op.params)
+                            qcb = QControlBox(base_op, 1)
+                            circ.add_qcontrolbox(qcb, [tag_q] + phys_qubits)
+
+                if left_cmds:
+                    circ.X(tag_phys)
+                    _emit_controlled_pm_k1(left_cmds, tag_phys, payload_base)
+                    circ.X(tag_phys)
+                if right_cmds:
+                    _emit_controlled_pm_k1(right_cmds, tag_phys, payload_base)
+
+                if explain:
+                    log.append(f"PlusMap(k=1): {len(left_cmds)} left gates (anti-ctrl), "
+                               f"{len(right_cmds)} right gates (ctrl) at offset {offset}")
+                return
+
+            # k >= 2: Strategy A — tag permutation sandwich
+            # Requires both halves to fit: max(n_left, n_right) <= 2^(k-1)
+            half = 2 ** (k - 1)
+
+            if n_left > half or n_right > half:
+                # Strategy B: full unitary synthesis for asymmetric splits.
+                # When n_left > half, w_f == w (same total width), so U_f
+                # is the same size as the full unitary. Override right blocks.
+                import numpy as np
+                pw = payload_width(Plus(t.ty_left, t.ty_right))
+                w = k + pw
+                dim_pw = 2 ** pw
+
+                U_f = compile(t.left, materialize=True).circuit.get_unitary()
+                U_g = compile(t.right, materialize=True).circuit.get_unitary()
+                dim = 2 ** w
+
+                if n_left > half:
+                    # U_f is dim×dim; override right tag blocks with U_g
+                    U_full = U_f.copy()
+                    w_g = width(type_of(t.right)[0])
+                    for tr in range(n_right):
+                        tf = n_left + tr
+                        rs, re = tf * dim_pw, (tf + 1) * dim_pw
+                        U_full[rs:re, :] = 0
+                        U_full[:, rs:re] = 0
+                        if w_g == 0:
+                            U_full[rs:re, rs:re] = np.eye(dim_pw)
+                        else:
+                            g_rs = tr * dim_pw
+                            U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
+                else:
+                    # n_right > half: U_g is dim×dim; override left blocks with U_f
+                    U_full = U_g.copy()
+                    # Shift U_g indices: U_g inner tag t maps to full tag n_left+t
+                    # Need to rearrange: move U_g blocks to their correct positions
+                    U_full = np.eye(dim, dtype=complex)
+                    w_f = width(type_of(t.left)[0])
+                    for tl in range(n_left):
+                        rs, re = tl * dim_pw, (tl + 1) * dim_pw
+                        if w_f == 0:
+                            U_full[rs:re, rs:re] = np.eye(dim_pw)
+                        else:
+                            f_rs = tl * dim_pw
+                            U_full[rs:re, rs:re] = U_f[f_rs:f_rs+dim_pw, f_rs:f_rs+dim_pw]
+                    for tr in range(n_right):
+                        tf = n_left + tr
+                        rs, re = tf * dim_pw, (tf + 1) * dim_pw
+                        g_rs = tr * dim_pw
+                        U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
+
+                # Emit as UnitaryBox
+                phys = [p.apply_new_to_old(offset + i) for i in range(w)]
+                if w == 2:
+                    from pytket.circuit import Unitary2qBox
+                    box = Unitary2qBox(U_full)
+                    circ.add_unitary2qbox(box, phys[0], phys[1])
+                elif w == 3:
+                    from pytket.circuit import Unitary3qBox
+                    box = Unitary3qBox(U_full)
+                    circ.add_unitary3qbox(box, phys[0], phys[1], phys[2])
+                else:
+                    raise NotImplementedError(
+                        f"PlusMap full unitary for width {w} > 3 not yet supported")
+
+                if explain:
+                    log.append(f"PlusMap(k={k}, Strategy B full unitary): "
+                               f"n_left={n_left}, n_right={n_right}, w={w}")
+                return
+
+            dim = 2 ** k
+
+            # Build permutation P: left indices → MSB=0 half, right → MSB=1 half
+            # In ILO convention: MSB is bit k-1, so MSB=0 half = {0..half-1},
+            # MSB=1 half = {half..dim-1}.
+            P_list = [None] * dim
+            for i in range(n_left):
+                P_list[i] = i  # left indices stay in MSB=0 half
+            for i in range(n_right):
+                P_list[n_left + i] = half + i  # right indices → MSB=1 half
+            # Fill unused slots
+            used_targets = set(v for v in P_list if v is not None)
+            free_targets = sorted(set(range(dim)) - used_targets)
+            j = 0
+            for i in range(dim):
+                if P_list[i] is None:
+                    P_list[i] = free_targets[j]
+                    j += 1
+            P_tup = tuple(P_list)
+            is_identity_P = (P_tup == tuple(range(dim)))
+
+            # Compute sub-circuit tag widths for wire remapping
+            tw_left = tw_fn(t.ty_left) if isinstance(t.ty_left, Plus) else 0
+            tw_right = tw_fn(t.ty_right) if isinstance(t.ty_right, Plus) else 0
+
+            def _sub_wire_to_full(sub_wire, sub_tw):
+                """Map sub-circuit wire index to full-circuit logical wire index.
+
+                Sub-circuit layout: [inner_tag₀..inner_tag_{tw-1} | payload₀..]
+                Full layout (big-endian): [MSB | inner_tag₀..inner_tag_{k-2} | payload₀..]
+                MSB is at offset (the control qubit).
+                Inner tag bits are at offset+1..offset+k-1.
+                Payload starts at offset+k.
+                """
+                if sub_wire < sub_tw:
+                    return offset + 1 + sub_wire  # inner tag bits (after MSB)
+                else:
+                    return offset + k + (sub_wire - sub_tw)  # payload
+
+            def _emit_controlled_pm_remap(cmds, ctrl_q, sub_tw, anti=False):
+                """Emit controlled gates with wire remapping for nested sums."""
+                from pytket.circuit import QControlBox, Op
+                if anti:
+                    circ.X(ctrl_q)
+                for cmd in cmds:
+                    phys_qubits = [p.apply_new_to_old(_sub_wire_to_full(q.index[0], sub_tw))
+                                   for q in cmd.qubits]
+                    ctrl_op = _ctrl_gate.get(cmd.op.type)
+                    if ctrl_op is not None:
+                        circ.add_gate(ctrl_op, cmd.op.params,
+                                      [ctrl_q] + phys_qubits)
+                    else:
+                        # Fallback: wrap with QControlBox for arbitrary gates
+                        base_op = Op.create(cmd.op.type, cmd.op.params)
+                        qcb = QControlBox(base_op, 1)
+                        circ.add_qcontrolbox(qcb, [ctrl_q] + phys_qubits)
+                if anti:
+                    circ.X(ctrl_q)
+
+            # Step 1: Emit P (tag permutation) if non-identity
+            if not is_identity_P:
+                _emit_tag_perm_unitary(circ, p, P_tup, k, offset, explain, log)
+
+            # Step 2: PlusMap_bit controlled on MSB
+            # pytket uses big-endian: q[0] (at offset) is the MSB of the tag.
+            # Values < half have MSB=0 (left), values >= half have MSB=1 (right).
+            msb_phys = p.apply_new_to_old(offset)
+
+            # Left branch: anti-controlled on MSB (MSB=0 → left)
             if left_cmds:
-                circ.X(tag_phys)
-                _emit_controlled_pm(left_cmds, tag_phys, payload_base)
-                circ.X(tag_phys)
+                _emit_controlled_pm_remap(left_cmds, msb_phys, tw_left, anti=True)
 
-            # Right branch: controlled (tag=1) → ctrl-gates directly
+            # Right branch: controlled on MSB (MSB=1 → right)
             if right_cmds:
-                _emit_controlled_pm(right_cmds, tag_phys, payload_base)
+                _emit_controlled_pm_remap(right_cmds, msb_phys, tw_right, anti=False)
+
+            # Step 3: Emit P⁻¹ (inverse tag permutation) if non-identity
+            if not is_identity_P:
+                P_inv = [0] * dim
+                for i in range(dim):
+                    P_inv[P_tup[i]] = i
+                _emit_tag_perm_unitary(circ, p, tuple(P_inv), k, offset, explain, log)
 
             if explain:
-                log.append(f"PlusMap: {len(left_cmds)} left gates (anti-ctrl), "
-                           f"{len(right_cmds)} right gates (ctrl) at offset {offset}")
+                log.append(f"PlusMap(k={k}, Strategy A): n_left={n_left}, n_right={n_right}, "
+                           f"P={P_tup}, {len(left_cmds)} left gates, {len(right_cmds)} right gates "
+                           f"at offset {offset}")
             return
 
         # PhasedPlusMap: like PlusMap but with phase z = e^{iθ} on left branch
         if isinstance(t, PhasedPlusMap):
-            from lang.types import Plus, tag_width
+            from lang.types import Plus, flatten_plus, tag_width as tw_fn, payload_width
             from pytket.circuit import OpType
+            import math
 
             theta = t.theta
-            # Binary sum always uses 1 outer tag bit
-            k = 1
-            tag_phys = p.apply_new_to_old(offset)
+
+            # Compute structure of the sum type
+            n_left = len(flatten_plus(t.ty_left)) if isinstance(t.ty_left, Plus) else 1
+            n_right = len(flatten_plus(t.ty_right)) if isinstance(t.ty_right, Plus) else 1
+            n = n_left + n_right
+            k = math.ceil(math.log2(n)) if n > 1 else 0
 
             # Map gate types to their controlled versions
             _ctrl_gate = {
@@ -1023,19 +1260,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 OpType.CX: OpType.CCX,
             }
 
-            def _emit_controlled_ppm(cmds, tag_q, payload_base):
-                """Emit each gate controlled on tag_q, with wires offset to payload."""
-                for cmd in cmds:
-                    phys_qubits = [p.apply_new_to_old(q.index[0] + payload_base)
-                                   for q in cmd.qubits]
-                    ctrl_op = _ctrl_gate.get(cmd.op.type)
-                    if ctrl_op is not None:
-                        circ.add_gate(ctrl_op, cmd.op.params,
-                                      [tag_q] + phys_qubits)
-                    else:
-                        raise NotImplementedError(
-                            f"No controlled version for gate {cmd.op.type.name} in PhasedPlusMap")
-
             # Compile branches to sub-circuits
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
@@ -1045,73 +1269,199 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             right_w = width(right_dom)
             right_cmds = list(compile(t.right, materialize=True).circuit.get_commands()) if right_w > 0 else []
 
-            payload_base = offset + k
+            if k <= 1:
+                # Simple binary case
+                tag_phys = p.apply_new_to_old(offset)
+                payload_base = offset + max(k, 1)
 
-            # Left branch: anti-controlled (tag=0) → X; ctrl-gates; X
-            if left_cmds:
-                circ.X(tag_phys)
-                _emit_controlled_ppm(left_cmds, tag_phys, payload_base)
-                circ.X(tag_phys)
+                def _emit_controlled_ppm_k1(cmds, tag_q, pb):
+                    from pytket.circuit import QControlBox, Op
+                    for cmd in cmds:
+                        phys_qubits = [p.apply_new_to_old(q.index[0] + pb)
+                                       for q in cmd.qubits]
+                        ctrl_op = _ctrl_gate.get(cmd.op.type)
+                        if ctrl_op is not None:
+                            circ.add_gate(ctrl_op, cmd.op.params,
+                                          [tag_q] + phys_qubits)
+                        else:
+                            base_op = Op.create(cmd.op.type, cmd.op.params)
+                            qcb = QControlBox(base_op, 1)
+                            circ.add_qcontrolbox(qcb, [tag_q] + phys_qubits)
 
-            # Right branch: controlled (tag=1) → ctrl-gates directly
-            if right_cmds:
-                _emit_controlled_ppm(right_cmds, tag_phys, payload_base)
+                if left_cmds:
+                    circ.X(tag_phys)
+                    _emit_controlled_ppm_k1(left_cmds, tag_phys, payload_base)
+                    circ.X(tag_phys)
+                if right_cmds:
+                    _emit_controlled_ppm_k1(right_cmds, tag_phys, payload_base)
 
-            # Apply phase e^{iθ} to left branch (tag=0):
-            # X; P(θ); X  where P(θ) = [[1, 0], [0, e^{iθ}]]
-            # This applies phase e^{iθ} specifically when tag=0
-            #
-            # For multi-qubit tags (nested sums), we need to apply phase when
-            # ALL tag bits are 0. For W = I + Bool (2 tag bits):
-            #   Tag 00 = left branch (inl)
-            #   Tags 01, 10 = right branch (inr variants)
-            # We use: X[all]; CnP(θ); X[all] where CnP is multi-controlled phase
-
-            # Get total tag width for the input sum type
-            sum_ty = Plus(t.ty_left, t.ty_right)
-            total_tag_bits = tag_width(sum_ty)
-
-            # pytket uses half-turns (units of π) for angles
-            # U1(λ) = [[1, 0], [0, e^{iλπ}]], so for e^{iθ} we need λ = θ/π
-            import math
-            half_turns = theta / math.pi
-
-            if total_tag_bits == 1:
-                # Simple case: single tag qubit
-                # X; U1(θ/π); X applies e^{iθ} to |0⟩
+                # Phase application: X; U1(θ/π); X for left branch (tag=0)
+                half_turns = theta / math.pi
                 circ.X(tag_phys)
                 circ.add_gate(OpType.U1, [half_turns], [tag_phys])
                 circ.X(tag_phys)
-            else:
-                # Multi-qubit tag case
-                # Apply phase when ALL tag bits are 0 (left branch = inl)
-                # X[0]; X[1]; ... X[k-1]; C^{k-1}U1(θ/π); X[k-1]; ... X[1]; X[0]
-                tag_qubits = [p.apply_new_to_old(offset + i) for i in range(total_tag_bits)]
 
-                # Flip all tag qubits
-                for tq in tag_qubits:
-                    circ.X(tq)
+                if explain:
+                    log.append(f"PhasedPlusMap(k=1, θ={theta:.4f}): {len(left_cmds)} left, "
+                               f"{len(right_cmds)} right at offset {offset}")
+                return
 
-                # Apply multi-controlled phase (controlled on all tag bits being 1)
-                # Use CnU1 decomposition: last qubit is target, rest are controls
-                if total_tag_bits == 2:
-                    # CU1(θ/π) controlled on first tag, target second tag
-                    circ.add_gate(OpType.CU1, [half_turns], [tag_qubits[0], tag_qubits[1]])
+            # k >= 2: Strategy A — tag permutation sandwich (same as PlusMap)
+            half = 2 ** (k - 1)
+
+            if n_left > half or n_right > half:
+                # Strategy B: full unitary synthesis (same as PlusMap, plus phase)
+                import numpy as np
+                pw = payload_width(Plus(t.ty_left, t.ty_right))
+                w = k + pw
+                dim_pw = 2 ** pw
+
+                U_f = compile(t.left, materialize=True).circuit.get_unitary()
+                U_g = compile(t.right, materialize=True).circuit.get_unitary()
+                dim = 2 ** w
+
+                if n_left > half:
+                    U_full = U_f.copy()
+                    w_g = width(type_of(t.right)[0])
+                    for tr in range(n_right):
+                        tf = n_left + tr
+                        rs, re = tf * dim_pw, (tf + 1) * dim_pw
+                        U_full[rs:re, :] = 0
+                        U_full[:, rs:re] = 0
+                        if w_g == 0:
+                            U_full[rs:re, rs:re] = np.eye(dim_pw)
+                        else:
+                            g_rs = tr * dim_pw
+                            U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
                 else:
-                    # General case: decompose multi-controlled U1
-                    # For now, use a simple decomposition via CCX and ancilla
-                    # This is a simplified implementation; full decomposition is complex
-                    raise NotImplementedError(
-                        f"PhasedPlusMap with {total_tag_bits} tag bits not yet fully implemented. "
-                        "Only 1-2 tag bits supported.")
+                    U_full = np.eye(dim, dtype=complex)
+                    w_f = width(type_of(t.left)[0])
+                    for tl in range(n_left):
+                        rs, re = tl * dim_pw, (tl + 1) * dim_pw
+                        if w_f == 0:
+                            U_full[rs:re, rs:re] = np.eye(dim_pw)
+                        else:
+                            f_rs = tl * dim_pw
+                            U_full[rs:re, rs:re] = U_f[f_rs:f_rs+dim_pw, f_rs:f_rs+dim_pw]
+                    for tr in range(n_right):
+                        tf = n_left + tr
+                        rs, re = tf * dim_pw, (tf + 1) * dim_pw
+                        g_rs = tr * dim_pw
+                        U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
 
-                # Flip all tag qubits back
-                for tq in reversed(tag_qubits):
-                    circ.X(tq)
+                # Apply phase e^{iθ} to all left tag blocks
+                phase = np.exp(1j * theta)
+                for tl in range(n_left):
+                    rs, re = tl * dim_pw, (tl + 1) * dim_pw
+                    U_full[rs:re, :] *= phase
+
+                phys = [p.apply_new_to_old(offset + i) for i in range(w)]
+                if w == 2:
+                    from pytket.circuit import Unitary2qBox
+                    box = Unitary2qBox(U_full)
+                    circ.add_unitary2qbox(box, phys[0], phys[1])
+                elif w == 3:
+                    from pytket.circuit import Unitary3qBox
+                    box = Unitary3qBox(U_full)
+                    circ.add_unitary3qbox(box, phys[0], phys[1], phys[2])
+                else:
+                    raise NotImplementedError(
+                        f"PhasedPlusMap full unitary for width {w} > 3 not yet supported")
+
+                if explain:
+                    log.append(f"PhasedPlusMap(k={k}, θ={theta:.4f}, Strategy B): "
+                               f"n_left={n_left}, n_right={n_right}, w={w}")
+                return
+
+            dim = 2 ** k
+            P_list = [None] * dim
+            for i in range(n_left):
+                P_list[i] = i
+            for i in range(n_right):
+                P_list[n_left + i] = half + i
+            used_targets = set(v for v in P_list if v is not None)
+            free_targets = sorted(set(range(dim)) - used_targets)
+            j = 0
+            for i in range(dim):
+                if P_list[i] is None:
+                    P_list[i] = free_targets[j]
+                    j += 1
+            P_tup = tuple(P_list)
+            is_identity_P = (P_tup == tuple(range(dim)))
+
+            tw_left = tw_fn(t.ty_left) if isinstance(t.ty_left, Plus) else 0
+            tw_right = tw_fn(t.ty_right) if isinstance(t.ty_right, Plus) else 0
+
+            def _sub_wire_to_full_ppm(sub_wire, sub_tw):
+                if sub_wire < sub_tw:
+                    return offset + 1 + sub_wire  # inner tag bits (after MSB)
+                else:
+                    return offset + k + (sub_wire - sub_tw)  # payload
+
+            def _emit_controlled_ppm_remap(cmds, ctrl_q, sub_tw, anti=False):
+                from pytket.circuit import QControlBox, Op
+                if anti:
+                    circ.X(ctrl_q)
+                for cmd in cmds:
+                    phys_qubits = [p.apply_new_to_old(_sub_wire_to_full_ppm(q.index[0], sub_tw))
+                                   for q in cmd.qubits]
+                    ctrl_op = _ctrl_gate.get(cmd.op.type)
+                    if ctrl_op is not None:
+                        circ.add_gate(ctrl_op, cmd.op.params,
+                                      [ctrl_q] + phys_qubits)
+                    else:
+                        base_op = Op.create(cmd.op.type, cmd.op.params)
+                        qcb = QControlBox(base_op, 1)
+                        circ.add_qcontrolbox(qcb, [ctrl_q] + phys_qubits)
+                if anti:
+                    circ.X(ctrl_q)
+
+            # Step 1: Emit P
+            if not is_identity_P:
+                _emit_tag_perm_unitary(circ, p, P_tup, k, offset, explain, log)
+
+            # Step 2: PlusMap_bit on MSB (big-endian: MSB at offset)
+            msb_phys = p.apply_new_to_old(offset)
+
+            if left_cmds:
+                _emit_controlled_ppm_remap(left_cmds, msb_phys, tw_left, anti=True)
+            if right_cmds:
+                _emit_controlled_ppm_remap(right_cmds, msb_phys, tw_right, anti=False)
+
+            # Step 3: Emit P⁻¹
+            if not is_identity_P:
+                P_inv = [0] * dim
+                for i in range(dim):
+                    P_inv[P_tup[i]] = i
+                _emit_tag_perm_unitary(circ, p, tuple(P_inv), k, offset, explain, log)
+
+            # Phase application on left branch (tag ∈ left_set)
+            # After P⁻¹ restored original encoding, apply phase when
+            # ALL tag bits are 0 (summand 0 = first left summand).
+            # For general left set, we need phase on all left summands.
+            # The phase applies to the MSB=0 subspace in the permuted basis,
+            # but since P⁻¹ has been applied, we apply phase in original basis.
+            sum_ty = Plus(t.ty_left, t.ty_right)
+            total_tag_bits = tw_fn(sum_ty)
+            half_turns = theta / math.pi
+            tag_qubits = [p.apply_new_to_old(offset + i) for i in range(total_tag_bits)]
+
+            # Flip all tag qubits, apply multi-controlled phase, unflip
+            for tq in tag_qubits:
+                circ.X(tq)
+            if total_tag_bits == 1:
+                circ.add_gate(OpType.U1, [half_turns], [tag_qubits[0]])
+            elif total_tag_bits == 2:
+                circ.add_gate(OpType.CU1, [half_turns], [tag_qubits[0], tag_qubits[1]])
+            else:
+                raise NotImplementedError(
+                    f"PhasedPlusMap with {total_tag_bits} tag bits not yet fully implemented.")
+            for tq in reversed(tag_qubits):
+                circ.X(tq)
 
             if explain:
-                log.append(f"PhasedPlusMap(θ={theta:.4f}): {len(left_cmds)} left gates (anti-ctrl), "
-                           f"{len(right_cmds)} right gates (ctrl), phase on {total_tag_bits} tag bits at offset {offset}")
+                log.append(f"PhasedPlusMap(k={k}, θ={theta:.4f}, Strategy A): "
+                           f"n_left={n_left}, n_right={n_right} at offset {offset}")
             return
 
         # PhasedControl: phase-weighted n-ary control

@@ -147,6 +147,14 @@ def parse_general_gate(j: dict, ty_total: Ty) -> Term:
             return CS(ctrl, target, ty_total)
         elif name == "Sdg":
             return CSdg(ctrl, target, ty_total)
+        elif name == "X":
+            return CX(ctrl, target, ty_total)
+        elif name == "Z":
+            return CZ(ctrl, target, ty_total)
+        elif name == "T":
+            # Controlled-T = CRz(π/4)
+            import math
+            return CRz(math.pi / 4, ctrl, target, ty_total)
         else:
             raise ValueError(f"No single-controlled version of gate: {name}")
 
@@ -182,17 +190,36 @@ def _build_ty_total(n_qubits: int) -> Ty:
     return result
 
 
-def parse_term(j: dict, ty_total: Ty = None, min_qubits: int = 2) -> Term:
+def _min_width_from_types(j: dict) -> int:
+    """Find the minimum width implied by explicit type annotations in a term tree."""
+    node = j.get("node", "")
+    w = 0
+
+    # Id nodes have an explicit type
+    if node == "Id" and "ty" in j:
+        w = max(w, width(parse_type(j["ty"])))
+
+    # Recurse into subterms
+    for key in ("f", "g", "body", "arg", "left", "right", "scrut"):
+        if key in j and isinstance(j[key], dict):
+            w = max(w, _min_width_from_types(j[key]))
+
+    return w
+
+
+def parse_term(j: dict, ty_total: Ty = None, min_qubits: int = 1) -> Term:
     """Parse a JSON term representation into a Term.
 
-    ty_total: The total type context for gates. If None, inferred from max wire index.
-    min_qubits: Minimum qubit count for ty_total inference (default 2 for top-level,
+    ty_total: The total type context for gates. If None, inferred from max wire index
+              and explicit type annotations in the term tree.
+    min_qubits: Minimum qubit count for ty_total inference (default 1 for top-level,
                 1 for TenTerm children which have their own local wire space).
     """
     # Infer ty_total from max wire index if not provided
     if ty_total is None:
         max_idx = _max_wire_index(j)
-        n_qubits = max(min_qubits, max_idx + 1)
+        type_width = _min_width_from_types(j)
+        n_qubits = max(min_qubits, max_idx + 1, type_width)
         ty_total = _build_ty_total(n_qubits)
 
     node = j["node"]
@@ -404,6 +431,51 @@ def handle_compile(request: dict) -> dict:
         }
 
 
+def handle_eq_circ(request: dict) -> dict:
+    """Handle a circuit equality request.
+
+    Compiles two terms with materialize=True, extracts unitary matrices,
+    and compares them up to global phase: |tr(U1† U2)| / dim ≈ 1.
+    """
+    import numpy as np
+
+    try:
+        term1 = parse_term(request["term1"])
+        term2 = parse_term(request["term2"])
+
+        result1 = compile(term1, materialize=True)
+        result2 = compile(term2, materialize=True)
+
+        u1 = result1.circuit.get_unitary()
+        u2 = result2.circuit.get_unitary()
+
+        if u1.shape != u2.shape:
+            return {
+                "success": True,
+                "equal": False,
+                "reason": f"dimension mismatch: {u1.shape} vs {u2.shape}"
+            }
+
+        dim = u1.shape[0]
+        # U1† U2 — if equal up to global phase, this is e^{iφ} I
+        product = np.conj(u1.T) @ u2
+        trace = np.trace(product)
+        fidelity = abs(trace) / dim
+
+        equal = bool(fidelity > 1.0 - 1e-8)
+
+        return {
+            "success": True,
+            "equal": equal,
+            "fidelity": float(fidelity)
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 def handle_check_involution(request: dict) -> dict:
     """Handle an involution check request.
 
@@ -459,6 +531,8 @@ def main():
         response = handle_compile(request)
     elif req_type == "check_involution":
         response = handle_check_involution(request)
+    elif req_type == "eq_circ":
+        response = handle_eq_circ(request)
     else:
         response = {"success": False, "error": f"Unknown request type: {req_type}"}
 

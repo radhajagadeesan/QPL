@@ -67,6 +67,7 @@ Documentation files to maintain:
 - `docs/PROGRAMMING_GUIDE.md` - User-facing guide covering all language features
 - `docs/COMPILER_API_GUIDE.md` - Compiler and compilation API
 - `docs/API_REFERENCE.md` - API reference
+- `docs/LIMITATIONS.md` - Known limitations and unsupported cases
 - `demos/python/README.md` - Python demo documentation
 - `surface/demos/README.md` - OCaml E2E demo documentation
 

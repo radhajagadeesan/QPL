@@ -299,10 +299,11 @@ def twist_plus_perm(a: Ty, b: Ty) -> TaggedPerm:
     # Wire permutation is identity (shared payload, tags are log-encoded)
     wire_perm = identity(total)
 
-    # Build tag index permutation: B indices come first, then A indices
-    # Input index i in [0..n_a-1] maps to output index i + n_b
-    # Input index i in [n_a..n-1] maps to output index i - n_a
-    tp = tuple(list(range(n_a, n)) + list(range(0, n_a)))
+    # Build tag index permutation (forward): B indices come first, then A indices
+    # A summand at old index i (i < n_a) → new index i + n_b
+    # B summand at old index n_a + j (j < n_b) → new index j
+    # So tp[i] = i + n_b for i < n_a, tp[n_a + j] = j for j < n_b
+    tp = tuple(list(range(n_b, n)) + list(range(0, n_b)))
 
     # For binary case (n=2), the tag_perm (1,0) can also be expressed as
     # a tag flip on wire 0. Use tag_flips as fast path.

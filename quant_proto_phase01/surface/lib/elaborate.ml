@@ -27,6 +27,22 @@ type error =
 
 exception ElaborateError of error
 
+let () = Printexc.register_printer (function
+  | ElaborateError e ->
+    Some ("ElaborateError: " ^ (match e with
+      | UnboundVariable v -> "Unbound variable: " ^ v
+      | UnboundTypeVariable v -> "Unbound type variable: " ^ v
+      | UnknownConstructor c -> "Unknown constructor: " ^ c
+      | TypeMismatch { expected; actual } ->
+        Printf.sprintf "Type mismatch: expected %s, got %s"
+          (Ast.ty_to_string expected) (Ast.ty_to_string actual)
+      | ArityMismatch { name; expected; actual } ->
+        Printf.sprintf "Arity mismatch for %s: expected %d, got %d" name expected actual
+      | NonLinearUse v -> "Non-linear use of variable: " ^ v
+      | UnusedVariable v -> "Unused variable: " ^ v
+      | PatternMismatch msg -> "Pattern mismatch: " ^ msg))
+  | _ -> None)
+
 let error_to_string = function
   | UnboundVariable v -> Printf.sprintf "Unbound variable: %s" v
   | UnboundTypeVariable v -> Printf.sprintf "Unbound type variable: %s" v
@@ -161,6 +177,8 @@ module Core = struct
     | FunVar of string * ty * ty  (* Function variable: x : A → B *)
     | Lam of string * ty * ty * term  (* Lambda: λx:A→B. body, where body : C *)
     | Apply of term * term  (* Application: f arg, compiled via GOI trace *)
+    (* Quantum case: compiled by Python Case combinator *)
+    | Case of ty * ty * term * term * term  (* left_payload_ty, right_payload_ty, scrutinee, left_body, right_body *)
 
   (** Smart constructors for gates (backward compatibility) *)
   let gate_h i = Gate { name = GH; targets = [i]; controls = [] }
@@ -225,6 +243,10 @@ module Core = struct
         Printf.sprintf "λ%s:%s→%s. %s" x (Ast.ty_to_string a) (Ast.ty_to_string b) (term_to_string body)
     | Apply (f, arg) ->
         Printf.sprintf "(%s @ %s)" (term_to_string f) (term_to_string arg)
+    | Case (lt, rt, scrut, left, right) ->
+        Printf.sprintf "case(%s, %s, %s, %s, %s)"
+          (Ast.ty_to_string lt) (Ast.ty_to_string rt)
+          (term_to_string scrut) (term_to_string left) (term_to_string right)
 end
 
 (** Calculate the wire count (width) of a type.
@@ -443,7 +465,10 @@ let head_ctor_after_forced (forced : string list) (e : Ast.term) : string option
   | Ast.InjPath (p, _) ->
     (match drop_prefix forced p with
      | Some (c :: _) -> Some c
-     | _ -> None)
+     | _ ->
+       (* Fallback: single-level wrapping (InjPath shorter than forced prefix).
+          Try reading the head constructor directly. *)
+       (match p with c :: _ -> Some c | _ -> None))
   | _ -> None
 
 (** Extract the inner body from a (possibly InjPath-wrapped) branch body.
@@ -456,7 +481,14 @@ let strip_inj_for_elaboration (forced : string list) (body : Ast.term) : Ast.ter
      | Some (_ :: rest) ->
        if rest = [] then payload
        else Ast.InjPath (rest, payload)
-     | _ -> body)
+     | _ ->
+       (* Fallback: single-level wrapping (InjPath shorter than forced prefix).
+          Strip just the first constructor. *)
+       (match p with
+        | _ :: rest ->
+          if rest = [] then payload
+          else Ast.InjPath (rest, payload)
+        | [] -> body))
   | _ -> body
 
 (** Elaborate a surface term to core IR.
@@ -707,6 +739,13 @@ and lift_to_controlled ~anti ctrl term =
         Core.Apply (lift_to_controlled ~anti:false ctrl f,
                     lift_to_controlled ~anti:false ctrl arg)
 
+    (* Case terms: lift recursively into branches *)
+    | Core.Case (lt, rt, scrut, left, right) ->
+        Core.Case (lt, rt,
+                   lift_to_controlled ~anti:false ctrl scrut,
+                   lift_to_controlled ~anti:false ctrl left,
+                   lift_to_controlled ~anti:false ctrl right)
+
 (** Elaborate case expression.
 
     For a case like:
@@ -782,30 +821,16 @@ and elaborate_classical_case ~base ~forced_prefix tyvar_env ty_env dt_env scruti
     For nested cases, the base parameter ensures each level uses the
     correct tag wire, and branch bodies are elaborated at payload_base.
 *)
-and elaborate_quantum_case_2 ~base ~forced_prefix tyvar_env ty_env dt_env scrutinee branches =
-  (* Determine the base offset for this case expression.
-     If the scrutinee is a variable with a stored offset (from tensor destructuring),
-     use that offset. Otherwise, use the passed-in base. *)
-  let effective_base = match scrutinee with
-    | Ast.Var x ->
-      (match TyEnv.lookup_with_offset ty_env x with
-       | Some entry -> entry.offset
-       | None -> base)
-    | _ -> base
-  in
-
-  (* Tag wire is at effective_base, payload starts at effective_base + 1 *)
-  let tag_wire = effective_base in
-  let payload_base = effective_base + 1 in
-
+and elaborate_quantum_case_2 ~base:_ ~forced_prefix tyvar_env ty_env dt_env scrutinee branches =
   (* Get the scrutinee type to determine payload types *)
   let (left_payload_ty, right_payload_ty) = match scrutinee with
     | Ast.Var x ->
       (match TyEnv.lookup ty_env x with
        | Some (Ast.TyPlus (a, b)) -> (a, b)
        | Some ty -> failwith (Printf.sprintf "elaborate_quantum_case_2: scrutinee %s has non-sum type %s" x (Ast.ty_to_string ty))
-       | None -> (Ast.TyUnit, Ast.TyUnit))  (* Default if type unknown *)
-    | _ -> (Ast.TyUnit, Ast.TyUnit)  (* Default for complex scrutinees *)
+       | None -> (Ast.TyUnit, Ast.TyUnit))
+    | Ast.Id (Ast.TyPlus (a, b)) -> (a, b)
+    | _ -> (Ast.TyUnit, Ast.TyUnit)
   in
 
   (* Get the two branches *)
@@ -828,7 +853,7 @@ and elaborate_quantum_case_2 ~base ~forced_prefix tyvar_env ty_env dt_env scruti
   if left_var <> "_" then check_linear_use left_var left_body;
   if right_var <> "_" then check_linear_use right_var right_body;
 
-  (* Normalize branch bodies to InjPath form for prefix-aware analysis *)
+  (* Normalize branch bodies to InjPath form for analysis *)
   let left_body_n = normalize_inj left_body in
   let right_body_n = normalize_inj right_body in
 
@@ -836,10 +861,9 @@ and elaborate_quantum_case_2 ~base ~forced_prefix tyvar_env ty_env dt_env scruti
   let left_ctor_name = match left_pat with Ast.PatCtor (n, _) -> n | _ -> "Left" in
   let right_ctor_name = match right_pat with Ast.PatCtor (n, _) -> n | _ -> "Right" in
 
-  (* Prefix-aware flip detection.
-     For nested cases, branch bodies may be wrapped with outer constructors
-     (the forced_prefix) that belong to ancestor case levels. We strip the
-     forced_prefix before checking which constructor this level produces. *)
+  (* Flip detection: use forced_prefix to skip ancestor-level constructors
+     in full-wrapping style (e.g. Left(Left(Left(x)))). Falls back to reading
+     the first constructor when InjPath is shorter than prefix (single-level wrapping). *)
   let left_head = head_ctor_after_forced forced_prefix left_body_n in
   let right_head = head_ctor_after_forced forced_prefix right_body_n in
 
@@ -865,9 +889,7 @@ and elaborate_quantum_case_2 ~base ~forced_prefix tyvar_env ty_env dt_env scruti
     | _ -> false
   in
 
-  (* Extract inner bodies for elaboration.
-     - InjPath bodies: strip forced_prefix + current ctor level
-     - Other bodies (Case, etc.): use as-is *)
+  (* Strip forced_prefix + current level's constructor from InjPath bodies *)
   let left_inner = strip_inj_for_elaboration forced_prefix left_body_n in
   let right_inner = strip_inj_for_elaboration forced_prefix right_body_n in
 
@@ -875,24 +897,24 @@ and elaborate_quantum_case_2 ~base ~forced_prefix tyvar_env ty_env dt_env scruti
   let left_body' = subst left_var (Ast.Id left_payload_ty) left_inner in
   let right_body' = subst right_var (Ast.Id right_payload_ty) right_inner in
 
-  (* Elaborate the branch bodies at payload_base.
-     Extend forced_prefix with the current-level constructor so that
-     nested cases can correctly strip their outer injection context. *)
-  let left_prefix = forced_prefix @ [left_ctor_name] in
-  let right_prefix = forced_prefix @ [right_ctor_name] in
-  let left_elaborated = elaborate ~base:payload_base ~forced_prefix:left_prefix tyvar_env ty_env dt_env left_body' in
-  let right_elaborated = elaborate ~base:payload_base ~forced_prefix:right_prefix tyvar_env ty_env dt_env right_body' in
+  (* Elaborate the branch bodies in local wire space (base=0).
+     Propagate forced_prefix + current constructor for nested cases
+     that use full-wrapping (ancestor constructors in InjPath). *)
+  let left_elaborated = elaborate ~base:0 ~forced_prefix:(forced_prefix @ [left_ctor_name]) tyvar_env ty_env dt_env left_body' in
+  let right_elaborated = elaborate ~base:0 ~forced_prefix:(forced_prefix @ [right_ctor_name]) tyvar_env ty_env dt_env right_body' in
 
-  (* Quantum case decomposition: anti-controlled-left ; controlled-right *)
-  let anti_controlled_left = lift_to_controlled ~anti:true tag_wire left_elaborated in
-  let controlled_right = lift_to_controlled ~anti:false tag_wire right_elaborated in
-  let base_circuit = Core.Seq (anti_controlled_left, controlled_right) in
+  (* Elaborate the scrutinee *)
+  let scrut_elaborated = elaborate ~base:0 ~forced_prefix tyvar_env ty_env dt_env scrutinee in
 
-  (* Handle tag flips *)
+  (* Emit Core.Case — Python handles controlled gate decomposition *)
+  let case_term = Core.Case (left_payload_ty, right_payload_ty,
+                             scrut_elaborated, left_elaborated, right_elaborated) in
+
+  (* Handle tag flips by composing with TwistPlus *)
   if both_flip then
-    Core.Seq (base_circuit, Core.gate_x tag_wire)
+    Core.Seq (case_term, Core.TwistP (left_payload_ty, right_payload_ty))
   else
-    base_circuit
+    case_term
 
 (** Elaborate a definition *)
 let elaborate_def tyvar_env ty_env dt_env = function
@@ -995,6 +1017,9 @@ let rec core_to_bridge (term : Core.term) : Bridge.term =
     Bridge.TLam (name, ty_to_rep dom, ty_to_rep cod, core_to_bridge body)
   | Core.Apply (f, arg) ->
     Bridge.TApply (core_to_bridge f, core_to_bridge arg)
+  | Core.Case (lt, rt, scrut, left, right) ->
+    Bridge.TCase (ty_to_rep lt, ty_to_rep rt,
+                  core_to_bridge scrut, core_to_bridge left, core_to_bridge right)
 
 (** Convert Core.gate to Bridge.term *)
 and gate_to_bridge (g : Core.gate) : Bridge.term =
@@ -1017,8 +1042,11 @@ and gate_to_bridge (g : Core.gate) : Bridge.term =
   | [c], GH, [t] -> Bridge.TCH (c, t)
   | [c], GS, [t] -> Bridge.TCS (c, t)
   | [c], GSdg, [t] -> Bridge.TCSdg (c, t)
+  | [c], GX, [t] -> Bridge.TCX (c, t)   (* Controlled-X = CNOT *)
   | [c], GZ, [t] -> Bridge.TCZ (c, t)
   | [c], GRz theta, [t] -> Bridge.TCRz (theta, c, t)
+  (* Controlled CNOT = Toffoli *)
+  | [c], GCX, [i; j] -> Bridge.TCCX (c, i, j)
   (* Two controls (Toffoli) *)
   | [c1; c2], GX, [t] -> Bridge.TCCX (c1, c2, t)
   (* General multi-controlled gate *)

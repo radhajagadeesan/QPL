@@ -242,6 +242,13 @@ let find_int key json =
     Some (int_of_string (Str.matched_group 1 json))
   with Not_found -> None
 
+let find_float key json =
+  let re = Str.regexp (Printf.sprintf {|"%s": *\([0-9.eE+-]+\)|} key) in
+  try
+    let _ = Str.search_forward re json 0 in
+    Some (float_of_string (Str.matched_group 1 json))
+  with _ -> None
+
 let find_int_list key json =
   let re = Str.regexp (Printf.sprintf {|"%s": *\[\([0-9, ]*\)\]|} key) in
   try
@@ -302,9 +309,9 @@ let compile term =
   | Some false ->
     (match find_string "error" response with
      | Some err -> CompileError err
-     | None -> CompileError "Unknown error")
+     | None -> CompileError ("Unknown error in: " ^ String.sub response 0 (min 300 (String.length response))))
   | None ->
-    CompileError ("Invalid response: " ^ response)
+    CompileError ("Invalid response: " ^ String.sub response 0 (min 300 (String.length response)))
 
 (** Check if a term compiles to an involutive permutation *)
 let check_involution term =
@@ -324,6 +331,37 @@ let check_involution term =
      | None -> InvolutionError "Unknown error")
   | None ->
     InvolutionError ("Invalid response: " ^ response)
+
+(** Circuit equality result *)
+type eq_circ_result =
+  | EqCircOk of bool * float  (* equal, fidelity *)
+  | EqCircError of string
+
+(** Check if two terms compile to equal circuits (up to global phase) *)
+let eq_circ term1 term2 =
+  let term1_json = term_to_json term1 in
+  let term2_json = term_to_json term2 in
+  let request = Printf.sprintf {|{"type": "eq_circ", "term1": %s, "term2": %s}|}
+    term1_json term2_json in
+
+  let response = call_bridge request in
+
+  match find_bool "success" response with
+  | Some true ->
+    (match find_bool "equal" response with
+     | Some eq ->
+       let fidelity = match find_float "fidelity" response with
+         | Some f -> f
+         | None -> 0.0
+       in
+       EqCircOk (eq, fidelity)
+     | None -> EqCircError "Failed to parse equality result")
+  | Some false ->
+    (match find_string "error" response with
+     | Some err -> EqCircError err
+     | None -> EqCircError ("Unknown error in: " ^ String.sub response 0 (min 300 (String.length response))))
+  | None ->
+    EqCircError ("Invalid response: " ^ String.sub response 0 (min 300 (String.length response)))
 
 (** Helper: create a TwistPlus term for a 2-constructor datatype swap *)
 let twist_plus_for_bool () =
