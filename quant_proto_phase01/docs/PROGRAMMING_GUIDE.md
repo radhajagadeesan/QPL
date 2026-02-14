@@ -450,10 +450,10 @@ If P is not involutive, compilation fails with an error.
 ## Demos and Examples
 
 Granthi includes worked demonstrations in two directories:
-- `python-demos/` — Python API demonstrations
-- `surface/ocaml-demos/` — OCaml E2E demos (full pipeline to circuits)
+- `demos/python/` — Python API demonstrations
+- `surface/demos/` — OCaml E2E demos (full pipeline to circuits)
 
-See `python-demos/README.md` for full details.
+See `demos/python/README.md` and `surface/demos/README.md` for full details.
 
 ### Python Demos
 
@@ -473,20 +473,24 @@ See `python-demos/README.md` for full details.
 
 | Demo | File | What it Shows |
 |------|------|---------------|
+| **Parameterized Algorithms** | `algorithms_e2e.ml` | Deutsch-Jozsa, HSP functor, Simon functor, Bell, GHZ |
+| Algorithmic Snippets | `algorithmic_snippets.ml` | Bell, GHZ, DJ, HSP, Simon in Linear GADT |
 | Abstract QSwitch | `abstract_qswitch_e2e.ml` | QSwitch pattern with anti-control compilation |
 | Instantiated QSwitch | `qswitch_instantiated_e2e.ml` | Compositional use of QSwitch combinator |
 | Zn Controlled Phase | `zn_controlled_phase_e2e.ml` | Z2, Z4, Z5 with binary decomposition |
 | **Short-Circuit Conjunction** | `short_circuit_e2e.ml` | Witness routing, phased_omap0, phased_control |
+| Linear DSL Demo | `linear_demo.ml` | Core DSL features + E2E compilation |
+| Datatype Demo | `datatype_demo.ml` | Datatypes, control, phase rotations + E2E |
 
 ### Running Demos
 
 ```bash
 # Python demos
-PYTHONPATH=src python python-demos/<demo>.py            # Run demo
-PYTHONPATH=src python python-demos/<demo>.py --circuits # Show ASCII circuit diagrams
+PYTHONPATH=src python demos/python/<demo>.py            # Run demo
+PYTHONPATH=src python demos/python/<demo>.py --circuits # Show ASCII circuit diagrams
 
 # OCaml E2E demos
-cd surface && dune exec ocaml-demos/<demo>.exe
+cd surface && dune exec demos/<demo>.exe
 ```
 
 Most demos support the `--circuits` flag to display circuit diagrams. Demos marked "THEORY" explain types and wire layouts without compiling circuits.
@@ -570,11 +574,11 @@ let h8 = pow2 3 q gate_h
 ```bash
 cd surface
 eval $(opam env)
-dune build examples/linear_demo.exe
-dune exec examples/linear_demo.exe
+dune build demos/linear_demo.exe
+dune exec demos/linear_demo.exe
 ```
 
-See `surface/examples/linear_demo.ml` for complete examples.
+See `surface/demos/linear_demo.ml` for complete examples.
 
 ---
 
@@ -671,7 +675,125 @@ let z4_controlled = control z4 q z4_phases
 3. **Coherent control**: The `control` combinator applies operations indexed by datatype value, coherently
 4. **Elaborates to I^{⊕k}**: The type `Bool` becomes `I ⊕ I`, `Z_4` becomes `I ⊕ I ⊕ I ⊕ I`
 
-See `surface/examples/datatype_demo.ml` for complete examples.
+See `surface/demos/datatype_demo.ml` for complete examples.
+
+---
+
+## Algorithm Patterns
+
+The Linear GADT module supports parameterized quantum algorithms using OCaml's
+module system. All algorithms follow the pattern: `oracle ; (fourier_transform ⊗ id)`.
+State preparation is separate — we model only the **unitary core** as a linear morphism.
+
+### Deutsch-Jozsa (Plain Function)
+
+The oracle is a parameter of the right type:
+
+```ocaml
+open Qpl_surface.Linear
+
+(* deutsch_core : oracle -> circuit *)
+let deutsch_core uf =
+  seq0 (par0 gate_h (id q)) (seq0 uf (par0 gate_h (id q)))
+
+(* Constant oracle: always outputs 0 *)
+let dj_constant = deutsch_core (id (q ** q))
+
+(* Balanced oracle: flips target iff input is |1> *)
+let dj_balanced = deutsch_core gate_cx
+```
+
+Both instantiations compile E2E to circuits (2 and 3 gates respectively).
+
+### HSP Standard Form (OCaml Functor)
+
+For algorithms parameterized over abstract types, use OCaml functors:
+
+```ocaml
+module type HSP_PARAMS = sig
+  type g
+  type x
+  val g_ty : g ty
+  val x_ty : x ty
+  val uf    : (unit, [`Lolli of [`Tensor of g * x] * [`Tensor of g * x]]) prog
+  val qft_g : (unit, [`Lolli of g * g]) prog
+end
+
+module HSP_Core (P : HSP_PARAMS) = struct
+  let circuit = seq0 P.uf (par0 P.qft_g (id P.x_ty))
+end
+```
+
+The functor works because `'a ty` is abstract (sealed `Rep.t`) and the GADT
+constructors accept polymorphic type parameters.
+
+Instantiate with concrete types:
+
+```ocaml
+(* Deutsch-Jozsa as an HSP instance *)
+module DJ_as_HSP = HSP_Core(struct
+  type g = [`Q]
+  type x = [`Q]
+  let g_ty = q
+  let x_ty = q
+  let uf = gate_cx
+  let qft_g = gate_h
+end)
+
+(* 2-qubit HSP *)
+module HSP_2q = HSP_Core(struct
+  type g = [`Tensor of [`Q] * [`Q]]
+  type x = [`Tensor of [`Q] * [`Q]]
+  let g_ty = q ** q
+  let x_ty = q ** q
+  let uf = par0 gate_cx (id (q ** q))
+  let qft_g = par0 gate_h gate_h
+end)
+```
+
+### Simon's Algorithm (Functor)
+
+Same pattern, specialized naming:
+
+```ocaml
+module type SIMON_PARAMS = sig
+  type z
+  type y
+  val z_ty  : z ty
+  val y_ty  : y ty
+  val uf    : (unit, [`Lolli of [`Tensor of z * y] * [`Tensor of z * y]]) prog
+  val qft_z : (unit, [`Lolli of z * z]) prog
+end
+
+module Simon_Core (S : SIMON_PARAMS) = struct
+  let circuit = seq0 S.uf (par0 S.qft_z (id S.y_ty))
+end
+```
+
+### How to Instantiate and Run
+
+```ocaml
+(* 1. Instantiate the functor *)
+module My_HSP = HSP_Core(struct
+  type g = [`Q]  type x = [`Q]
+  let g_ty = q   let x_ty = q
+  let uf = gate_cx  let qft_g = gate_h
+end)
+
+(* 2. Emit to Bridge term *)
+let term = emit My_HSP.circuit
+
+(* 3. Compile via Python backend *)
+let () =
+  Bridge.set_project_root project_root;
+  match Bridge.compile term with
+  | Bridge.CompileOk (perm, size) ->
+    Printf.printf "Circuit size: %d gates\n" size
+  | Bridge.CompileError err ->
+    Printf.printf "Error: %s\n" err
+```
+
+See `surface/demos/algorithms_e2e.ml` for complete working examples.
 
 ---
 
@@ -682,5 +804,5 @@ See `surface/examples/datatype_demo.ml` for complete examples.
 - `COMPILER_API_GUIDE.md` — Python API for compiler embedding
 - `STAGING_SOUNDNESS.md` — Formal soundness arguments for OCaml staging
 - `IR_DESIGN.md` — Wire layouts and IR architecture
-- `python-demos/README.md` — Python demo instructions
-- `surface/ocaml-demos/README.md` — OCaml E2E demo instructions
+- `demos/python/README.md` — Python demo instructions
+- `surface/demos/README.md` — OCaml E2E demo instructions

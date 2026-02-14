@@ -1,7 +1,31 @@
 (executable
- (name qswitch_demo)
+ (name algorithms_e2e)
  (libraries qpl_surface str))
 
 (executable
- (name qswitch_ho_demo)
+ (name abstract_qswitch_e2e)
  (libraries qpl_surface str))
+
+(executable
+ (name qswitch_instantiated_e2e)
+ (libraries qpl_surface str))
+
+(executable
+ (name zn_controlled_phase_e2e)
+ (libraries qpl_surface str))
+
+(executable
+ (name short_circuit_e2e)
+ (libraries qpl_surface str))
+
+(executable
+ (name linear_demo)
+ (libraries qpl_surface))
+
+(executable
+ (name datatype_demo)
+ (libraries qpl_surface))
+
+(executable
+ (name algorithmic_snippets)
+ (libraries qpl_surface))

@@ -290,6 +290,7 @@ let rec infer_type ty_env = function
      | Some (Ast.TyArrow (a, _)), Some (Ast.TyArrow (_, c)) ->
        Some (Ast.TyArrow (a, c))
      | _ -> None)
+  | Ast.InjPath _ -> None
   | _ -> None
 
 (** Collect free variables in a term *)
@@ -311,6 +312,7 @@ let rec free_vars = function
       List.filter (fun v -> not (List.mem v bound)) (free_vars body)
     ) branches
   | Ast.Ctor (_, e) -> free_vars e
+  | Ast.InjPath (_, e) -> free_vars e
   | Ast.Seq (f, g) | Ast.Ten (f, g) -> free_vars f @ free_vars g
   | Ast.Id _ | Ast.TwistT _ | Ast.TwistP _
   | Ast.AssocTL _ | Ast.AssocTR _ | Ast.AssocPL _ | Ast.AssocPR _
@@ -334,15 +336,19 @@ let rec count_var_uses (x : string) (term : Ast.term) : int =
   | Ast.LetTen (y1, y2, _, _, e1, e2) ->
     count_var_uses x e1 + (if x = y1 || x = y2 then 0 else count_var_uses x e2)
   | Ast.Case (e, branches) ->
+    (* For quantum case, context is SHARED between branches (not split).
+       Both branches operate on the same wires, controlled on orthogonal
+       tag values. Use MAX across branches, not SUM. *)
     count_var_uses x e + List.fold_left (fun acc (pat, body) ->
       let bound = match pat with
         | Ast.PatCtor (_, v) -> [v]
         | Ast.PatWild -> []
       in
       if List.mem x bound then acc
-      else acc + count_var_uses x body
+      else max acc (count_var_uses x body)
     ) 0 branches
   | Ast.Ctor (_, e) -> count_var_uses x e
+  | Ast.InjPath (_, e) -> count_var_uses x e
   | Ast.Seq (f, g) | Ast.Ten (f, g) -> count_var_uses x f + count_var_uses x g
   | Ast.Id _ | Ast.TwistT _ | Ast.TwistP _
   | Ast.AssocTL _ | Ast.AssocTR _ | Ast.AssocPL _ | Ast.AssocPR _
@@ -388,6 +394,71 @@ let check_scope env term =
   | [] -> ()
   | v :: _ -> raise (ElaborateError (UnboundVariable v))
 
+(** Normalize nested Ctor into InjPath.
+
+    Collapses chains of Ctor("Left", Ctor("Right", ...)) into
+    InjPath(["Left"; "Right"; ...], payload). This gives a canonical
+    form where constructor wrapping is a single node with a path,
+    enabling prefix-aware flip detection in nested quantum cases. *)
+let rec normalize_inj (e : Ast.term) : Ast.term =
+  match e with
+  | Ast.Ctor (c, inner) ->
+    let rec collect acc t =
+      match t with
+      | Ast.Ctor (c2, t2) -> collect (c2 :: acc) t2
+      | Ast.InjPath (p, t2) -> collect (List.rev_append p acc) t2
+      | other -> (List.rev acc, other)
+    in
+    let (path, payload) = collect [c] inner in
+    Ast.InjPath (path, normalize_inj payload)
+
+  | Ast.InjPath (p, inner) ->
+    Ast.InjPath (p, normalize_inj inner)
+
+  | Ast.Case (scrut, bs) ->
+    Ast.Case (normalize_inj scrut,
+              List.map (fun (pat, b) -> (pat, normalize_inj b)) bs)
+
+  | Ast.Seq (a, b) -> Ast.Seq (normalize_inj a, normalize_inj b)
+  | Ast.Ten (a, b) -> Ast.Ten (normalize_inj a, normalize_inj b)
+  | Ast.App (f, e) -> Ast.App (normalize_inj f, normalize_inj e)
+  | Ast.Let (x, e1, e2) -> Ast.Let (x, normalize_inj e1, normalize_inj e2)
+  | Ast.LetTen (x1, x2, t1, t2, e1, e2) ->
+    Ast.LetTen (x1, x2, t1, t2, normalize_inj e1, normalize_inj e2)
+  | Ast.Lam (x, ty, body) -> Ast.Lam (x, ty, normalize_inj body)
+  | Ast.ExpI (theta, j) -> Ast.ExpI (theta, normalize_inj j)
+  | other -> other
+
+(** Strip a prefix from a path. Returns remaining path or None on mismatch. *)
+let rec drop_prefix (prefix : string list) (path : string list) : string list option =
+  match prefix, path with
+  | [], rest -> Some rest
+  | x :: xs, y :: ys when x = y -> drop_prefix xs ys
+  | _ -> None
+
+(** Get the head constructor of an InjPath after stripping the forced prefix.
+    Returns None if the body is not an InjPath or if the prefix doesn't match. *)
+let head_ctor_after_forced (forced : string list) (e : Ast.term) : string option =
+  match e with
+  | Ast.InjPath (p, _) ->
+    (match drop_prefix forced p with
+     | Some (c :: _) -> Some c
+     | _ -> None)
+  | _ -> None
+
+(** Extract the inner body from a (possibly InjPath-wrapped) branch body.
+    Strips forced_prefix + 1 level (the current constructor) from the path.
+    For non-InjPath bodies (e.g. nested Case), returns the body unchanged. *)
+let strip_inj_for_elaboration (forced : string list) (body : Ast.term) : Ast.term =
+  match body with
+  | Ast.InjPath (p, payload) ->
+    (match drop_prefix forced p with
+     | Some (_ :: rest) ->
+       if rest = [] then payload
+       else Ast.InjPath (rest, payload)
+     | _ -> body)
+  | _ -> body
+
 (** Elaborate a surface term to core IR.
 
     Key transformations:
@@ -401,7 +472,7 @@ let check_scope env term =
     The ~base parameter is the wire offset for the current term's layout.
     For nested sums, the tag wire is at base+0, payload starts at base+1.
 *)
-let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
+let rec elaborate ?(base=0) ?(forced_prefix=[]) tyvar_env ty_env dt_env term : Core.term =
   check_scope ty_env term;
   match term with
   | Ast.Var x ->
@@ -425,7 +496,7 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
        (* Argument has function type: keep the lambda *)
        let _int_ty = arrow_to_int_type a b in
        let ty_env' = TyEnv.extend ty_env x ty in
-       let body' = elaborate ~base tyvar_env ty_env' dt_env body in
+       let body' = elaborate ~base ~forced_prefix tyvar_env ty_env' dt_env body in
        Core.Lam (x, a, b, body')
      | None ->
        failwith "elaborate: standalone λ with non-function argument (should be applied)")
@@ -450,8 +521,8 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
       (* Higher-order argument: use Int/GOI application.
          Check linearity: f and arg must have disjoint free variables. *)
       check_disjoint_vars f arg;
-      let f' = elaborate ~base tyvar_env ty_env dt_env f in
-      let arg' = elaborate ~base tyvar_env ty_env dt_env arg in
+      let f' = elaborate ~base ~forced_prefix tyvar_env ty_env dt_env f in
+      let arg' = elaborate ~base ~forced_prefix tyvar_env ty_env dt_env arg in
       Core.Apply (f', arg')
     end
     else
@@ -460,7 +531,7 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
        | Ast.Lam (x, ty, body) ->
          check_ty tyvar_env ty;
          let body' = subst x arg body in
-         elaborate ~base tyvar_env ty_env dt_env body'
+         elaborate ~base ~forced_prefix tyvar_env ty_env dt_env body'
        | _ ->
          failwith (Printf.sprintf "elaborate: non-λ application: %s" (Ast.term_to_string f)))
 
@@ -469,7 +540,7 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
        Check linearity: x must be used exactly once in e2. *)
     check_linear_use x e2;
     let e2' = subst x e1 e2 in
-    elaborate ~base tyvar_env ty_env dt_env e2'
+    elaborate ~base ~forced_prefix tyvar_env ty_env dt_env e2'
 
   | Ast.LetTen (x1, x2, ty1, ty2, e1, e2) ->
     (* Tensor destructuring: let (x1 ⊗ x2) : A ⊗ B = e1 in e2
@@ -483,7 +554,7 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
     *)
     (* Check linearity: both x1 and x2 must be used exactly once in e2 *)
     check_linear_uses [x1; x2] e2;
-    let e1' = elaborate ~base tyvar_env ty_env dt_env e1 in
+    let e1' = elaborate ~base ~forced_prefix tyvar_env ty_env dt_env e1 in
 
     (* Calculate offset for x2: it starts after x1's wires *)
     let x1_width = wire_count ty1 in
@@ -495,30 +566,34 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
     (* Elaborate e2 with the tensor components in scope.
        Variables x1 and x2 will be looked up for case expressions
        to determine the correct wire offsets. *)
-    let e2'' = elaborate ~base tyvar_env ty_env' dt_env e2 in
+    let e2'' = elaborate ~base ~forced_prefix tyvar_env ty_env' dt_env e2 in
 
     (* Compose: first e1, then e2 *)
     Core.Seq (e1', e2'')
 
   | Ast.Case (scrutinee, branches) ->
     (* Case elaboration: controlled gates for quantum case expressions *)
-    elaborate_case ~base tyvar_env ty_env dt_env scrutinee branches
+    elaborate_case ~base ~forced_prefix tyvar_env ty_env dt_env scrutinee branches
 
   | Ast.Ctor (_name, payload) ->
     (* Constructor application: elaborate payload, compose with injection *)
-    let payload' = elaborate ~base tyvar_env ty_env dt_env payload in
+    let payload' = elaborate ~base ~forced_prefix tyvar_env ty_env dt_env payload in
     (* For now, constructors are identity (payload already in position) *)
     payload'
 
+  | Ast.InjPath (_path, payload) ->
+    (* Injection path: transparent for elaboration (tag management handled by case) *)
+    elaborate ~base ~forced_prefix tyvar_env ty_env dt_env payload
+
   | Ast.Seq (f, g) ->
-    Core.Seq (elaborate ~base tyvar_env ty_env dt_env f,
-              elaborate ~base tyvar_env ty_env dt_env g)
+    Core.Seq (elaborate ~base ~forced_prefix tyvar_env ty_env dt_env f,
+              elaborate ~base ~forced_prefix tyvar_env ty_env dt_env g)
 
   | Ast.Ten (f, g) ->
     (* Check linearity: variables must be disjoint between f and g (context splitting) *)
     check_disjoint_vars f g;
-    Core.Ten (elaborate ~base tyvar_env ty_env dt_env f,
-              elaborate ~base tyvar_env ty_env dt_env g)
+    Core.Ten (elaborate ~base ~forced_prefix tyvar_env ty_env dt_env f,
+              elaborate ~base ~forced_prefix tyvar_env ty_env dt_env g)
 
   | Ast.Id ty -> Core.Id ty
   | Ast.TwistT (a, b) -> Core.TwistT (a, b)
@@ -538,7 +613,7 @@ let rec elaborate ?(base=0) tyvar_env ty_env dt_env term : Core.term =
   | Ast.GateT i -> Core.gate_t i
   | Ast.GateRz (theta, i) -> Core.gate_rz theta i
   | Ast.ExpI (theta, j) ->
-    Core.ExpI (theta, elaborate ~base tyvar_env ty_env dt_env j)
+    Core.ExpI (theta, elaborate ~base ~forced_prefix tyvar_env ty_env dt_env j)
 
 (** Substitute v for x in term *)
 and subst x v = function
@@ -566,6 +641,7 @@ and subst x v = function
                 else (pat, subst x v body)
               ) branches)
   | Ast.Ctor (name, e) -> Ast.Ctor (name, subst x v e)
+  | Ast.InjPath (path, e) -> Ast.InjPath (path, subst x v e)
   | Ast.Seq (f, g) -> Ast.Seq (subst x v f, subst x v g)
   | Ast.Ten (f, g) -> Ast.Ten (subst x v f, subst x v g)
   | (Ast.Id _ | Ast.TwistT _ | Ast.TwistP _
@@ -647,7 +723,7 @@ and lift_to_controlled ~anti ctrl term =
     - Tag wire is at base + 0
     - Payload wires start at base + 1
 *)
-and elaborate_case ~base tyvar_env ty_env dt_env scrutinee branches =
+and elaborate_case ~base ~forced_prefix tyvar_env ty_env dt_env scrutinee branches =
   let n = List.length branches in
 
   (* Check if this is a classical case (known constructor) *)
@@ -658,17 +734,17 @@ and elaborate_case ~base tyvar_env ty_env dt_env scrutinee branches =
 
   if is_classical then
     (* Classical case: compile-time selection *)
-    elaborate_classical_case ~base tyvar_env ty_env dt_env scrutinee branches
+    elaborate_classical_case ~base ~forced_prefix tyvar_env ty_env dt_env scrutinee branches
   else if n = 2 then
     (* Quantum case with 2 constructors *)
-    elaborate_quantum_case_2 ~base tyvar_env ty_env dt_env scrutinee branches
+    elaborate_quantum_case_2 ~base ~forced_prefix tyvar_env ty_env dt_env scrutinee branches
   else
     (* n > 2: general quantum case (TODO) *)
     failwith (Printf.sprintf "elaborate_case: %d-constructor quantum case not yet implemented" n)
 
 (** Classical case: scrutinee is a known constructor.
     Select the matching branch at compile time. *)
-and elaborate_classical_case ~base tyvar_env ty_env dt_env scrutinee branches =
+and elaborate_classical_case ~base ~forced_prefix tyvar_env ty_env dt_env scrutinee branches =
   (* For classical case, payload starts at base + 1 (after tag) *)
   let payload_base = base + 1 in
   match scrutinee with
@@ -685,9 +761,9 @@ and elaborate_classical_case ~base tyvar_env ty_env dt_env scrutinee branches =
        check_linear_use var body;
        (* Substitute payload for pattern variable and elaborate at payload_base *)
        let body' = subst var payload body in
-       elaborate ~base:payload_base tyvar_env ty_env dt_env body'
+       elaborate ~base:payload_base ~forced_prefix tyvar_env ty_env dt_env body'
      | Some (Ast.PatWild, body) ->
-       elaborate ~base:payload_base tyvar_env ty_env dt_env body
+       elaborate ~base:payload_base ~forced_prefix tyvar_env ty_env dt_env body
      | None ->
        failwith (Printf.sprintf "No matching branch for constructor %s" ctor_name))
   | _ ->
@@ -706,7 +782,7 @@ and elaborate_classical_case ~base tyvar_env ty_env dt_env scrutinee branches =
     For nested cases, the base parameter ensures each level uses the
     correct tag wire, and branch bodies are elaborated at payload_base.
 *)
-and elaborate_quantum_case_2 ~base tyvar_env ty_env dt_env scrutinee branches =
+and elaborate_quantum_case_2 ~base ~forced_prefix tyvar_env ty_env dt_env scrutinee branches =
   (* Determine the base offset for this case expression.
      If the scrutinee is a variable with a stored offset (from tensor destructuring),
      use that offset. Otherwise, use the passed-in base. *)
@@ -738,9 +814,7 @@ and elaborate_quantum_case_2 ~base tyvar_env ty_env dt_env scrutinee branches =
     | _ -> failwith "elaborate_quantum_case_2: expected exactly 2 branches"
   in
 
-  (* Extract pattern variables and substitute with Id(payload_type).
-     In a quantum case, the pattern variable represents "the payload that's there",
-     which elaborates to identity on the payload wires. *)
+  (* Extract pattern variables *)
   let left_var = match left_pat with
     | Ast.PatCtor (_, v) -> v
     | Ast.PatWild -> "_"
@@ -754,237 +828,71 @@ and elaborate_quantum_case_2 ~base tyvar_env ty_env dt_env scrutinee branches =
   if left_var <> "_" then check_linear_use left_var left_body;
   if right_var <> "_" then check_linear_use right_var right_body;
 
-  (* Detect if a branch body is a constructor wrapping the pattern variable.
-     Returns (output_ctor_name option, inner_body) *)
-  let unwrap_ctor body var =
-    match body with
-    | Ast.Ctor (name, Ast.Var v) when v = var -> (Some name, Ast.Id Ast.TyUnit)
-    | Ast.Ctor (name, inner) -> (Some name, inner)
-    | _ -> (None, body)
-  in
+  (* Normalize branch bodies to InjPath form for prefix-aware analysis *)
+  let left_body_n = normalize_inj left_body in
+  let right_body_n = normalize_inj right_body in
 
-  (* Detect constructor changes for tag handling *)
+  (* Pattern constructor names *)
   let left_ctor_name = match left_pat with Ast.PatCtor (n, _) -> n | _ -> "Left" in
   let right_ctor_name = match right_pat with Ast.PatCtor (n, _) -> n | _ -> "Right" in
 
-  let (left_output_ctor, left_inner) = unwrap_ctor left_body left_var in
-  let (right_output_ctor, right_inner) = unwrap_ctor right_body right_var in
+  (* Prefix-aware flip detection.
+     For nested cases, branch bodies may be wrapped with outer constructors
+     (the forced_prefix) that belong to ancestor case levels. We strip the
+     forced_prefix before checking which constructor this level produces. *)
+  let left_head = head_ctor_after_forced forced_prefix left_body_n in
+  let right_head = head_ctor_after_forced forced_prefix right_body_n in
 
-  (* Determine if each branch flips the tag *)
-  let left_flips = match left_output_ctor with
-    | Some name -> name <> left_ctor_name
-    | None -> false
+  let left_flips = match left_head with
+    | Some name -> Some (name <> left_ctor_name)
+    | None -> None  (* Cannot determine syntactically (e.g. nested Case) *)
   in
-  let right_flips = match right_output_ctor with
-    | Some name -> name <> right_ctor_name
-    | None -> false
+  let right_flips = match right_head with
+    | Some name -> Some (name <> right_ctor_name)
+    | None -> None
   in
+
+  (* Check for partial flip: only reject when BOTH are decidable and disagree *)
+  (match left_flips, right_flips with
+   | Some x, Some y when x <> y ->
+     failwith "elaborate_quantum_case_2: partial constructor flip is not unitary"
+   | _ -> ());
+
+  (* Determine the actual flip for tag handling *)
+  let both_flip = match left_flips, right_flips with
+    | Some true, Some true -> true
+    | Some true, None | None, Some true -> true  (* Trust the decidable one *)
+    | _ -> false
+  in
+
+  (* Extract inner bodies for elaboration.
+     - InjPath bodies: strip forced_prefix + current ctor level
+     - Other bodies (Case, etc.): use as-is *)
+  let left_inner = strip_inj_for_elaboration forced_prefix left_body_n in
+  let right_inner = strip_inj_for_elaboration forced_prefix right_body_n in
 
   (* Substitute pattern vars with Id before elaborating *)
   let left_body' = subst left_var (Ast.Id left_payload_ty) left_inner in
   let right_body' = subst right_var (Ast.Id right_payload_ty) right_inner in
 
   (* Elaborate the branch bodies at payload_base.
-     For nested sums, this ensures inner cases use the correct wire offsets. *)
-  let left_elaborated = elaborate ~base:payload_base tyvar_env ty_env dt_env left_body' in
-  let right_elaborated = elaborate ~base:payload_base tyvar_env ty_env dt_env right_body' in
+     Extend forced_prefix with the current-level constructor so that
+     nested cases can correctly strip their outer injection context. *)
+  let left_prefix = forced_prefix @ [left_ctor_name] in
+  let right_prefix = forced_prefix @ [right_ctor_name] in
+  let left_elaborated = elaborate ~base:payload_base ~forced_prefix:left_prefix tyvar_env ty_env dt_env left_body' in
+  let right_elaborated = elaborate ~base:payload_base ~forced_prefix:right_prefix tyvar_env ty_env dt_env right_body' in
 
-  (* Quantum case decomposition:
-     Anti-controlled-right ; left ; Controlled-right
-
-     This works because:
-     - On |0⟩ (Left): anti-controlled-right fires, then left fires, then controlled-right does nothing
-       = right⁻¹ ; left (but since right ; right⁻¹ = id, this gives left)
-     - On |1⟩ (Right): anti-controlled-right does nothing, left fires, then controlled-right fires
-       = left ; right
-
-     Wait, this isn't quite right for the quantum switch. Let me reconsider.
-
-     For QSwitch(f, g):
-     - On |0⟩ (Zero): apply g then f
-     - On |1⟩ (One): apply f then g
-
-     The correct decomposition is:
-     - Anti-C[right] ; left ; C[right]
-
-     But we need to be careful about what "left" and "right" mean here.
-     For QSwitch, if left = (g;f) and right = (f;g), then:
-     - The difference is the ORDER of f and g.
-
-     Actually, for the quantum switch, the correct decomposition uses the
-     commutator structure. Let me use a simpler approach:
-
-     For case q of Left => f | Right => g:
-     - Apply f unconditionally (it's the "default" path)
-     - Apply controlled-g†-then-g = controlled-(f†;g;f) to get the difference
-
-     This is getting complicated. Let me use the direct approach from the plan:
-     Anti-controlled-right ; left ; Controlled-right
-
-     For this to work, we need f and g to be the DIFFERENCES from identity,
-     not the full branch bodies. But in QSwitch, the branches ARE the operations.
-
-     Let me simplify: for now, just emit the controlled gates directly.
-     The QSwitch(H,S) example has:
-     - Left branch: S ; H
-     - Right branch: H ; S
-
-     The correct circuit is: X[0] ; CS[0,1] ; X[0] ; H[1] ; CS[0,1]
-
-     Wait, that's for control qubit at 0 and target at 1. But the branches
-     operate on the PAYLOAD, which is at wire 1 (wire 0 is the tag).
-
-     Let me think again:
-     - Wire 0: tag qubit (control)
-     - Wire 1: payload qubit (target for gates in branches)
-
-     Left branch (S;H on wire 1 when tag=0):
-     - Anti-controlled-S ; Anti-controlled-H
-     - = X[0] ; CS[0,1] ; X[0] ; X[0] ; CH[0,1] ; X[0]
-     - = X[0] ; CS[0,1] ; CH[0,1] ; X[0]  (X;X cancels)
-
-     Right branch (H;S on wire 1 when tag=1):
-     - Controlled-H ; Controlled-S
-     - = CH[0,1] ; CS[0,1]
-
-     Combined for superposition:
-     - (Anti-controlled-left) ; (Controlled-right)
-     - But this gives BOTH branches running, not one OR the other.
-
-     Actually, the quantum switch is SUPPOSED to have both branches running
-     in superposition! That's the whole point. So:
-
-     - Controlled-right runs on the |1⟩ component
-     - Anti-controlled-left runs on the |0⟩ component
-
-     So the circuit is:
-     - Anti-controlled-(S;H) ; Controlled-(H;S)
-     - = X[0] ; CS[0,1] ; CH[0,1] ; X[0] ; CH[0,1] ; CS[0,1]
-
-     Hmm, but this can be simplified. Let me think...
-
-     Actually, the simpler decomposition is:
-     - X[0] ; (controlled-difference) ; X[0] ; (common-part) ; (controlled-difference)
-
-     For QSwitch(H,S):
-     - Left = S;H = S·H
-     - Right = H;S = H·S
-     - difference = S (since H·S·S = H, and S·H·H = S)
-
-     Wait no, that's for commuting gates. H and S don't commute.
-
-     The correct approach: Since this is a CONTROLLED swap of order, we use:
-     - For |0⟩: apply S then H
-     - For |1⟩: apply H then S
-
-     A controlled-SWAP-order can be done with controlled gates:
-     1. Controlled-S (only fires on |1⟩, giving H·S → H after we apply S)
-     2. Apply H unconditionally
-     3. Anti-controlled-S (only fires on |0⟩, giving H·S on |1⟩ and S·H on |0⟩)
-
-     Wait, I'm overcomplicating this. Let me just use the direct decomposition
-     that we already know works:
-
-     X[0] ; CS[0,1] ; X[0] ; H[1] ; CS[0,1]
-
-     This is: anti-controlled-S ; H ; controlled-S
-
-     So the pattern is:
-     - If left = S;H and right = H;S
-     - Decomposition = anti-C[S] ; H ; C[S]
-     - = X[0];CS;X[0] ; H ; CS
-
-     This works because:
-     - On |0⟩: CS doesn't fire (control=0), H fires, anti-CS fires = S;H ✓
-     - On |1⟩: CS doesn't fire in anti mode, H fires, CS fires = H;S ✓
-
-     But how do we COMPUTE this decomposition from the branch bodies?
-
-     The answer: we look for common operations and factor them out.
-     - left = S ; H = S·H
-     - right = H ; S = H·S
-     - Common: H (but in different positions)
-
-     Actually, for the general case, we'd need symbolic manipulation.
-     For now, let me just emit the direct controlled version of each branch:
-
-     Full circuit = anti-controlled-left ; controlled-right
-
-     This gives:
-     - On |0⟩: left fires, right is blocked = left ✓
-     - On |1⟩: left is blocked, right fires = right ✓
-
-     So the correct decomposition is:
-     anti-controlled-left + controlled-right (in parallel, not sequential!)
-
-     But wait, we can't do parallel in the term language. They need to be sequential
-     because they operate on the SAME wire. Let me reconsider...
-
-     Actually, for the SAME target wire, we can use:
-     anti-controlled-left ; controlled-right
-
-     On |0⟩:
-     - anti-controlled-left fires (applies left)
-     - controlled-right doesn't fire
-     - Result: left ✓
-
-     On |1⟩:
-     - anti-controlled-left doesn't fire
-     - controlled-right fires (applies right)
-     - Result: right ✓
-
-     OK so the decomposition is simply:
-     anti-controlled-left ; controlled-right
-
-     For QSwitch(H,S):
-     - left = S;H
-     - right = H;S
-     - anti-C[left] = X[0];CS;CH;X[0]
-     - C[right] = CH;CS
-     - Full = X[0];CS;CH;X[0];CH;CS
-
-     Hmm, that's 6 gates. But the known circuit is 5 gates:
-     X[0] ; CS[0,1] ; X[0] ; H[1] ; CS[0,1]
-
-     The 5-gate version uses the fact that CH;X[0];CH = X[0] (up to global phase).
-     Actually wait, that's not right either.
-
-     Let me just implement the straightforward version for now:
-     anti-controlled-left ; controlled-right
-  *)
-
-  (* Lift left branch to anti-controlled (control on |0⟩) *)
+  (* Quantum case decomposition: anti-controlled-left ; controlled-right *)
   let anti_controlled_left = lift_to_controlled ~anti:true tag_wire left_elaborated in
-
-  (* Lift right branch to controlled (control on |1⟩) *)
   let controlled_right = lift_to_controlled ~anti:false tag_wire right_elaborated in
-
-  (* Compose: anti-controlled-left ; controlled-right *)
   let base_circuit = Core.Seq (anti_controlled_left, controlled_right) in
 
-  (* Handle tag flips from constructor changes.
-     The tag flip is SEPARATE from the controlled ops because it affects
-     the tag wire itself, not the payload.
-
-     - Both flip → unconditional X[tag] (like eta-expanded twist)
-     - Neither flips → no tag change (like identity)
-     - Partial flips are NOT unitary and should be rejected
-
-     Note: partial flips (only one branch changes constructor) would map
-     both |0⟩ and |1⟩ to the same output, breaking unitarity.
-  *)
-  match (left_flips, right_flips) with
-  | (true, true) ->
-      (* Both branches flip: unconditional X[tag] (structural swap) *)
-      Core.Seq (base_circuit, Core.gate_x tag_wire)
-  | (false, false) ->
-      (* Neither flips: no tag change *)
-      base_circuit
-  | (true, false) | (false, true) ->
-      (* Partial flip: not unitary!
-         This would mean both |0⟩ and |1⟩ map to the same constructor,
-         which is measurement/collapse, not a unitary operation. *)
-      failwith "elaborate_quantum_case_2: partial constructor flip is not unitary"
+  (* Handle tag flips *)
+  if both_flip then
+    Core.Seq (base_circuit, Core.gate_x tag_wire)
+  else
+    base_circuit
 
 (** Elaborate a definition *)
 let elaborate_def tyvar_env ty_env dt_env = function

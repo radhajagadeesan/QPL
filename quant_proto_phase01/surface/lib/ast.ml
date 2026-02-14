@@ -47,6 +47,7 @@ type term =
 
   (* Constructors *)
   | Ctor of string * term                   (* Constructor: F(e) *)
+  | InjPath of string list * term           (* Injection path: [Left;Right;...](e) *)
 
   (* Composition *)
   | Seq of term * term                      (* Sequential: f ; g *)
@@ -124,6 +125,8 @@ let rec term_to_string = function
     Printf.sprintf "case %s of %s" (term_to_string e) (String.concat " | " branch_strs)
   | Ctor (name, e) ->
     Printf.sprintf "%s(%s)" name (term_to_string e)
+  | InjPath (path, e) ->
+    Printf.sprintf "InjPath([%s], %s)" (String.concat ";" path) (term_to_string e)
   | Seq (f, g) ->
     Printf.sprintf "%s ; %s" (term_to_string f) (term_to_string g)
   | Ten (f, g) ->
@@ -168,6 +171,11 @@ let app f e = App (f, e)
 let let_ x e1 e2 = Let (x, e1, e2)
 let case_ e branches = Case (e, branches)
 let ctor name e = Ctor (name, e)
+let inj_path path e = InjPath (path, e)
+let inj_prepend c e =
+  match e with
+  | InjPath (p, payload) -> InjPath (c :: p, payload)
+  | _ -> InjPath ([c], e)
 let seq f g = Seq (f, g)
 let ten f g = Ten (f, g)
 let id ty = Id ty

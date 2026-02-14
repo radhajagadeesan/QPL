@@ -182,15 +182,17 @@ def _build_ty_total(n_qubits: int) -> Ty:
     return result
 
 
-def parse_term(j: dict, ty_total: Ty = None) -> Term:
+def parse_term(j: dict, ty_total: Ty = None, min_qubits: int = 2) -> Term:
     """Parse a JSON term representation into a Term.
 
     ty_total: The total type context for gates. If None, inferred from max wire index.
+    min_qubits: Minimum qubit count for ty_total inference (default 2 for top-level,
+                1 for TenTerm children which have their own local wire space).
     """
     # Infer ty_total from max wire index if not provided
     if ty_total is None:
         max_idx = _max_wire_index(j)
-        n_qubits = max(2, max_idx + 1)  # At least 2 qubits
+        n_qubits = max(min_qubits, max_idx + 1)
         ty_total = _build_ty_total(n_qubits)
 
     node = j["node"]
@@ -203,7 +205,10 @@ def parse_term(j: dict, ty_total: Ty = None) -> Term:
         return Seq(parse_term(j["f"], ty_total), parse_term(j["g"], ty_total))
 
     elif node == "TenTerm":
-        return TenTerm(parse_term(j["f"], ty_total), parse_term(j["g"], ty_total))
+        # Each child of TenTerm uses its own local wire space,
+        # so infer ty_total independently for each child with min_qubits=1.
+        return TenTerm(parse_term(j["f"], None, min_qubits=1),
+                       parse_term(j["g"], None, min_qubits=1))
 
     elif node == "TwistTen":
         return TwistTen(parse_type(j["a"]), parse_type(j["b"]))

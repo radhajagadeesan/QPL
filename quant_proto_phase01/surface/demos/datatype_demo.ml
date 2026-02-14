@@ -120,10 +120,27 @@ let z8_phases = phase_rotations 8
 let z8_controlled_phase = control z8 q z8_phases
 
 (* ============================================================ *)
-(* Main: Print demo output                                      *)
+(* Helpers                                                      *)
+(* ============================================================ *)
+
+let compile_and_report name term =
+  Printf.printf "\n%s:\n" name;
+  match Bridge.compile term with
+  | Bridge.CompileOk (perm, size) ->
+      Printf.printf "  Gates: %d\n" size;
+      Printf.printf "  Perm:  [%s]\n"
+        (String.concat ", " (List.map string_of_int perm.new_to_old))
+  | Bridge.CompileError err ->
+      Printf.printf "  FAILED: %s\n" err
+
+(* ============================================================ *)
+(* Main: Print demo output + E2E compile                        *)
 (* ============================================================ *)
 
 let () =
+  let project_root = Filename.dirname (Sys.getcwd ()) in
+  Bridge.set_project_root project_root;
+
   print_endline "=== Datatype Declaration Demo ===\n";
 
   print_endline "--- Bool datatype ---";
@@ -208,4 +225,10 @@ let () =
   print_endline (Printf.sprintf "  %s" (Bridge.term_to_json (emit z8_controlled_phase)));
   print_endline "";
 
-  print_endline "=== End Demo ==="
+  print_endline "--- E2E Compilation via Bridge ---";
+  print_endline "(Note: control combinator emits opaque Gate terms that require";
+  print_endline " datatype-aware compilation. Only primitive ops compile E2E.)";
+
+  compile_and_report "Bool.H ; Bool.X" (emit hx);
+
+  print_endline "\n=== End Demo ==="

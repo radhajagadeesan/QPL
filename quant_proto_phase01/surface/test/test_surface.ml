@@ -421,6 +421,69 @@ let test_triple_nested_quantum_case () =
 
   print_endline ""
 
+(* Regression test: true partial flip should still be rejected *)
+let test_partial_flip_rejected () =
+  print_endline "=== Testing partial constructor flip rejection ===";
+
+  let open Ast in
+  let tyvar_env = Elaborate.TyVarEnv.empty in
+  let ty_env = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "x" (TyPlus (TyQ, TyQ)) in
+  let dt_env = Elaborate.DtEnv.empty in
+
+  (* case x of Left(a) => Left(a ; H) | Right(b) => Left(b ; S)
+     Both branches produce Left — partial flip (Right→Left is a flip,
+     Left→Left is not). This is not unitary. *)
+  let bad_case = Case (Var "x", [
+    (PatCtor ("Left", "a"), Ctor ("Left", Seq (Var "a", GateH 0)));
+    (PatCtor ("Right", "b"), Ctor ("Left", Seq (Var "b", GateS 0)));
+  ]) in
+
+  (try
+    let _ = Elaborate.elaborate tyvar_env ty_env dt_env bad_case in
+    print_endline "  ✗ Should have rejected partial flip, but elaboration succeeded!"
+  with
+  | Failure msg when String.length msg > 0 &&
+      (try let _ = Str.search_forward (Str.regexp "partial constructor flip") msg 0 in true
+       with Not_found -> false) ->
+    print_endline "  ✓ Partial flip correctly rejected (not unitary)";
+    print_endline ("    Error: " ^ msg)
+  | e ->
+    print_endline ("  ✗ Wrong error: " ^ Printexc.to_string e));
+
+  print_endline ""
+
+(* Regression test: both-flip should produce unconditional X on tag *)
+let test_both_flip () =
+  print_endline "=== Testing both-flip (structural TwistPlus) ===";
+
+  let open Ast in
+  let tyvar_env = Elaborate.TyVarEnv.empty in
+  let ty_env = Elaborate.TyEnv.extend Elaborate.TyEnv.empty "x" (TyPlus (TyQ, TyQ)) in
+  let dt_env = Elaborate.DtEnv.empty in
+
+  (* case x of Left(a) => Right(a ; H) | Right(b) => Left(b ; S)
+     Both branches flip the constructor — should emit X[tag] *)
+  let flip_case = Case (Var "x", [
+    (PatCtor ("Left", "a"), Ctor ("Right", Seq (Var "a", GateH 0)));
+    (PatCtor ("Right", "b"), Ctor ("Left", Seq (Var "b", GateS 0)));
+  ]) in
+
+  let elaborated = Elaborate.elaborate tyvar_env ty_env dt_env flip_case in
+  let result_str = Elaborate.Core.term_to_string elaborated in
+  print_endline ("  Elaborated: " ^ result_str);
+
+  (* Should contain X[0] for the tag flip *)
+  let has_tag_x =
+    try let _ = Str.search_forward (Str.regexp "X\\[0\\]") result_str 0 in true
+    with Not_found -> false
+  in
+  if has_tag_x then
+    print_endline "  ✓ Both-flip correctly emits X[tag] (structural swap)"
+  else
+    print_endline "  ✗ Expected X[0] for tag flip, not found";
+
+  print_endline ""
+
 (* Test eta-expanded structural isomorphisms *)
 let test_eta_expanded_structural () =
   print_endline "=== Testing eta-expanded structural isomorphisms ===";
@@ -622,11 +685,13 @@ let test_eta_expanded_structural () =
   *)
   let bc_type = TyPlus (TyUnit, TyUnit) in  (* I + I *)
   let a_type = TyQ in
+  (* Note: PatWild for both branches because the payload type is I (unit, width 0).
+     The pattern variable would be unused since unit carries no information. *)
   let tensor_destruct = LetTen ("a", "bc", a_type, bc_type,
     Id (TyTensor (a_type, bc_type)),
     Case (Var "bc", [
-      (PatCtor ("Left", "u"), Ctor ("Left", Var "a"));
-      (PatCtor ("Right", "u"), Ctor ("Right", Var "a"));
+      (PatWild, Ctor ("Left", Var "a"));
+      (PatWild, Ctor ("Right", Var "a"));
     ])
   ) in
   print_endline ("  Source: let (a ⊗ bc) : Q ⊗ (I+I) = id in case bc of ...");
@@ -705,8 +770,8 @@ let test_eta_expanded_structural () =
   let distL_eta = LetTen ("a", "bc", TyQ, TyPlus (TyUnit, TyUnit),
     Id (TyTensor (TyQ, TyPlus (TyUnit, TyUnit))),
     Case (Var "bc", [
-      (PatCtor ("Left", "b"), Ctor ("Left", Var "a"));
-      (PatCtor ("Right", "c"), Ctor ("Right", Var "a"));
+      (PatWild, Ctor ("Left", Var "a"));
+      (PatWild, Ctor ("Right", Var "a"));
     ])
   ) in
   print_endline ("  Source: let (a ⊗ bc) = id in case bc of Left => Left(a) | Right => Right(a)");
@@ -742,8 +807,8 @@ let test_eta_expanded_structural () =
   let distR_eta = LetTen ("ab", "c", TyPlus (TyUnit, TyUnit), TyQ,
     Id (TyTensor (TyPlus (TyUnit, TyUnit), TyQ)),
     Case (Var "ab", [
-      (PatCtor ("Left", "a"), Ctor ("Left", Var "c"));
-      (PatCtor ("Right", "b"), Ctor ("Right", Var "c"));
+      (PatWild, Ctor ("Left", Var "c"));
+      (PatWild, Ctor ("Right", Var "c"));
     ])
   ) in
   print_endline ("  Source: let (ab ⊗ c) = id in case ab of Left => Left(c) | Right => Right(c)");
@@ -822,6 +887,8 @@ let () =
   test_quantum_case ();
   test_nested_quantum_case ();
   test_triple_nested_quantum_case ();
+  test_partial_flip_rejected ();
+  test_both_flip ();
   test_eta_expanded_structural ();
   test_errors ();
 

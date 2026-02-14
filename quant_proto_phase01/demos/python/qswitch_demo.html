@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>QSwitch Demo</title>
+    <style>
+        body {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            padding: 20px;
+            line-height: 1.4;
+        }
+        .terminal {
+            background: #0d0d0d;
+            border-radius: 8px;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        .header {
+            color: #888;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #333;
+        }
+        .line { opacity: 0; white-space: pre; }
+        .line.visible { opacity: 1; transition: opacity 0.3s; }
+        .section { color: #4ec9b0; font-weight: bold; }
+        .highlight { color: #dcdcaa; }
+        .success { color: #4ec9b0; }
+        .code { color: #9cdcfe; }
+        .comment { color: #6a9955; }
+        .controls {
+            text-align: center;
+            margin: 20px;
+        }
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+        }
+        button:hover { background: #1177bb; }
+        .progress {
+            text-align: center;
+            color: #888;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <button onclick="start()">▶ Play Demo</button>
+        <button onclick="showAll()">⏩ Show All</button>
+        <button onclick="reset()">↺ Reset</button>
+    </div>
+
+    <div class="terminal">
+        <div class="header">QSwitch Demo - Higher-Order Quantum Programming</div>
+        <div id="output"></div>
+    </div>
+
+    <div class="progress" id="progress"></div>
+
+<script>
+const lines = [
+// Part 1: Definition
+{t: 'section', text: '============================================================'},
+{t: 'section', text: 'Part 1: QSwitch Definition'},
+{t: 'section', text: '============================================================'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'QSwitch : (Q→Q) → (Q→Q) → (QBool ⊗ Q → QBool ⊗ Q)'},
+{t: 'code', text: ''},
+{t: 'code', text: 'QSwitch(f, g)(ctrl, data) ='},
+{t: 'code', text: '  case ctrl of'},
+{t: 'code', text: '  | Zero => (ctrl, g;f data)   -- apply g then f'},
+{t: 'code', text: '  | One  => (ctrl, f;g data)   -- apply f then g'},
+{t: 'code', text: ''},
+
+// Part 2: Abstract Circuit
+{t: 'section', text: '============================================================'},
+{t: 'section', text: 'Part 2: Abstract QSwitch(f, g) Circuit'},
+{t: 'section', text: '============================================================'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'The quantum case elaborates to controlled gates:'},
+{t: 'code', text: ''},
+{t: 'success', text: '  X; C-g; C-f; X; C-f; C-g'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'Anti-control pattern:'},
+{t: 'code', text: ''},
+{t: 'code', text: '  X q[0];        -- flip ctrl for anti-control'},
+{t: 'code', text: '  C-g q[0],q[1]; -- g fires (ctrl was 0, now 1)'},
+{t: 'code', text: '  C-f q[0],q[1]; -- f fires (ctrl was 0, now 1)'},
+{t: 'code', text: '  X q[0];        -- restore ctrl'},
+{t: 'code', text: '  C-f q[0],q[1]; -- f fires (ctrl is 1)'},
+{t: 'code', text: '  C-g q[0],q[1]; -- g fires (ctrl is 1)'},
+{t: 'code', text: ''},
+{t: 'comment', text: 'Wire 0: ctrl (control qubit)'},
+{t: 'comment', text: 'Wire 1: data (target qubit)'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'Verification:'},
+{t: 'code', text: 'ctrl=0: X→1, C-g;C-f fire, X→0, C-f;C-g off → g;f ✓'},
+{t: 'code', text: 'ctrl=1: X→0, C-g;C-f off, X→1, C-f;C-g fire → f;g ✓'},
+{t: 'code', text: ''},
+
+// Part 3: Instantiation
+{t: 'section', text: '============================================================'},
+{t: 'section', text: 'Part 3: QSwitch(H, S) Instantiation'},
+{t: 'section', text: '============================================================'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'Substituting f=H, g=S:'},
+{t: 'code', text: ''},
+{t: 'code', text: 'QSwitch(H, S)(ctrl, data) ='},
+{t: 'code', text: '  | Zero => (ctrl, S;H data)'},
+{t: 'code', text: '  | One  => (ctrl, H;S data)'},
+{t: 'code', text: ''},
+{t: 'success', text: 'Circuit: X; CS; CH; X; CH; CS'},
+{t: 'code', text: ''},
+
+// Part 4: Compiled Circuit
+{t: 'section', text: '============================================================'},
+{t: 'section', text: 'Part 4: QSwitch(H, S) Circuit (2 qubits)'},
+{t: 'section', text: '============================================================'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'Qubits: 2'},
+{t: 'highlight', text: 'Gates:  6'},
+{t: 'code', text: ''},
+{t: 'code', text: 'Circuit:'},
+{t: 'code', text: '  X q[0];'},
+{t: 'code', text: '  CS q[0], q[1];'},
+{t: 'code', text: '  CH q[0], q[1];'},
+{t: 'code', text: '  X q[0];'},
+{t: 'code', text: '  CH q[0], q[1];'},
+{t: 'code', text: '  CS q[0], q[1];'},
+{t: 'code', text: ''},
+{t: 'highlight', text: 'Semantics:'},
+{t: 'success', text: '  |0⟩|ψ⟩ → |0⟩(S;H)|ψ⟩'},
+{t: 'success', text: '  |1⟩|ψ⟩ → |1⟩(H;S)|ψ⟩'},
+{t: 'code', text: ''},
+
+// Summary
+{t: 'section', text: '============================================================'},
+{t: 'section', text: 'Summary'},
+{t: 'section', text: '============================================================'},
+{t: 'code', text: ''},
+{t: 'code', text: '| Form                    | Qubits | Gates | Circuit               |'},
+{t: 'code', text: '|-------------------------|--------|-------|-----------------------|'},
+{t: 'code', text: '| QSwitch(f,g) abstract   | 2      | 6     | X; C-g; C-f; X; C-f; C-g|'},
+{t: 'code', text: '| QSwitch(H,S) instantiated| 2      | 6     | X; CS; CH; X; CH; CS  |'},
+{t: 'code', text: ''},
+{t: 'success', text: 'Higher-order quantum programming works!'},
+];
+
+let currentLine = 0;
+let timer = null;
+
+function render() {
+    const output = document.getElementById('output');
+    output.innerHTML = '';
+    lines.forEach((line, i) => {
+        const div = document.createElement('div');
+        div.className = 'line ' + line.t + (i < currentLine ? ' visible' : '');
+        div.textContent = line.text;
+        output.appendChild(div);
+    });
+    document.getElementById('progress').textContent =
+        `Line ${currentLine} / ${lines.length}`;
+}
+
+function start() {
+    if (timer) clearInterval(timer);
+    currentLine = 0;
+    render();
+    timer = setInterval(() => {
+        if (currentLine < lines.length) {
+            currentLine++;
+            render();
+        } else {
+            clearInterval(timer);
+        }
+    }, 120);
+}
+
+function showAll() {
+    if (timer) clearInterval(timer);
+    currentLine = lines.length;
+    render();
+}
+
+function reset() {
+    if (timer) clearInterval(timer);
+    currentLine = 0;
+    render();
+}
+
+render();
+</script>
+</body>
+</html>

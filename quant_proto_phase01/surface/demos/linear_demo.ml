@@ -1,6 +1,7 @@
 (** Linear DSL Demo: GADT-enforced linear contexts.
 
     This demonstrates that OCaml's type system enforces linearity.
+    Includes E2E compilation via Bridge -> Python -> Circuit.
 *)
 
 open Qpl_surface
@@ -86,46 +87,66 @@ let bad_dup : _ prog = pair var var
 *)
 
 (* ============================================================ *)
-(* Example 5: Emit to Bridge.term                               *)
+(* Helpers                                                      *)
+(* ============================================================ *)
+
+let compile_and_report name term =
+  Printf.printf "\n%s:\n" name;
+  match Bridge.compile term with
+  | Bridge.CompileOk (perm, size) ->
+      Printf.printf "  Gates: %d\n" size;
+      Printf.printf "  Perm:  [%s]\n"
+        (String.concat ", " (List.map string_of_int perm.new_to_old))
+  | Bridge.CompileError err ->
+      Printf.printf "  FAILED: %s\n" err
+
+(* ============================================================ *)
+(* Main: Emit + Compile                                         *)
 (* ============================================================ *)
 
 let () =
+  let project_root = Filename.dirname (Sys.getcwd ()) in
+  Bridge.set_project_root project_root;
+
   print_endline "=== Linear DSL Demo ===\n";
+
+  print_endline "--- Emission to Bridge JSON ---\n";
 
   print_endline "Closed H gate:";
   print_endline ("  " ^ Bridge.term_to_json (emit gate_h));
-  print_endline "";
 
   print_endline "H ; H composition:";
   print_endline ("  " ^ Bridge.term_to_json (emit hh));
-  print_endline "";
 
   print_endline "Twist(Q,Q):";
   print_endline ("  " ^ Bridge.term_to_json (emit swap_qq));
-  print_endline "";
 
   print_endline "Lambda (identity):";
   print_endline ("  " ^ Bridge.term_to_json (emit id_lam));
-  print_endline "";
 
   print_endline "H || S (parallel composition):";
   print_endline ("  " ^ Bridge.term_to_json (emit h_par_s));
-  print_endline "";
 
   print_endline "iterate 3 q H (= H ; H ; H):";
   print_endline ("  " ^ Bridge.term_to_json (emit h3));
-  print_endline "";
 
   print_endline "iterate 0 q H (= id):";
   print_endline ("  " ^ Bridge.term_to_json (emit id_from_iterate));
-  print_endline "";
 
   print_endline "fold q [H; S; H]:";
   print_endline ("  " ^ Bridge.term_to_json (emit hsh));
-  print_endline "";
 
   print_endline "pow2 3 q H (= H^8):";
   print_endline ("  " ^ Bridge.term_to_json (emit h8));
-  print_endline "";
 
-  print_endline "=== End Demo ==="
+  print_endline "\n--- E2E Compilation via Bridge ---";
+
+  compile_and_report "H gate" (emit gate_h);
+  compile_and_report "H ; H" (emit hh);
+  compile_and_report "Twist(Q,Q)" (emit swap_qq);
+  compile_and_report "H || S" (emit h_par_s);
+  compile_and_report "iterate 3 q H" (emit h3);
+  compile_and_report "fold q [H; S; H]" (emit hsh);
+  compile_and_report "pow2 3 q H (= H^8)" (emit h8);
+
+  print_endline "\n=== End Demo ==="
