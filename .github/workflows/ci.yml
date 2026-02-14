@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: quant_proto_phase01
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install numpy pytket pytket-pyzx pytest
+
+      - name: Run Python tests
+        run: PYTHONPATH=src pytest --tb=short -q
+
+  ocaml-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install numpy pytket pytket-pyzx
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "4.14"
+
+      - name: Install OCaml dependencies
+        run: opam install dune yojson --yes
+
+      - name: Build surface language
+        run: cd quant_proto_phase01/surface && opam exec -- dune build
+
+      - name: Run OCaml unit tests
+        run: cd quant_proto_phase01/surface && opam exec -- dune test
+
+      - name: Run newtests suite
+        run: cd quant_proto_phase01/surface && opam exec -- dune exec test/test_newtests.exe

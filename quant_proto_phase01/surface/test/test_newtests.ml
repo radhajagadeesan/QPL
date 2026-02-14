@@ -583,6 +583,33 @@ let test_section_6 () =
   expect_eq_circ ~ty_env:env_x5 "NEST-STRESS-01-eq: 5-level identity == id[T5]"
     nest_stress (Ast.Id t5);
 
+  (* NEST-STRESS-02: partial flip at depth 4 in 5-level sum — reject
+     Same as NEST-STRESS-01 but the innermost case has both branches
+     producing Left (partial flip). Depth 4 ≥ 3. *)
+  let nest_stress_02 = Ast.Case (Ast.Var "x", [
+    (Ast.PatCtor ("Left", "inner4"),
+      Ast.Ctor ("Left",
+        Ast.Case (Ast.Var "inner4", [
+          (Ast.PatCtor ("Left", "inner3"),
+            Ast.Ctor ("Left",
+              Ast.Case (Ast.Var "inner3", [
+                (Ast.PatCtor ("Left", "inner2"),
+                  Ast.Ctor ("Left",
+                    Ast.Case (Ast.Var "inner2", [
+                      (Ast.PatCtor ("Left", "a"), Ast.Ctor ("Left", Ast.Var "a"));
+                      (* Partial flip: Right branch also produces Left *)
+                      (Ast.PatCtor ("Right", "b"), Ast.Ctor ("Left", Ast.Var "b"));
+                    ])));
+                (Ast.PatCtor ("Right", "c"), Ast.Ctor ("Right", Ast.Var "c"));
+              ])));
+          (Ast.PatCtor ("Right", "d"), Ast.Ctor ("Right", Ast.Var "d"));
+        ])));
+    (Ast.PatCtor ("Right", "e"), Ast.Ctor ("Right", Ast.Var "e"));
+  ]) in
+  expect_error_contains ~ty_env:env_x5
+    "NEST-STRESS-02: partial flip at depth 4 in 5-level sum (reject)"
+    nest_stress_02 "partial constructor flip";
+
   print_endline ""
 
 (* ================================================================ *)
@@ -626,6 +653,49 @@ let test_section_7 () =
   let id_tensor_h = Ast.Ten (Ast.Id bool_ty, Ast.GateH 0) in
   expect_eq_circ "TEN-SUM-OK-02-eq: identity case⊗H == id[Bool]⊗H"
     ten_sum_ok_02 id_tensor_h;
+
+  (* TEN-SUM-EQ-01: Nested sum inside tensor with reassociation.
+     f : Bool⊗Q → Bool⊗Q applies H inside both branches + S on Q:
+       let (s,q) = id[Bool⊗Q] in
+         (case s of L a => L(a;H) | R b => R(b;H)) ⊗ (q;S)
+     g : Q⊗Bool → Q⊗Bool does the same with swapped tensor order:
+       let (q,s) = id[Q⊗Bool] in
+         (q;S) ⊗ (case s of L a => L(a;H) | R b => R(b;H))
+     Transport: swap⊗(Q,Bool) ; f ; swap⊗(Bool,Q) == g *)
+  let q_bool_ty = Ast.TyTensor (Ast.TyQ, bool_ty) in
+
+  (* f on Bool⊗Q *)
+  let f_bool_q = Ast.LetTen ("s", "q", bool_ty, Ast.TyQ,
+    Ast.Id bool_q_ty,
+    Ast.Ten (
+      Ast.Case (Ast.Var "s", [
+        (Ast.PatCtor ("Left", "a"),
+          Ast.Ctor ("Left", Ast.Seq (Ast.Var "a", Ast.GateH 0)));
+        (Ast.PatCtor ("Right", "b"),
+          Ast.Ctor ("Right", Ast.Seq (Ast.Var "b", Ast.GateH 0)));
+      ]),
+      Ast.Seq (Ast.Var "q", Ast.GateS 0))) in
+
+  (* g on Q⊗Bool *)
+  let g_q_bool = Ast.LetTen ("q", "s", Ast.TyQ, bool_ty,
+    Ast.Id q_bool_ty,
+    Ast.Ten (
+      Ast.Seq (Ast.Var "q", Ast.GateS 0),
+      Ast.Case (Ast.Var "s", [
+        (Ast.PatCtor ("Left", "a"),
+          Ast.Ctor ("Left", Ast.Seq (Ast.Var "a", Ast.GateH 0)));
+        (Ast.PatCtor ("Right", "b"),
+          Ast.Ctor ("Right", Ast.Seq (Ast.Var "b", Ast.GateH 0)));
+      ]))) in
+
+  (* Transport: swap⊗(Q,Bool) ; f ; swap⊗(Bool,Q) == g *)
+  let transported_f = Ast.Seq (
+    Ast.Seq (
+      Ast.TwistT (Ast.TyQ, bool_ty),
+      f_bool_q),
+    Ast.TwistT (bool_ty, Ast.TyQ)) in
+  expect_eq_circ "TEN-SUM-EQ-01: swap⊗;f;swap⊗ == g (nested sum in tensor transport)"
+    transported_f g_q_bool;
 
   print_endline ""
 

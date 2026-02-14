@@ -268,6 +268,10 @@ let parse_perm json =
 let call_bridge request_json =
   let bridge_script = Filename.concat !project_root "surface/bridge.py" in
   let venv_python = Filename.concat !project_root "../venv/bin/python" in
+  let python =
+    if Sys.file_exists venv_python then venv_python
+    else "python3"
+  in
 
   (* Write request to temp file *)
   let tmp_in = Filename.temp_file "qpl_bridge_" ".json" in
@@ -278,8 +282,8 @@ let call_bridge request_json =
   close_out oc;
 
   (* Run python with temp file I/O *)
-  let cmd = Printf.sprintf "%s %s < %s > %s 2>&1"
-    venv_python bridge_script tmp_in tmp_out in
+  let cmd = Printf.sprintf "PYTHONPATH=%s/src %s %s < %s > %s 2>&1"
+    !project_root python bridge_script tmp_in tmp_out in
   let _ = Sys.command cmd in
 
   (* Read response *)
