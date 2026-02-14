@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Demo: Algorithmic Snippets from Surface Language
 
-This demo compiles the examples from surface/examples/algorithmic_snippets.surf
+This demo compiles the examples from surface/demos/algorithmic_snippets.ml
 and verifies they produce the expected circuits.
 
 Examples:
@@ -267,10 +267,10 @@ def main():
     global runner
     runner = DemoRunner(
         "Algorithmic Snippets Demo",
-        "Compiles examples from surface/examples/algorithmic_snippets.surf"
+        "Compiles examples from surface/demos/algorithmic_snippets.ml"
     )
     runner.print_header()
-    print("\nCompiling examples from surface/examples/algorithmic_snippets.surf")
+    print("\nCompiling examples from surface/demos/algorithmic_snippets.ml")
 
     demo_two_qubit_circuit()
     demo_bell_state()

@@ -39,6 +39,10 @@ env/
 *.swp
 *.swo
 
+# OCaml build artifacts
+a.out
+_build/
+
 # Misc
 .DS_Store
 tmp/

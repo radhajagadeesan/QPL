@@ -441,7 +441,7 @@ PYTHONPATH=src python my_program.py
 
 - `API_REFERENCE.md` — Complete API signatures
 - `IR_DESIGN.md` — IR architecture and compilation semantics
-- `python-demos/qswitch_demo.py` — Working higher-order example
-- `python-demos/qswitch_abstract_circuit_demo.py` — Abstract QSwitch circuit diagrams (no instantiation)
-- `python-demos/qswitch_instantiation_demo.py` — QSwitch[H,H] vs QSwitch[H,S] with simplification analysis
-- `surface/ocaml-demos/` — OCaml E2E demos (full pipeline to circuits)
+- `demos/python/qswitch_demo.py` — Working higher-order example
+- `demos/python/qswitch_abstract_circuit_demo.py` — Abstract QSwitch circuit diagrams (no instantiation)
+- `demos/python/qswitch_instantiation_demo.py` — QSwitch[H,H] vs QSwitch[H,S] with simplification analysis
+- `surface/demos/` — OCaml E2E demos (full pipeline to circuits)

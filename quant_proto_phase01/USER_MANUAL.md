@@ -663,7 +663,7 @@ open demos/qswitch_demo.html       # macOS
 
 ### 7.5 Algorithmic Examples
 
-See `surface/examples/algorithmic_snippets.surf` for:
+See `surface/demos/algorithmic_snippets.ml` for:
 - Deutsch-Jozsa algorithm
 - Hidden Subgroup Problem (standard and phase-kickback)
 - Simon's algorithm

@@ -285,13 +285,11 @@ eval $(opam env)
 # Build
 dune build
 
-# Run demos (AST → Core IR)
-dune exec demos/qswitch_ho_demo.exe
-dune exec examples/linear_demo.exe
-
-# Run E2E demos (full pipeline to circuits)
-dune exec ocaml-demos/abstract_qswitch_e2e.exe
-dune exec ocaml-demos/zn_controlled_phase_e2e.exe
+# Run demos (full pipeline to circuits)
+dune exec demos/algorithms_e2e.exe
+dune exec demos/abstract_qswitch_e2e.exe
+dune exec demos/zn_controlled_phase_e2e.exe
+dune exec demos/linear_demo.exe
 
 # Run tests
 dune test
@@ -310,15 +308,13 @@ surface/
 │   ├── linear.mli      # Linear DSL interface
 │   ├── bridge.ml       # Bridge to Python
 │   └── rep.ml          # Type representation
-├── demos/              # AST → Core IR demos
-│   ├── qswitch_demo.ml
-│   └── qswitch_ho_demo.ml
-├── ocaml-demos/        # E2E demos (full pipeline to circuits)
+├── demos/              # All OCaml demos (full pipeline to circuits)
+│   ├── algorithms_e2e.ml
 │   ├── abstract_qswitch_e2e.ml
 │   ├── qswitch_instantiated_e2e.ml
-│   └── zn_controlled_phase_e2e.ml
-├── examples/
-│   └── linear_demo.ml
+│   ├── zn_controlled_phase_e2e.ml
+│   ├── linear_demo.ml
+│   └── datatype_demo.ml
 └── test/
 ```
 
