@@ -9,6 +9,7 @@
     - §6: Rigorous nesting
     - §7: Tensor × sum interaction
     - §8: Bool→Bool unitaries
+    - §9: Property-based fuzz suite (PROP-TAG-01, PROP-TAG-02)
 *)
 
 open Qpl_surface
@@ -740,6 +741,119 @@ let test_section_8 () =
   print_endline ""
 
 (* ================================================================ *)
+(* §9: Property-based fuzz suite (PROP-TAG-01, PROP-TAG-02)          *)
+(* ================================================================ *)
+
+let test_section_9 () =
+  print_endline "§9. Property-based fuzz suite";
+
+  Random.init 42;
+
+  (* Symmetric sum tree:
+     depth 0: Q
+     depth 1: Q + Q              (width 2)
+     depth 2: (Q+Q) + (Q+Q)      (width 3)
+     depth 3: nested further      (width 4)
+     Both summands at each level are the same type, so partial flip
+     is well-typed but semantically non-unitary (must be rejected). *)
+  let rec make_sym_sum d =
+    if d <= 0 then Ast.TyQ
+    else let sub = make_sym_sum (d - 1) in Ast.TyPlus (sub, sub)
+  in
+
+  (* Build a nested case on a symmetric sum type.
+     mode_fn : int -> (string * string) maps each depth level to the
+     output constructor pair (out_for_left_branch, out_for_right_branch).
+     Identity:  ("Left", "Right")
+     Flip:      ("Right", "Left")
+     Partial-L: ("Left", "Left")
+     Partial-R: ("Right", "Right") *)
+  let rec make_nested_case scrutinee depth mode_fn =
+    if depth <= 0 then scrutinee
+    else
+      let vl = "l" ^ string_of_int depth in
+      let vr = "r" ^ string_of_int depth in
+      let (out_l, out_r) = mode_fn depth in
+      Ast.Case (scrutinee, [
+        (Ast.PatCtor ("Left", vl),
+          Ast.Ctor (out_l, make_nested_case (Ast.Var vl) (depth - 1) mode_fn));
+        (Ast.PatCtor ("Right", vr),
+          Ast.Ctor (out_r, make_nested_case (Ast.Var vr) (depth - 1) mode_fn));
+      ])
+  in
+
+  (* PROP-TAG-01: partial flip cases must be rejected.
+     At a randomly chosen level, both branches output the same constructor. *)
+  let num_tag_tests = 20 in
+  for trial = 0 to num_tag_tests - 1 do
+    let depth = 1 + Random.int 3 in (* 1, 2, or 3 *)
+    let partial_level = 1 + Random.int depth in
+    let partial_side = if Random.bool () then "Left" else "Right" in
+
+    let ty = make_sym_sum depth in
+    let env = make_ty_env [("x", ty)] in
+
+    let mode_fn d =
+      if d = partial_level then (partial_side, partial_side)
+      else ("Left", "Right")
+    in
+
+    let term = make_nested_case (Ast.Var "x") depth mode_fn in
+
+    expect_error_contains ~ty_env:env
+      (Printf.sprintf "PROP-TAG-01[%d]: partial '%s' at level %d, depth %d"
+        trial partial_side partial_level depth)
+      term "partial constructor flip"
+  done;
+
+  (* PROP-TAG-02: safe nesting must not be rejected.
+     At each level, randomly choose identity or full flip.
+     Cap depth at 2 to avoid QControlBox limitation at depth 3. *)
+  for trial = 0 to num_tag_tests - 1 do
+    let depth = 1 + Random.int 2 in
+
+    let ty = make_sym_sum depth in
+    let env = make_ty_env [("x", ty)] in
+
+    (* Randomly assign identity or flip to each level *)
+    let level_modes = Array.init (depth + 1) (fun _ ->
+      if Random.bool () then ("Left", "Right")  (* identity *)
+      else ("Right", "Left")                     (* full flip *)
+    ) in
+
+    let mode_fn d =
+      if d >= 0 && d < Array.length level_modes then level_modes.(d)
+      else ("Left", "Right")
+    in
+
+    let term = make_nested_case (Ast.Var "x") depth mode_fn in
+
+    (* Apply a gate inside the leaves to make the test non-trivial *)
+    let term_with_gate =
+      let rec add_leaf_gate t =
+        match t with
+        | Ast.Case (scrut, branches) ->
+          Ast.Case (scrut, List.map (fun (pat, body) ->
+            (pat, add_leaf_gate body)
+          ) branches)
+        | Ast.Ctor (name, payload) ->
+          Ast.Ctor (name, add_leaf_gate payload)
+        | Ast.Var v ->
+          Ast.Seq (Ast.Var v, Ast.GateH 0)
+        | other -> other
+      in
+      add_leaf_gate term
+    in
+
+    ignore (expect_compile_ok ~ty_env:env
+      (Printf.sprintf "PROP-TAG-02[%d]: safe case (depth %d, random id/flip + H)"
+        trial depth)
+      term_with_gate)
+  done;
+
+  print_endline ""
+
+(* ================================================================ *)
 (* Main: Run all sections                                            *)
 (* ================================================================ *)
 
@@ -758,6 +872,7 @@ let () =
   test_section_6 ();
   test_section_7 ();
   test_section_8 ();
+  test_section_9 ();
 
   print_endline "================================================================";
   Printf.printf "Results: %d/%d passed, %d failed, %d skipped\n"
