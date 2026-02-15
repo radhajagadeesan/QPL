@@ -6,9 +6,7 @@
 
 open Qpl_surface
 
-(* Set project root for bridge *)
-let () =
-  Bridge.set_project_root "/home/rjagadee/projects/QPL/quant_proto_phase01"
+(* Project root is auto-detected by Bridge.get_project_root *)
 
 (* Test: TwistPlus is involutive *)
 let test_twist_plus_involution () =

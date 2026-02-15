@@ -17,8 +17,7 @@ open Qpl_surface
 (* Test harness infrastructure                                       *)
 (* ================================================================ *)
 
-let project_root = "/home/rjagadee/projects/QPL/quant_proto_phase01"
-let () = Bridge.set_project_root project_root
+(* Project root is auto-detected by Bridge.get_project_root *)
 
 let tests_run = ref 0
 let tests_passed = ref 0

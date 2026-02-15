@@ -11,8 +11,7 @@
 
 open Qpl_surface
 
-let () =
-  Bridge.set_project_root "/home/rjagadee/projects/QPL/quant_proto_phase01"
+(* Project root is auto-detected by Bridge.get_project_root *)
 
 let pi = 3.14159265358979
 

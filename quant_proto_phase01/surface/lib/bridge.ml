@@ -32,6 +32,26 @@ let project_root = ref ""
 (** Set the project root path *)
 let set_project_root path = project_root := path
 
+(** Auto-detect project root by searching upward for surface/bridge.py *)
+let find_project_root () =
+  let rec search dir =
+    let candidate = Filename.concat (Filename.concat dir "surface") "bridge.py" in
+    if Sys.file_exists candidate then dir
+    else
+      let parent = Filename.dirname dir in
+      if parent = dir then ""  (* reached filesystem root, give up *)
+      else search parent
+  in
+  search (Sys.getcwd ())
+
+(** Get the project root, auto-detecting if not explicitly set *)
+let get_project_root () =
+  if !project_root = "" then begin
+    let detected = find_project_root () in
+    if detected <> "" then project_root := detected
+  end;
+  !project_root
+
 (** Convert a Rep.t to JSON type representation *)
 let rec type_to_json = function
   | Rep.Var _ -> {|{"node": "Q"}|}  (* Variables become Q for now *)
@@ -266,8 +286,9 @@ let parse_perm json =
 
 (** Call the Python bridge with a JSON request *)
 let call_bridge request_json =
-  let bridge_script = Filename.concat !project_root "surface/bridge.py" in
-  let venv_python = Filename.concat !project_root "../venv/bin/python" in
+  let root = get_project_root () in
+  let bridge_script = Filename.concat root "surface/bridge.py" in
+  let venv_python = Filename.concat root "../venv/bin/python" in
   let python =
     if Sys.file_exists venv_python then venv_python
     else "python3"
@@ -283,7 +304,7 @@ let call_bridge request_json =
 
   (* Run python with temp file I/O *)
   let cmd = Printf.sprintf "PYTHONPATH=%s/src %s %s < %s > %s 2>&1"
-    !project_root python bridge_script tmp_in tmp_out in
+    root python bridge_script tmp_in tmp_out in
   let _ = Sys.command cmd in
 
   (* Read response *)
