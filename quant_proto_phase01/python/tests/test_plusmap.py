@@ -330,6 +330,43 @@ class TestPlusMapNestedFlat:
         # Tag 0 and tag 1 must differ (regression: would be same if k=1 only)
         assert not np.allclose(U[0:2, 0:2], U[2:4, 2:4])
 
+    def test_pm_flat_nested_strategy_a_with_boxes(self):
+        """Nested PlusMap where inner branch has non-trivial tag permutation.
+
+        The inner PlusMap on Q+(Q+Q) has k=2 with non-identity P permutation,
+        which emits Unitary2qBox. When used as a branch of an outer PlusMap
+        with Strategy A, the outer must decompose these boxes before controlling.
+
+        Without the DecomposeBoxes fix, this crashes because Op.create() fails
+        on Unitary2qBox gates extracted from the inner branch sub-circuit.
+        """
+        import numpy as np
+        q = Q()
+
+        # Inner PlusMap: Q + (Q+Q) → Q + (Q+Q), k=2
+        # n_left=1, n_right=2 → P is non-identity → Unitary2qBox emitted
+        inner_right = PlusMap(q, q, S(0, q), X(0, q))
+        inner = PlusMap(q, Plus(q, q), H(0, q), inner_right)
+
+        # Verify inner compiles and is unitary
+        inner_circ = compile(inner, materialize=True).circuit
+        inner_U = inner_circ.get_unitary()
+        assert np.allclose(inner_U @ inner_U.conj().T, np.eye(inner_U.shape[0]), atol=1e-10)
+
+        # Use inner as right branch of outer PlusMap
+        # Outer: (Q+Q) + (Q+(Q+Q)), n_left=2, n_right=3, n=5, k=3
+        # half=4, both ≤ 4 → Strategy A
+        outer_left = PlusMap(q, q, H(0, q), S(0, q))
+        outer = PlusMap(
+            Plus(q, q), Plus(q, Plus(q, q)),
+            outer_left, inner
+        )
+
+        c = compile(outer, materialize=True)
+        U = c.circuit.get_unitary()
+        dim = U.shape[0]
+        assert np.allclose(U @ U.conj().T, np.eye(dim), atol=1e-10)
+
     def test_pm_flat_hexagon(self):
         """⊕-hexagon: assocPL;swap;assocPL == PlusMap(swap,id);assocPL;PlusMap(id,swap).
 

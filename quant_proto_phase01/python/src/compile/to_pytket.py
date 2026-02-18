@@ -331,6 +331,19 @@ def _emit_tag_perm_unitary(circ, p, tag_perm, k, offset, explain, log):
         log.append(f"TagPerm {tag_perm} on {k} qubits, phys={tag_phys}")
 
 
+def _decompose_and_get_cmds(circuit):
+    """Decompose box types (Unitary2qBox etc.) to primitives, return commands.
+
+    Inner PlusMap compilations with Strategy A emit Unitary2qBox for tag
+    permutations. When these sub-circuits are used as branches of an outer
+    Case/PlusMap, the outer needs to control each gate. Op.create() fails
+    on box types, so we decompose first.
+    """
+    from pytket.passes import DecomposeBoxes
+    DecomposeBoxes().apply(circuit)
+    return list(circuit.get_commands())
+
+
 def compile(term: Term, *, materialize: bool = False, explain: bool = False, env: Env = None) -> Compiled:
     # Check for Feedback - not currently supported
     if _contains_feedback(term):
@@ -766,6 +779,37 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     compile_multi_ctrl(body.body, ctrls + [inner_ctrl], inner_pay_off)
                     return
 
+                # Inductive: Ctrl(PlusMap/Case/...) — compile body, decompose, control each gate
+                if isinstance(body, (PlusMap, Case, CaseExpr, PhasedPlusMap, PhasedControl)):
+                    from pytket.circuit import QControlBox, Op, OpType
+                    sub = compile(body, materialize=True)
+                    sub_cmds = _decompose_and_get_cmds(sub.circuit)
+                    _ctrl_gate_local = {
+                        OpType.H: OpType.CH,
+                        OpType.S: OpType.CS,
+                        OpType.Sdg: OpType.CSdg,
+                        OpType.X: OpType.CX,
+                        OpType.Y: OpType.CY,
+                        OpType.Z: OpType.CZ,
+                        OpType.Rz: OpType.CRz,
+                        OpType.Rx: OpType.CRx,
+                        OpType.Ry: OpType.CRy,
+                        OpType.CX: OpType.CCX,
+                    }
+                    for cmd in sub_cmds:
+                        phys_qubits = [p.apply_new_to_old(q.index[0] + pay_off)
+                                       for q in cmd.qubits]
+                        ctrl_phys = [p.apply_new_to_old(c) for c in ctrls]
+                        ctrl_op = _ctrl_gate_local.get(cmd.op.type) if n_ctrls == 1 else None
+                        if ctrl_op is not None:
+                            circ.add_gate(ctrl_op, cmd.op.params,
+                                          ctrl_phys + phys_qubits)
+                        else:
+                            base_op = Op.create(cmd.op.type, cmd.op.params)
+                            qcb = QControlBox(base_op, n_ctrls)
+                            circ.add_qcontrolbox(qcb, ctrl_phys + phys_qubits)
+                    return
+
                 # Fallback: unsupported multi-controlled gate
                 raise NotImplementedError(
                     f"Multi-controlled ({n_ctrls} controls) not implemented for: {type(body).__name__}. "
@@ -890,11 +934,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             # Compile branches to sub-circuits
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
-            left_cmds = list(compile(t.left, materialize=True).circuit.get_commands()) if left_w > 0 else []
+            left_cmds = _decompose_and_get_cmds(compile(t.left, materialize=True).circuit) if left_w > 0 else []
 
             right_dom, _ = type_of(t.right)
             right_w = width(right_dom)
-            right_cmds = list(compile(t.right, materialize=True).circuit.get_commands()) if right_w > 0 else []
+            right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
 
             payload_base = offset + k
 
@@ -967,7 +1011,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             left_w = width(left_dom)
             if left_w > 0:
                 # Compile left branch with variable binding
-                left_cmds = list(compile(t.left, materialize=True, env=left_env).circuit.get_commands())
+                left_cmds = _decompose_and_get_cmds(compile(t.left, materialize=True, env=left_env).circuit)
             else:
                 left_cmds = []
 
@@ -977,7 +1021,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             right_w = width(right_dom)
             if right_w > 0:
                 # Compile right branch with variable binding
-                right_cmds = list(compile(t.right, materialize=True, env=right_env).circuit.get_commands())
+                right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True, env=right_env).circuit)
             else:
                 right_cmds = []
 
@@ -1036,11 +1080,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             # Compile branches to sub-circuits
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
-            left_cmds = list(compile(t.left, materialize=True).circuit.get_commands()) if left_w > 0 else []
+            left_cmds = _decompose_and_get_cmds(compile(t.left, materialize=True).circuit) if left_w > 0 else []
 
             right_dom, _ = type_of(t.right)
             right_w = width(right_dom)
-            right_cmds = list(compile(t.right, materialize=True).circuit.get_commands()) if right_w > 0 else []
+            right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
 
             if k <= 1:
                 # Simple binary case: 1 outer tag bit, existing approach
@@ -1263,11 +1307,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             # Compile branches to sub-circuits
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
-            left_cmds = list(compile(t.left, materialize=True).circuit.get_commands()) if left_w > 0 else []
+            left_cmds = _decompose_and_get_cmds(compile(t.left, materialize=True).circuit) if left_w > 0 else []
 
             right_dom, _ = type_of(t.right)
             right_w = width(right_dom)
-            right_cmds = list(compile(t.right, materialize=True).circuit.get_commands()) if right_w > 0 else []
+            right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
 
             if k <= 1:
                 # Simple binary case

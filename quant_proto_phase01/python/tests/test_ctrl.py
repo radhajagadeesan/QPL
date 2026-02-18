@@ -5,6 +5,7 @@ import numpy as np
 
 from lang.terms import (
     Ctrl, H, S, X, Z, Sdg, Rz, CX, TenTerm, Seq, Id, TwistTen,
+    PlusMap, Case,
 )
 from lang.types import Q, Ten, Plus, Unit
 from typing_.check import type_of, TypeCheckError
@@ -142,6 +143,23 @@ class TestCtrlCompilation:
         cmds = list(result.circuit.get_commands())
         assert cmds[0].op.type.name == "CSWAP"
 
+    def test_ctrl_plusmap_compiles(self):
+        """Ctrl(PlusMap(H, S)) compiles via decompose-and-control."""
+        q = Q()
+        pm = PlusMap(q, q, H(0, q), S(0, q))
+        term = Ctrl(pm)
+        result = compile(term, materialize=True)
+        # Should produce gates (controlled versions of PlusMap's sub-circuit)
+        assert result.circuit.n_gates > 0
+
+    def test_ctrl_case_compiles(self):
+        """Ctrl(Case(H, S)) compiles via decompose-and-control."""
+        q = Q()
+        case_term = Case(q, q, H(0, q), S(0, q))
+        term = Ctrl(case_term)
+        result = compile(term, materialize=True)
+        assert result.circuit.n_gates > 0
+
 
 class TestCtrlSemantics:
     """Tests for Ctrl correctness via unitaries."""
@@ -247,6 +265,29 @@ class TestCtrlNested:
         outer = Ctrl(inner)
         result = compile(outer, materialize=True)
         assert result.circuit.n_gates == 0
+
+    def test_ctrl_plusmap_unitary(self):
+        """Ctrl(PlusMap(H, S)) produces correct controlled unitary.
+
+        When control=0: identity on Q+Q payload
+        When control=1: PlusMap(H,S) on Q+Q payload
+        """
+        q = Q()
+        pm = PlusMap(q, q, H(0, q), S(0, q))
+
+        # Get PlusMap unitary (4x4)
+        pm_U = compile(pm, materialize=True).circuit.get_unitary()
+
+        # Get Ctrl(PlusMap) unitary (8x8)
+        term = Ctrl(pm)
+        ctrl_U = compile(term, materialize=True).circuit.get_unitary()
+
+        # Should be block diagonal: [I, 0; 0, pm_U]
+        expected = np.block([
+            [np.eye(4), np.zeros((4, 4))],
+            [np.zeros((4, 4)), pm_U]
+        ])
+        assert np.allclose(ctrl_U, expected, atol=1e-10)
 
     def test_nested_ctrl_h_not_supported(self):
         """Ctrl(Ctrl(H)) raises NotImplementedError (no CCH primitive)."""
