@@ -85,7 +85,7 @@ pip install -U pip
 pip install pytest pytket
 
 # Verify installation
-PYTHONPATH=src pytest -q
+PYTHONPATH=python/src pytest -q
 ```
 
 ### 2.3 Full Installation (with OCaml frontend)
@@ -108,7 +108,7 @@ dune test
 Run the sanity check:
 
 ```bash
-PYTHONPATH=src python -c "
+PYTHONPATH=python/src python -c "
 from lang.types import Q, Ten
 from lang.terms import TwistTen
 from compile.to_pytket import compile
@@ -477,7 +477,7 @@ print(result.log)
 For integration with other tools:
 
 ```bash
-echo '{"type": "compile", "term": {"node": "TwistPlus", "a": {"node": "Q"}, "b": {"node": "Q"}}}' | python surface/bridge.py
+echo '{"type": "compile", "term": {"node": "TwistPlus", "a": {"node": "Q"}, "b": {"node": "Q"}}}' | python ocaml/bridge.py
 ```
 
 Output:
@@ -489,7 +489,7 @@ The bridge supports gates (with automatic width inference) and distributivity:
 
 ```bash
 # Bell state: H[0] ; CX[0,1]
-echo '{"type": "compile", "term": {"node": "Seq", "f": {"node": "H", "i": 0}, "g": {"node": "CX", "i": 0, "j": 1}}}' | python surface/bridge.py
+echo '{"type": "compile", "term": {"node": "Seq", "f": {"node": "H", "i": 0}, "g": {"node": "CX", "i": 0, "j": 1}}}' | python ocaml/bridge.py
 ```
 
 Output:
@@ -500,7 +500,7 @@ Output:
 ### 6.4 Checking Involutions
 
 ```bash
-echo '{"type": "check_involution", "term": {"node": "TwistPlus", "a": {"node": "Q"}, "b": {"node": "Q"}}}' | python surface/bridge.py
+echo '{"type": "check_involution", "term": {"node": "TwistPlus", "a": {"node": "Q"}, "b": {"node": "Q"}}}' | python ocaml/bridge.py
 ```
 
 Output:
@@ -650,8 +650,8 @@ Interactive demos are available in the `demos/` directory:
 
 **Run a demo:**
 ```bash
-PYTHONPATH=src python demos/qswitch_demo.py
-PYTHONPATH=src python demos/zn_controlled_phase_demo.py
+PYTHONPATH=python/src python demos/qswitch_demo.py
+PYTHONPATH=python/src python demos/zn_controlled_phase_demo.py
 ```
 
 **View HTML animation:**
@@ -663,7 +663,7 @@ open demos/qswitch_demo.html       # macOS
 
 ### 7.5 Algorithmic Examples
 
-See `surface/demos/algorithmic_snippets.ml` for:
+See `ocaml/demos/algorithmic_snippets.ml` for:
 - Deutsch-Jozsa algorithm
 - Hidden Subgroup Problem (standard and phase-kickback)
 - Simon's algorithm
@@ -764,17 +764,17 @@ pip install -e .
 pip install pytest
 
 # Run tests
-PYTHONPATH=src pytest -v
+PYTHONPATH=python/src pytest -v
 ```
 
 ### 10.2 Running Tests
 
 ```bash
 # All tests
-PYTHONPATH=src pytest
+PYTHONPATH=python/src pytest
 
 # Specific test file
-PYTHONPATH=src pytest tests/test_integration_phases0_3.py
+PYTHONPATH=python/src pytest tests/test_integration_phases0_3.py
 
 # Surface language tests
 cd surface && dune test
@@ -790,7 +790,7 @@ quant_proto_phase01/
 │   ├── core/           # Permutation algebra
 │   ├── backends/       # Circuit backends
 │   └── typing_/        # Type checking
-├── surface/
+├── ocaml/
 │   ├── lib/            # OCaml surface language
 │   ├── test/           # Surface tests
 │   └── examples/       # Example programs

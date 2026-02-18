@@ -8,7 +8,7 @@ OCaml Linear DSL -> Bridge -> Python compile() -> pytket Circuit
 
 ## Running the Demos
 
-From the `surface/` directory:
+From the `ocaml/` directory:
 
 ```bash
 # Build all demos

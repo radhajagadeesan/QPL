@@ -55,9 +55,9 @@
 
 ## Development Workflow
 
-- Always run `PYTHONPATH=src pytest` after code changes
-- Run Python demos with `PYTHONPATH=src python demos/python/<demo>.py`
-- Run OCaml E2E demos with `cd surface && dune exec demos/<demo>.exe`
+- Always run `PYTHONPATH=python/src pytest python/tests` after code changes
+- Run Python demos with `PYTHONPATH=python/src python python/demos/<demo>.py`
+- Run OCaml E2E demos with `cd ocaml && dune exec demos/<demo>.exe`
 
 ## Documentation (IMPORTANT)
 
@@ -68,8 +68,8 @@ Documentation files to maintain:
 - `docs/COMPILER_API_GUIDE.md` - Compiler and compilation API
 - `docs/API_REFERENCE.md` - API reference
 - `docs/LIMITATIONS.md` - Known limitations and unsupported cases
-- `demos/python/README.md` - Python demo documentation
-- `surface/demos/README.md` - OCaml E2E demo documentation
+- `python/demos/README.md` - Python demo documentation
+- `ocaml/demos/README.md` - OCaml E2E demo documentation
 
 Update docs when:
 - Adding new language features (types, terms, combinators)
@@ -79,32 +79,35 @@ Update docs when:
 
 ## Project Structure
 
-- `src/` - Python core (types, terms, compilation)
-- `surface/` - OCaml surface language
-  - `surface/demos/` - OCaml E2E demos (full pipeline to circuits)
-- `demos/python/` - Python executable demonstrations
-- `tests/` - pytest test suite
+- `python/` - Python surface
+  - `python/src/` - Python core (types, terms, compilation)
+  - `python/tests/` - pytest test suite
+  - `python/demos/` - Python executable demonstrations
+- `ocaml/` - OCaml surface
+  - `ocaml/lib/` - OCaml library (Linear GADT, elaborator, bridge)
+  - `ocaml/test/` - OCaml tests (dune test)
+  - `ocaml/demos/` - OCaml E2E demos (full pipeline to circuits)
 - `docs/` - User-facing documentation
 
 ## Key Commands
 
 ```bash
-# Run all tests
-PYTHONPATH=src pytest
+# Run all Python tests
+PYTHONPATH=python/src pytest python/tests
 
 # Run a Python demo
-PYTHONPATH=src python demos/python/qswitch_demo.py
+PYTHONPATH=python/src python python/demos/qswitch_demo.py
 
 # Build OCaml surface language
-cd surface && dune build
+cd ocaml && dune build
 
 # Run OCaml tests
-cd surface && dune test
+cd ocaml && dune test
 
 # Run OCaml E2E demo (full pipeline to circuits)
-cd surface && dune exec demos/algorithms_e2e.exe
-cd surface && dune exec demos/abstract_qswitch_e2e.exe
-cd surface && dune exec demos/short_circuit_e2e.exe
+cd ocaml && dune exec demos/algorithms_e2e.exe
+cd ocaml && dune exec demos/abstract_qswitch_e2e.exe
+cd ocaml && dune exec demos/short_circuit_e2e.exe
 ```
 
 ## Conventions
@@ -133,12 +136,12 @@ cd surface && dune exec demos/short_circuit_e2e.exe
 
 ## Linearity Checking (Platform Differences)
 
-**OCaml Surface Language** (`surface/lib/elaborate.ml`):
+**OCaml Surface Language** (`ocaml/lib/elaborate.ml`):
 - Full linearity checking at elaboration time
 - `NonLinearUse` error: variable used more than once
 - `UnusedVariable` error: bound variable not used
 - Context splitting enforced for tensor and higher-order constructs
-- Conformance tests: `surface/test/test_src_conformance.ml`
+- Conformance tests: `ocaml/test/test_src_conformance.ml`
 
 **OCaml Linear GADT Module** (`Qpl_surface.Linear`):
 - Linearity enforced at **OCaml compile time** via GADTs
@@ -146,7 +149,7 @@ cd surface && dune exec demos/short_circuit_e2e.exe
 - Context tracked in type `('g, 'a) prog`
 - Conformance tests rewritten using Linear module
 
-**Python Core API** (`src/`):
+**Python Core API** (`python/src/`):
 - **Type checking:** ✅ domain/codomain matching, wire bounds, structural signatures
 - **Linearity checking:** ❌ NO — terms trusted to be well-formed
 - Ill-formed terms compile without error but produce **incorrect circuits**
@@ -167,7 +170,7 @@ See `RadhaMSG/SRC_TESTS.md` for conformance test suite with platform notes.
 ```
 OCaml Surface Language          Python Core Compiler
 ─────────────────────           ────────────────────
-surface/lib/elaborate.ml   →    src/compile/to_pytket.py
+ocaml/lib/elaborate.ml     →    python/src/compile/to_pytket.py
                            │
   1. β-reduce first-order  │    Direct recursive descent:
      App(Lam(x,A,e), v)   │    - Accumulate WirePerm (no SWAPs)

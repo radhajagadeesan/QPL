@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 # Add src to path
-src_path = Path(__file__).parent.parent / "src"
+src_path = Path(__file__).parent.parent / "python" / "src"
 sys.path.insert(0, str(src_path))
 
 from lang.types import Q, Ten, Plus, Unit, Ty, width

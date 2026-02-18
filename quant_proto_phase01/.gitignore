@@ -13,10 +13,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-# Python lib (but not OCaml surface/lib)
+# Python lib (but not OCaml ocaml/lib)
 /lib/
 lib64/
-!surface/lib/
+!ocaml/lib/
 parts/
 sdist/
 var/

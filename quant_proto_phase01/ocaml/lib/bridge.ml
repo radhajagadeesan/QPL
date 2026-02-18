@@ -20,7 +20,7 @@ type involution_result =
   | InvolutionOk of bool * wire_perm  (* is_invol, perm *)
   | InvolutionError of string
 
-(** Path to bridge.py (relative to surface/) *)
+(** Path to bridge.py (relative to ocaml/) *)
 let bridge_path = "bridge.py"
 
 (** Path to Python interpreter *)
@@ -32,10 +32,10 @@ let project_root = ref ""
 (** Set the project root path *)
 let set_project_root path = project_root := path
 
-(** Auto-detect project root by searching upward for surface/bridge.py *)
+(** Auto-detect project root by searching upward for ocaml/bridge.py *)
 let find_project_root () =
   let rec search dir =
-    let candidate = Filename.concat (Filename.concat dir "surface") "bridge.py" in
+    let candidate = Filename.concat (Filename.concat dir "ocaml") "bridge.py" in
     if Sys.file_exists candidate then dir
     else
       let parent = Filename.dirname dir in
@@ -287,7 +287,7 @@ let parse_perm json =
 (** Call the Python bridge with a JSON request *)
 let call_bridge request_json =
   let root = get_project_root () in
-  let bridge_script = Filename.concat root "surface/bridge.py" in
+  let bridge_script = Filename.concat root "ocaml/bridge.py" in
   let venv_python = Filename.concat root "../venv/bin/python" in
   let python =
     if Sys.file_exists venv_python then venv_python

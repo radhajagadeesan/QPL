@@ -17,10 +17,10 @@ They are designed to be:
 
 ## Run
 ```bash
-PYTHONPATH=src pytest -q
+PYTHONPATH=python/src pytest -q
 ```
 
 Optionally override seed:
 ```bash
-QPL_SEED=999 PYTHONPATH=src pytest -q
+QPL_SEED=999 PYTHONPATH=python/src pytest -q
 ```

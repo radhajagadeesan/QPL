@@ -9,7 +9,7 @@ This document describes the two-stage compilation pipeline from source language 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        OCaml Surface Language                          │
-│                        surface/lib/*.ml                                │
+│                        ocaml/lib/*.ml                                │
 │                                                                        │
 │  Source:  λx. let (c ⊗ t) = x in case c of L => S;H | R => H;S        │
 └────────────────────────────────────────────────────────────────────────┘
@@ -51,7 +51,7 @@ This document describes the two-stage compilation pipeline from source language 
 
 ## Stage 1: OCaml Elaboration
 
-**Location:** `surface/`
+**Location:** `ocaml/`
 
 The OCaml frontend handles parsing, type-checking, and normalization. It produces a first-order Core IR with all high-level constructs eliminated.
 
@@ -101,14 +101,14 @@ cd surface && dune exec demos/qswitch_demo.exe
 cd surface && dune exec demos/abstract_qswitch_e2e.exe
 
 # Python reads JSON and compiles
-PYTHONPATH=src python -c "from bridge import load_term; ..."
+PYTHONPATH=python/src python -c "from bridge import load_term; ..."
 ```
 
 ---
 
 ## Stage 2: Python Compilation
 
-**Location:** `src/`
+**Location:** `python/src/`
 
 The Python compiler performs direct recursive-descent over the Core IR, producing a pytket circuit.
 
@@ -116,8 +116,8 @@ The Python compiler performs direct recursive-descent over the Core IR, producin
 
 ```bash
 cd quant_proto_phase01
-PYTHONPATH=src python demos/python/qswitch_demo.py
-PYTHONPATH=src pytest  # Run tests
+PYTHONPATH=python/src python python/demos/qswitch_demo.py
+PYTHONPATH=python/src pytest  # Run tests
 ```
 
 ### Compilation Process
@@ -158,7 +158,7 @@ Sum types use log-sized tag register + shared payload.
 
 ```
 quant_proto_phase01/
-├── surface/                 # OCaml surface language
+├── ocaml/                 # OCaml surface language
 │   ├── lib/
 │   │   ├── ast.ml          # Surface AST
 │   │   ├── elaborate.ml    # Elaboration to Core IR
@@ -180,7 +180,7 @@ quant_proto_phase01/
 │   └── bridge.py           # JSON → Python AST
 │
 ├── tests/                   # pytest test suite
-├── demos/python/            # Python demos with outputs
+├── python/demos/            # Python demos with outputs
 └── docs/                    # Documentation
 ```
 
@@ -210,7 +210,7 @@ print(result.circuit.get_commands())
 Write surface language in OCaml, elaborate, bridge to Python:
 
 ```ocaml
-(* surface/demos/my_demo.ml *)
+(* ocaml/demos/my_demo.ml *)
 let my_term = ...
 let core_ir = elaborate my_term
 let json = Core.to_json core_ir
@@ -230,9 +230,9 @@ result = compile(term)
 ```bash
 # Python demos
 cd quant_proto_phase01
-PYTHONPATH=src python demos/python/qswitch_demo.py
-PYTHONPATH=src python demos/python/exp_twist_demo.py
-PYTHONPATH=src python demos/python/pauli_conjugation_demo.py
+PYTHONPATH=python/src python python/demos/qswitch_demo.py
+PYTHONPATH=python/src python python/demos/exp_twist_demo.py
+PYTHONPATH=python/src python python/demos/pauli_conjugation_demo.py
 
 # OCaml demos (AST → Core IR)
 cd surface
@@ -252,8 +252,8 @@ dune exec demos/zn_controlled_phase_e2e.exe
 |------|---------|
 | Build OCaml | `cd surface && dune build` |
 | Run OCaml tests | `cd surface && dune test` |
-| Run Python tests | `cd quant_proto_phase01 && PYTHONPATH=src pytest` |
-| Run Python demo | `PYTHONPATH=src python demos/python/<demo>.py` |
+| Run Python tests | `cd quant_proto_phase01 && PYTHONPATH=python/src pytest` |
+| Run Python demo | `PYTHONPATH=python/src python python/demos/<demo>.py` |
 | Run OCaml demo | `cd surface && dune exec demos/<demo>.exe` |
 | Type-check OCaml | `cd surface && dune build @check` |
 

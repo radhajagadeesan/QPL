@@ -16,7 +16,7 @@ Complete reference for types, terms, and compilation functions.
 
 ---
 
-## Types (`src/lang/types.py`)
+## Types (`python/src/lang/types.py`)
 
 | Type | Description | Width |
 |------|-------------|-------|
@@ -79,7 +79,7 @@ payload_width(ty: Ty) -> int   # Shared payload width (= width for non-Plus)
 
 ---
 
-## Terms (`src/lang/terms.py`)
+## Terms (`python/src/lang/terms.py`)
 
 ### Identity and Composition
 
@@ -402,7 +402,7 @@ lp = LetPair("x", "y", Q(), Q(), pair_term, body)
 
 ---
 
-## Compilation (`src/compile/to_pytket.py`)
+## Compilation (`python/src/compile/to_pytket.py`)
 
 ### compile()
 
@@ -421,7 +421,7 @@ result.log       # List[str] if explain=True
 
 ---
 
-## Permutations (`src/core/perm.py`)
+## Permutations (`python/src/core/perm.py`)
 
 ```python
 from core.perm import WirePerm, identity, compose, inverse, is_involution, decompose_involution
@@ -456,7 +456,7 @@ swaps = decompose_involution(p)  # [(0, 1), (2, 3)]
 
 ---
 
-## Type Checking (`src/typing_/check.py`)
+## Type Checking (`python/src/typing_/check.py`)
 
 ```python
 from typing_.check import type_of, assert_well_typed

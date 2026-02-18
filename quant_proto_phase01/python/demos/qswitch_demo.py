@@ -8,7 +8,7 @@ Usage:
 
 This demo shows the quantum switch circuit structure.
 For the full elaboration pipeline (source AST → Core IR → circuit),
-see the OCaml demo: surface/demos/qswitch_demo.ml
+see the OCaml demo: ocaml/demos/qswitch_demo.ml
 """
 
 import sys
@@ -81,7 +81,7 @@ Anti-control pattern: X[tag] ; Controlled ; X[tag]
   - Controlled gates fire on |1⟩
   - Flips tag back
 
-Run `dune exec demos/qswitch_demo.exe` in surface/ for full elaboration trace.
+Run `dune exec demos/qswitch_demo.exe` in ocaml/ for full elaboration trace.
 """)
 
     # =========================================================================

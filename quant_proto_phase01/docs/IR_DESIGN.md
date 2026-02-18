@@ -37,7 +37,7 @@ pytket Circuit + WirePerm
 
 ## Wire Layout Model
 
-**Location:** `src/lang/types.py`
+**Location:** `python/src/lang/types.py`
 
 Types determine **wire layouts**.
 
@@ -109,7 +109,7 @@ A function `Q → Q` is physically 2 wires. Functions are circuit fragments with
 
 ## Structural Layer — Pure Permutations
 
-**Location:** `src/core/perm.py`
+**Location:** `python/src/core/perm.py`
 
 Structural operations compile to **wire permutations** (tracked symbolically, not emitted as SWAPs).
 
@@ -138,7 +138,7 @@ class WirePerm:
 
 ## Higher-Order Compilation — Cup/Cap
 
-**Location:** `src/lang/terms.py`, `src/compile/to_pytket.py`
+**Location:** `python/src/lang/terms.py`, `python/src/compile/to_pytket.py`
 
 Higher-order programs compile via **compact-closed structure**:
 
@@ -158,7 +158,7 @@ Higher-order is just wire bookkeeping — no feedback, no loops.
 
 ## Quantum Branching — Controlled Gates
 
-**Location:** `src/compile/to_pytket.py` (Case handling), `surface/lib/elaborate.ml`
+**Location:** `python/src/compile/to_pytket.py` (Case handling), `ocaml/lib/elaborate.ml`
 
 Case expressions on sum types compile to **controlled/anti-controlled gate sequences**:
 
@@ -180,7 +180,7 @@ The tag qubit passes through unchanged. Both branches execute coherently on supe
 
 ## Gate Atoms
 
-**Location:** `src/lang/terms.py`
+**Location:** `python/src/lang/terms.py`
 
 Gates are opaque unitary primitives:
 - Single-qubit: `H`, `S`, `Sdg`, `T`, `Tdg`, `X`, `Y`, `Z`, `Rx`, `Ry`, `Rz`, `Phase`
@@ -197,7 +197,7 @@ Gates:
 
 ## Compilation Output
 
-**Location:** `src/compile/to_pytket.py` → `Compiled` dataclass
+**Location:** `python/src/compile/to_pytket.py` → `Compiled` dataclass
 
 ```python
 @dataclass

@@ -28,5 +28,5 @@ def pytest_collection_modifyitems(config, items):
 
     for item in items:
         # Skip tests in surface/tests that likely need dune
-        if 'surface/tests' in str(item.fspath):
+        if 'ocaml/tests' in str(item.fspath):
             item.add_marker(skip_dune)

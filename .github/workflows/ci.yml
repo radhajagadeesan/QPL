@@ -23,7 +23,7 @@ jobs:
         run: pip install numpy pytket pytket-pyzx pytest
 
       - name: Run Python tests
-        run: PYTHONPATH=src pytest --tb=short -q
+        run: PYTHONPATH=python/src pytest python/tests --tb=short -q
 
   ocaml-tests:
     runs-on: ubuntu-latest
@@ -44,11 +44,11 @@ jobs:
       - name: Install OCaml dependencies
         run: opam install dune yojson --yes
 
-      - name: Build surface language
-        run: cd quant_proto_phase01/surface && opam exec -- dune build
+      - name: Build OCaml surface language
+        run: cd quant_proto_phase01/ocaml && opam exec -- dune build
 
       - name: Run OCaml unit tests
-        run: cd quant_proto_phase01/surface && opam exec -- dune test
+        run: cd quant_proto_phase01/ocaml && opam exec -- dune test
 
       - name: Run newtests suite
-        run: cd quant_proto_phase01/surface && opam exec -- dune exec test/test_newtests.exe
+        run: cd quant_proto_phase01/ocaml && opam exec -- dune exec test/test_newtests.exe

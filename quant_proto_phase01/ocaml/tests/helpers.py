@@ -18,7 +18,7 @@ from typing import Optional, Tuple, Any, Dict
 # Add parent paths for imports
 SURFACE_DIR = Path(__file__).parent.parent
 PROJECT_DIR = SURFACE_DIR.parent
-SRC_DIR = PROJECT_DIR / 'src'
+SRC_DIR = PROJECT_DIR / 'python' / 'src'
 sys.path.insert(0, str(SRC_DIR))
 sys.path.insert(0, str(PROJECT_DIR))
 

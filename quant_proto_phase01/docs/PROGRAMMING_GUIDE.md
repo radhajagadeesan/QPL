@@ -450,10 +450,10 @@ If P is not involutive, compilation fails with an error.
 ## Demos and Examples
 
 Granthi includes worked demonstrations in two directories:
-- `demos/python/` — Python API demonstrations
-- `surface/demos/` — OCaml E2E demos (full pipeline to circuits)
+- `python/demos/` — Python API demonstrations
+- `ocaml/demos/` — OCaml E2E demos (full pipeline to circuits)
 
-See `demos/python/README.md` and `surface/demos/README.md` for full details.
+See `python/demos/README.md` and `ocaml/demos/README.md` for full details.
 
 ### Python Demos
 
@@ -486,8 +486,8 @@ See `demos/python/README.md` and `surface/demos/README.md` for full details.
 
 ```bash
 # Python demos
-PYTHONPATH=src python demos/python/<demo>.py            # Run demo
-PYTHONPATH=src python demos/python/<demo>.py --circuits # Show ASCII circuit diagrams
+PYTHONPATH=python/src python python/demos/<demo>.py            # Run demo
+PYTHONPATH=python/src python python/demos/<demo>.py --circuits # Show ASCII circuit diagrams
 
 # OCaml E2E demos
 cd surface && dune exec demos/<demo>.exe
@@ -578,7 +578,7 @@ dune build demos/linear_demo.exe
 dune exec demos/linear_demo.exe
 ```
 
-See `surface/demos/linear_demo.ml` for complete examples.
+See `ocaml/demos/linear_demo.ml` for complete examples.
 
 ---
 
@@ -675,7 +675,7 @@ let z4_controlled = control z4 q z4_phases
 3. **Coherent control**: The `control` combinator applies operations indexed by datatype value, coherently
 4. **Elaborates to I^{⊕k}**: The type `Bool` becomes `I ⊕ I`, `Z_4` becomes `I ⊕ I ⊕ I ⊕ I`
 
-See `surface/demos/datatype_demo.ml` for complete examples.
+See `ocaml/demos/datatype_demo.ml` for complete examples.
 
 ---
 
@@ -793,7 +793,7 @@ let () =
     Printf.printf "Error: %s\n" err
 ```
 
-See `surface/demos/algorithms_e2e.ml` for complete working examples.
+See `ocaml/demos/algorithms_e2e.ml` for complete working examples.
 
 ---
 
@@ -804,5 +804,5 @@ See `surface/demos/algorithms_e2e.ml` for complete working examples.
 - `COMPILER_API_GUIDE.md` — Python API for compiler embedding
 - `STAGING_SOUNDNESS.md` — Formal soundness arguments for OCaml staging
 - `IR_DESIGN.md` — Wire layouts and IR architecture
-- `demos/python/README.md` — Python demo instructions
-- `surface/demos/README.md` — OCaml E2E demo instructions
+- `python/demos/README.md` — Python demo instructions
+- `ocaml/demos/README.md` — OCaml E2E demo instructions

@@ -300,7 +300,7 @@ dune test
 ## File Structure
 
 ```
-surface/
+ocaml/
 ├── lib/
 │   ├── ast.ml          # Surface language AST
 │   ├── elaborate.ml    # Elaboration to Core IR

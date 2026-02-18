@@ -1,6 +1,6 @@
 # OCaml Staging: Representation and Soundness
 
-This document describes the OCaml representation used in `surface/lib/staging.ml` for verifying soundness of the staging approach.
+This document describes the OCaml representation used in `ocaml/lib/staging.ml` for verifying soundness of the staging approach.
 
 ---
 
