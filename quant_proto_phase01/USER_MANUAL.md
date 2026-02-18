@@ -98,7 +98,7 @@ opam init
 opam install dune
 
 # Build surface language
-cd surface
+cd ocaml
 dune build
 dune test
 ```
@@ -777,29 +777,26 @@ PYTHONPATH=python/src pytest
 PYTHONPATH=python/src pytest tests/test_integration_phases0_3.py
 
 # Surface language tests
-cd surface && dune test
+cd ocaml && dune test
 ```
 
 ### 10.3 Project Structure
 
 ```
 quant_proto_phase01/
-├── src/
-│   ├── lang/           # Types and terms
-│   ├── compile/        # Compilation to pytket circuits
-│   ├── core/           # Permutation algebra
-│   ├── backends/       # Circuit backends
-│   └── typing_/        # Type checking
+├── python/
+│   ├── src/            # Python core compiler
+│   │   ├── lang/       # Types and terms
+│   │   ├── compile/    # Compilation to pytket circuits
+│   │   ├── core/       # Permutation algebra
+│   │   ├── backends/   # Circuit backends
+│   │   └── typing_/    # Type checking
+│   ├── tests/          # Python tests
+│   └── demos/          # Python demos
 ├── ocaml/
 │   ├── lib/            # OCaml surface language
-│   ├── test/           # Surface tests
-│   └── examples/       # Example programs
-├── demos/              # Interactive demos
-│   ├── qswitch_demo.py           # Quantum switch demo
-│   ├── zn_controlled_phase_demo.py  # Zn controlled phase (Z2, Z4, Z5)
-│   ├── qswitch_demo.html         # HTML animation
-│   └── README.md                 # Demo instructions
-├── tests/              # Python tests
+│   ├── test/           # OCaml tests
+│   └── demos/          # OCaml E2E demos
 └── docs/               # Documentation
 ```
 

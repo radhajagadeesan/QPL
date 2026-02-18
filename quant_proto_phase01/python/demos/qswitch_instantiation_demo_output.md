@@ -1,6 +1,6 @@
 # QSwitch Instantiation Demo Output
 
-Run with: `PYTHONPATH=src python demos/qswitch_instantiation_demo.py --circuits`
+Run with: `PYTHONPATH=python/src python python/demos/qswitch_instantiation_demo.py --circuits`
 
 This demo shows **compositional construction** of QSwitch: the circuit structure
 comes from the abstract QSwitch combinator, with concrete gates H and S plugged in.

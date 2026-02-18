@@ -279,7 +279,7 @@ On superposition inputs, both branches execute coherently (quantum control).
 ## Building and Running
 
 ```bash
-cd surface
+cd ocaml
 eval $(opam env)
 
 # Build

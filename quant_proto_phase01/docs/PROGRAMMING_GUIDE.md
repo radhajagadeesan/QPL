@@ -399,9 +399,9 @@ When the control is in superposition, this creates a coherent mixture of both or
 ### OCaml Programs
 
 ```bash
-cd surface
+cd ocaml
 dune build
-dune exec ./examples/my_program.exe
+dune exec demos/my_program.exe
 ```
 
 ### Compiling to Circuits
@@ -490,7 +490,7 @@ PYTHONPATH=python/src python python/demos/<demo>.py            # Run demo
 PYTHONPATH=python/src python python/demos/<demo>.py --circuits # Show ASCII circuit diagrams
 
 # OCaml E2E demos
-cd surface && dune exec demos/<demo>.exe
+cd ocaml && dune exec demos/<demo>.exe
 ```
 
 Most demos support the `--circuits` flag to display circuit diagrams. Demos marked "THEORY" explain types and wire layouts without compiling circuits.
@@ -572,7 +572,7 @@ let h8 = pow2 3 q gate_h
 ### Building and Running
 
 ```bash
-cd surface
+cd ocaml
 eval $(opam env)
 dune build demos/linear_demo.exe
 dune exec demos/linear_demo.exe

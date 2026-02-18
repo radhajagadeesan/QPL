@@ -1,6 +1,6 @@
 # QSwitch Term Demo Output
 
-Run with: `PYTHONPATH=src python demos/qswitch_term_demo.py`
+Run with: `PYTHONPATH=python/src python python/demos/qswitch_term_demo.py`
 
 ---
 

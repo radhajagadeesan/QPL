@@ -9,7 +9,7 @@ Derives QSwitch with the lambda structure:
 This is a theory-only demo explaining type derivation. No circuits are compiled.
 For demos with actual compilation, see: qswitch_instantiation_demo.py
 
-Run with: PYTHONPATH=src python demos/qswitch_curried_theory_demo.py
+Run with: PYTHONPATH=python/src python python/demos/qswitch_curried_theory_demo.py
 """
 
 import sys

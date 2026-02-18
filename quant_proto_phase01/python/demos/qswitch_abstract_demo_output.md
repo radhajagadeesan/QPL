@@ -1,6 +1,6 @@
 # Abstract QSwitch Demo (Python)
 
-Run with: `PYTHONPATH=src python demos/qswitch_abstract_demo.py`
+Run with: `PYTHONPATH=python/src python python/demos/qswitch_abstract_demo.py`
 
 ---
 

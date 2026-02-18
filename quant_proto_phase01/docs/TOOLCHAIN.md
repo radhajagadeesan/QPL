@@ -58,7 +58,7 @@ The OCaml frontend handles parsing, type-checking, and normalization. It produce
 ### Build
 
 ```bash
-cd surface
+cd ocaml
 dune build
 ```
 
@@ -95,10 +95,10 @@ OCaml serializes the Core IR to JSON. Python's `bridge.py` deserializes it to `l
 
 ```bash
 # Run OCaml demo that outputs JSON
-cd surface && dune exec demos/qswitch_demo.exe
+cd ocaml && dune exec demos/qswitch_demo.exe
 
 # Run OCaml E2E demo (full pipeline to circuits)
-cd surface && dune exec demos/abstract_qswitch_e2e.exe
+cd ocaml && dune exec demos/abstract_qswitch_e2e.exe
 
 # Python reads JSON and compiles
 PYTHONPATH=python/src python -c "from bridge import load_term; ..."
@@ -235,11 +235,11 @@ PYTHONPATH=python/src python python/demos/exp_twist_demo.py
 PYTHONPATH=python/src python python/demos/pauli_conjugation_demo.py
 
 # OCaml demos (AST → Core IR)
-cd surface
+cd ocaml
 dune exec demos/qswitch_demo.exe
 
 # OCaml E2E demos (full pipeline to circuits)
-cd surface
+cd ocaml
 dune exec demos/abstract_qswitch_e2e.exe
 dune exec demos/zn_controlled_phase_e2e.exe
 ```
@@ -250,12 +250,12 @@ dune exec demos/zn_controlled_phase_e2e.exe
 
 | Task | Command |
 |------|---------|
-| Build OCaml | `cd surface && dune build` |
-| Run OCaml tests | `cd surface && dune test` |
+| Build OCaml | `cd ocaml && dune build` |
+| Run OCaml tests | `cd ocaml && dune test` |
 | Run Python tests | `cd quant_proto_phase01 && PYTHONPATH=python/src pytest` |
 | Run Python demo | `PYTHONPATH=python/src python python/demos/<demo>.py` |
-| Run OCaml demo | `cd surface && dune exec demos/<demo>.exe` |
-| Type-check OCaml | `cd surface && dune build @check` |
+| Run OCaml demo | `cd ocaml && dune exec demos/<demo>.exe` |
+| Type-check OCaml | `cd ocaml && dune build @check` |
 
 ---
 

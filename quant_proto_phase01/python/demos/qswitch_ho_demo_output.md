@@ -1,6 +1,6 @@
 # QSwitch Higher-Order Demo (OCaml)
 
-Run with: `cd surface && dune exec demos/qswitch_ho_demo.exe`
+Run with: `cd ocaml && dune exec demos/qswitch_ho_demo.exe`
 
 ---
 

@@ -98,7 +98,7 @@ OCaml surface language demo showing higher-order QSwitch:
 
 **Run:**
 ```bash
-cd surface && dune exec demos/qswitch_ho_demo.exe
+cd ocaml && dune exec demos/qswitch_ho_demo.exe
 ```
 
 **What it shows:**
