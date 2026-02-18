@@ -52,3 +52,12 @@ jobs:
 
       - name: Run newtests suite
         run: cd quant_proto_phase01/ocaml && opam exec -- dune exec test/test_newtests.exe
+
+      - name: Run E2E demos (OCaml → Python bridge)
+        run: |
+          cd quant_proto_phase01/ocaml
+          opam exec -- dune exec demos/algorithms_e2e.exe
+          opam exec -- dune exec demos/abstract_qswitch_e2e.exe
+          opam exec -- dune exec demos/qswitch_instantiated_e2e.exe
+          opam exec -- dune exec demos/short_circuit_e2e.exe
+          opam exec -- dune exec demos/zn_controlled_phase_e2e.exe
