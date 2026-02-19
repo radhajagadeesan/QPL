@@ -388,3 +388,86 @@ class TestPlusMapNestedFlat:
         U_rhs = compile(rhs, materialize=True).circuit.get_unitary()
 
         assert np.allclose(U_lhs, U_rhs, atol=1e-10)
+
+
+class TestPlusMapFunctoriality:
+    """Test the bifunctor composition law:
+
+        PlusMap(f1,g1) ; PlusMap(f2,g2) = PlusMap(f1;f2, g1;g2)
+
+    This is not enforced by code — it's a consequence of the anti-control
+    pattern preserving the tag qubit. These tests verify the property holds
+    at different nesting depths and Strategy A/B boundaries.
+    """
+
+    def test_functoriality_k1(self):
+        """Composition law for binary PlusMap (k=1)."""
+        import numpy as np
+        q = Q()
+        f1, f2 = H(0, q), S(0, q)
+        g1, g2 = S(0, q), X(0, q)
+
+        lhs = Seq(PlusMap(q, q, f1, g1), PlusMap(q, q, f2, g2))
+        rhs = PlusMap(q, q, Seq(f1, f2), Seq(g1, g2))
+
+        U_lhs = compile(lhs, materialize=True).circuit.get_unitary()
+        U_rhs = compile(rhs, materialize=True).circuit.get_unitary()
+        assert np.allclose(U_lhs, U_rhs, atol=1e-10)
+
+    def test_functoriality_k2_identity_P(self):
+        """Composition law for k=2 Strategy A with identity P (n_left=2, n_right=1).
+
+        P is identity so no tag perm boxes — tests basic Strategy A composition.
+        """
+        import numpy as np
+        q = Q()
+        qq = Plus(q, q)
+
+        # Outer PlusMap on (Q+Q)+Q: n_left=2, n_right=1, P=identity
+        f1 = PlusMap(q, q, H(0, q), S(0, q))
+        f2 = PlusMap(q, q, S(0, q), X(0, q))
+        g1, g2 = X(0, q), H(0, q)
+
+        lhs = Seq(PlusMap(qq, q, f1, g1), PlusMap(qq, q, f2, g2))
+        rhs = PlusMap(qq, q, Seq(f1, f2), Seq(g1, g2))
+
+        U_lhs = compile(lhs, materialize=True).circuit.get_unitary()
+        U_rhs = compile(rhs, materialize=True).circuit.get_unitary()
+
+        # n=3, k=2: compare on valid subspace (tag < 3)
+        valid = []
+        for tag in range(3):
+            for p in range(2):
+                valid.append(tag * 2 + p)
+        ix = np.ix_(valid, valid)
+        assert np.allclose(U_lhs[ix], U_rhs[ix], atol=1e-10)
+
+    def test_functoriality_k2_nonidentity_P(self):
+        """Composition law for k=2 Strategy A with non-identity P (n_left=1, n_right=2).
+
+        P is non-identity so tag perm Unitary2qBox is emitted.
+        Verifies that P⁻¹;P cancellation preserves functoriality across
+        the DecomposeBoxes boundary.
+        """
+        import numpy as np
+        q = Q()
+        qq = Plus(q, q)
+
+        # Outer PlusMap on Q+(Q+Q): n_left=1, n_right=2, P=(0,2,3,1)
+        f1, f2 = H(0, q), S(0, q)
+        g1 = PlusMap(q, q, S(0, q), X(0, q))
+        g2 = PlusMap(q, q, X(0, q), H(0, q))
+
+        lhs = Seq(PlusMap(q, qq, f1, g1), PlusMap(q, qq, f2, g2))
+        rhs = PlusMap(q, qq, Seq(f1, f2), Seq(g1, g2))
+
+        U_lhs = compile(lhs, materialize=True).circuit.get_unitary()
+        U_rhs = compile(rhs, materialize=True).circuit.get_unitary()
+
+        # n=3, k=2: compare on valid subspace (tag < 3)
+        valid = []
+        for tag in range(3):
+            for p in range(2):
+                valid.append(tag * 2 + p)
+        ix = np.ix_(valid, valid)
+        assert np.allclose(U_lhs[ix], U_rhs[ix], atol=1e-10)
