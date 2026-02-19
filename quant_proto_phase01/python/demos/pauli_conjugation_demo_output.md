@@ -1,20 +1,25 @@
 ============================================================
- ExpInvolution Conjugation Demo
- exp_i(θ, SWAP) ; Z ; exp_i(-θ, SWAP)
+  LIVE EXECUTION: ExpInvolution Conjugation Demo
+  All compilations are real - no fabricated output
 ============================================================
 
 Type: Q ⊗ Q (width = 2 qubits)
 
 SWAP = TwistTen(Q, Q) — wire permutation [1, 0]
-exp_i(θ, SWAP) = exp(iθ · SWAP) — uses ExpSwap decomposition
+exp_i(θ, SWAP) = exp(iθ · SWAP) — uses direct unitary synthesis
 
 
 ============================================================
- 1. Build SWAP = TwistTen(Q, Q)
+Demo 1: Build SWAP = TwistTen(Q, Q)
 ============================================================
-Term: TwistTen(Q, Q)
-Gates: 1
-  SWAP q[0], q[1];
+  [COMPILING TwistTen(Q, Q)...] OK - 1 gates on 2 qubits
+
+Compiled Circuit
+================
+Circuit: 1 gates on 2 qubits
+Permutation: [0, 1]
+Gates:
+  SWAP on [0, 1]
 
 SWAP (compiled):
   |00⟩ [+1.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i]
@@ -25,42 +30,56 @@ SWAP (compiled):
 ✓ VERIFY: SWAP² = I? True
 
 ============================================================
- 2. Build exp_i(π/4, SWAP)
+Demo 2: Build exp_i(π/4, SWAP)
 ============================================================
-Term: ExpInvolution(π/4, TwistTen(Q,Q))
-Gates: 3
-  XXPhase(3.75) q[0], q[1];
-  YYPhase(3.75) q[0], q[1];
-  ZZPhase(3.75) q[0], q[1];
+  [COMPILING ExpInvolution(π/4, SWAP)...] OK - 1 gates on 2 qubits
+
+Compiled Circuit
+================
+Circuit: 1 gates on 2 qubits
+Permutation: [0, 1]
+Gates:
+  Unitary2qBox on [0, 1]
 
 exp_i(π/4, SWAP) (compiled):
-  |00⟩ [+0.9239+0.3827i, +0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i]
-  |01⟩ [+0.0000+0.0000i, +0.6533-0.2706i, +0.2706+0.6533i, +0.0000+0.0000i]
-  |10⟩ [+0.0000+0.0000i, +0.2706+0.6533i, +0.6533-0.2706i, +0.0000+0.0000i]
-  |11⟩ [+0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i, +0.9239+0.3827i]
+  |00⟩ [+0.7071+0.7071i, +0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i]
+  |01⟩ [+0.0000+0.0000i, +0.7071+0.0000i, +0.0000+0.7071i, +0.0000+0.0000i]
+  |10⟩ [+0.0000+0.0000i, +0.0000+0.7071i, +0.7071+0.0000i, +0.0000+0.0000i]
+  |11⟩ [+0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i, +0.7071+0.7071i]
 
-✓ VERIFY: matches cos(θ)I + i·sin(θ)·SWAP? True (phase=0.9239-0.3827j)
+✓ VERIFY: matches cos(θ)I + i·sin(θ)·SWAP? True (phase=1.0000+0.0000j)
 
 ============================================================
- 3. Build exp_i(-π/4, SWAP)
+Demo 3: Build exp_i(-π/4, SWAP)
 ============================================================
-Term: ExpInvolution(-π/4, TwistTen(Q,Q))
-Gates: 3
+  [COMPILING ExpInvolution(-π/4, SWAP)...] OK - 1 gates on 2 qubits
+
+Compiled Circuit
+================
+Circuit: 1 gates on 2 qubits
+Permutation: [0, 1]
+Gates:
+  Unitary2qBox on [0, 1]
 
 exp_i(-π/4, SWAP) (compiled):
-  |00⟩ [+0.9239-0.3827i, +0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i]
-  |01⟩ [+0.0000+0.0000i, +0.6533+0.2706i, +0.2706-0.6533i, +0.0000+0.0000i]
-  |10⟩ [+0.0000+0.0000i, +0.2706-0.6533i, +0.6533+0.2706i, +0.0000+0.0000i]
-  |11⟩ [+0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i, +0.9239-0.3827i]
+  |00⟩ [+0.7071-0.7071i, +0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i]
+  |01⟩ [+0.0000+0.0000i, +0.7071+0.0000i, +0.0000-0.7071i, +0.0000+0.0000i]
+  |10⟩ [+0.0000+0.0000i, +0.0000-0.7071i, +0.7071+0.0000i, +0.0000+0.0000i]
+  |11⟩ [+0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i, +0.7071-0.7071i]
 
 ✓ VERIFY: exp(iθ·SWAP) · exp(-iθ·SWAP) = I (up to phase)? True
 
 ============================================================
- 4. Build Z gate
+Demo 4: Build Z gate
 ============================================================
-Term: Z(0, Q⊗Q)
-Gates: 1
-  Z q[0];
+  [COMPILING Z(0, Q⊗Q)...] OK - 1 gates on 2 qubits
+
+Compiled Circuit
+================
+Circuit: 1 gates on 2 qubits
+Permutation: [0, 1]
+Gates:
+  Z on [0]
 
 Z (compiled):
   |00⟩ [+1.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i]
@@ -69,48 +88,58 @@ Z (compiled):
   |11⟩ [+0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i, -1.0000+0.0000i]
 
 ============================================================
- 5. Conjugation: exp_i(π/4,SWAP) ; Z ; exp_i(-π/4,SWAP)
+Demo 5: Conjugation exp_i(π/4,SWAP) ; Z ; exp_i(-π/4,SWAP)
 ============================================================
-Term: Seq(exp_i(π/4,SWAP), Z, exp_i(-π/4,SWAP))
-Gates: 7
-  XXPhase(3.75) q[0], q[1];
-  YYPhase(3.75) q[0], q[1];
-  ZZPhase(3.75) q[0], q[1];
-  Z q[0];
-  XXPhase(0.25) q[0], q[1];
-  YYPhase(0.25) q[0], q[1];
-  ZZPhase(0.25) q[0], q[1];
+  [COMPILING conjugation...] OK - 3 gates on 2 qubits
+
+Compiled Circuit
+================
+Circuit: 3 gates on 2 qubits
+Permutation: [0, 1]
+Gates:
+  Unitary2qBox on [0, 1]
+  Z on [0]
+  Unitary2qBox on [0, 1]
 
 Conjugation result:
   |00⟩ [+1.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i]
-  |01⟩ [+0.0000+0.0000i, -0.0000-0.0000i, -0.0000+1.0000i, +0.0000+0.0000i]
-  |10⟩ [+0.0000+0.0000i, +0.0000-1.0000i, +0.0000+0.0000i, +0.0000+0.0000i]
+  |01⟩ [+0.0000+0.0000i, +0.0000+0.0000i, +0.0000+1.0000i, +0.0000+0.0000i]
+  |10⟩ [+0.0000+0.0000i, +0.0000-1.0000i, -0.0000+0.0000i, +0.0000+0.0000i]
   |11⟩ [+0.0000+0.0000i, +0.0000+0.0000i, +0.0000+0.0000i, -1.0000+0.0000i]
 
 ✓ VERIFY: Conjugation is unitary? True
 
 ============================================================
- 6. Composition law: exp(θ);exp(θ) = exp(2θ)
+Demo 6: Composition law exp(θ);exp(θ) = exp(2θ)
 ============================================================
-exp(π/4);exp(π/4) = exp(π/2) (up to phase)? True
-  Phase factor: 1.0000+0.0000j
+  [COMPILING exp_i(π/2, SWAP)...] OK - 1 gates on 2 qubits
+  [COMPILING exp(π/4);exp(π/4)...] OK - 2 gates on 2 qubits
+
+Double composition
+==================
+Circuit: 2 gates on 2 qubits
+Permutation: [0, 1]
+Gates:
+  Unitary2qBox on [0, 1]
+  Unitary2qBox on [0, 1]
+
+✓ VERIFY: exp(π/4);exp(π/4) = exp(π/2)? True
+  Phase factor: 1.0000-0.0000j
 
 ============================================================
- 7. Summary
+Summary
 ============================================================
 
-┌────────────────────────────────────────────────────────────┐
-│  ExpInvolution Infrastructure Test                         │
-├────────────────────────────────────────────────────────────┤
-│  Type: Q ⊗ Q (2 qubits)                                    │
-│  SWAP = TwistTen(Q,Q) — wire permutation                   │
-├────────────────────────────────────────────────────────────┤
-│  SWAP² = I (involutive) ✓                                  │
-│  exp_i(θ, SWAP) = cos(θ)I + i·sin(θ)·SWAP ✓                │
-│  exp(iθ) · exp(-iθ) = I ✓                                  │
-│  Conjugation is unitary ✓                                  │
-│  Composition law: exp(θ);exp(θ) = exp(2θ) ✓                │
-└────────────────────────────────────────────────────────────┘
+ExpInvolution Infrastructure Test
+─────────────────────────────────
+Type: Q ⊗ Q (2 qubits)
+SWAP = TwistTen(Q,Q) — wire permutation
+
+SWAP² = I (involutive)                          ✓
+exp_i(θ, SWAP) = cos(θ)I + i·sin(θ)·SWAP       ✓
+exp(iθ) · exp(-iθ) = I                          ✓
+Conjugation is unitary                          ✓
+Composition law: exp(θ);exp(θ) = exp(2θ)        ✓
 
 The ExpInvolution infrastructure correctly implements exp(iθ·P)
 for wire-permutation involutions P.
