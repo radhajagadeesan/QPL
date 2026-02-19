@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from pytket.circuit import Circuit
+from pytket.circuit import Circuit, OpType
 
 from lang.terms import (
     Term, Id, Seq, TenTerm,
@@ -344,6 +344,36 @@ def _decompose_and_get_cmds(circuit):
     return list(circuit.get_commands())
 
 
+# Module-level map from gate types to their controlled versions
+_CTRL_GATE_MAP = {
+    OpType.H: OpType.CH,
+    OpType.S: OpType.CS,
+    OpType.Sdg: OpType.CSdg,
+    OpType.X: OpType.CX,
+    OpType.Y: OpType.CY,
+    OpType.Z: OpType.CZ,
+    OpType.Rz: OpType.CRz,
+    OpType.Rx: OpType.CRx,
+    OpType.Ry: OpType.CRy,
+    OpType.CX: OpType.CCX,
+}
+
+
+def _sub_wire_to_full(sub_wire, sub_tw, offset, k):
+    """Map sub-circuit wire index to full-circuit logical wire index.
+
+    Sub-circuit layout: [inner_tag₀..inner_tag_{tw-1} | payload₀..]
+    Full layout (big-endian): [MSB | inner_tag₀..inner_tag_{k-2} | payload₀..]
+    MSB is at offset (the control qubit).
+    Inner tag bits are at offset+1..offset+k-1.
+    Payload starts at offset+k.
+    """
+    if sub_wire < sub_tw:
+        return offset + 1 + sub_wire  # inner tag bits (after MSB)
+    else:
+        return offset + k + (sub_wire - sub_tw)  # payload
+
+
 def compile(term: Term, *, materialize: bool = False, explain: bool = False, env: Env = None) -> Compiled:
     # Check for Feedback - not currently supported
     if _contains_feedback(term):
@@ -558,6 +588,30 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             # Only emit if non-identity
             if k > 0 and tp != tuple(range(n_summands)):
                 _emit_tag_perm_unitary(circ, p, tp, k, offset, explain, log)
+
+    def _emit_controlled_branch(ctrl_q, sub_cmds, wire_map_fn, anti=False):
+        """Emit each gate controlled on ctrl_q, with wires mapped by wire_map_fn.
+
+        Args:
+            ctrl_q: Physical qubit for control
+            sub_cmds: Commands from the sub-circuit
+            wire_map_fn: Function mapping sub-circuit wire index to physical qubit
+            anti: If True, wrap with X gates for anti-control
+        """
+        from pytket.circuit import QControlBox, Op
+        if anti:
+            circ.X(ctrl_q)
+        for cmd in sub_cmds:
+            phys_qubits = [wire_map_fn(q.index[0]) for q in cmd.qubits]
+            ctrl_op = _CTRL_GATE_MAP.get(cmd.op.type)
+            if ctrl_op is not None:
+                circ.add_gate(ctrl_op, cmd.op.params, [ctrl_q] + phys_qubits)
+            else:
+                base_op = Op.create(cmd.op.type, cmd.op.params)
+                qcb = QControlBox(base_op, 1)
+                circ.add_qcontrolbox(qcb, [ctrl_q] + phys_qubits)
+        if anti:
+            circ.X(ctrl_q)
 
     def go(t: Term, offset: int = 0, env: Env = None) -> None:
         """Compile term t at given wire offset with variable environment.
@@ -781,26 +835,14 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
                 # Inductive: Ctrl(PlusMap/Case/...) — compile body, decompose, control each gate
                 if isinstance(body, (PlusMap, Case, CaseExpr, PhasedPlusMap, PhasedControl)):
-                    from pytket.circuit import QControlBox, Op, OpType
+                    from pytket.circuit import QControlBox, Op
                     sub = compile(body, materialize=True)
                     sub_cmds = _decompose_and_get_cmds(sub.circuit)
-                    _ctrl_gate_local = {
-                        OpType.H: OpType.CH,
-                        OpType.S: OpType.CS,
-                        OpType.Sdg: OpType.CSdg,
-                        OpType.X: OpType.CX,
-                        OpType.Y: OpType.CY,
-                        OpType.Z: OpType.CZ,
-                        OpType.Rz: OpType.CRz,
-                        OpType.Rx: OpType.CRx,
-                        OpType.Ry: OpType.CRy,
-                        OpType.CX: OpType.CCX,
-                    }
                     for cmd in sub_cmds:
                         phys_qubits = [p.apply_new_to_old(q.index[0] + pay_off)
                                        for q in cmd.qubits]
                         ctrl_phys = [p.apply_new_to_old(c) for c in ctrls]
-                        ctrl_op = _ctrl_gate_local.get(cmd.op.type) if n_ctrls == 1 else None
+                        ctrl_op = _CTRL_GATE_MAP.get(cmd.op.type) if n_ctrls == 1 else None
                         if ctrl_op is not None:
                             circ.add_gate(ctrl_op, cmd.op.params,
                                           ctrl_phys + phys_qubits)
@@ -892,148 +934,32 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 log.append(f"DecodeQubit: X(0); CX(0,1) at offset {offset}")
             return
 
-        # Case/copairing: [f, g] : (A + B) → (C + D)
-        # Layout: [tag | payload]. Tag controls which branch runs on payload.
-        # Width is preserved. Each gate becomes controlled on the tag qubit.
+        # Case/copairing: redirect to PlusMap (identical semantics and fields)
         if isinstance(t, Case):
-            from lang.types import Plus
-            from pytket.circuit import OpType
-            # Binary sum always uses 1 outer tag bit (regardless of nested structure)
-            k = 1
-            tag_phys = p.apply_new_to_old(offset)
-
-            # Map gate types to their controlled versions
-            _ctrl_gate = {
-                OpType.H: OpType.CH,
-                OpType.S: OpType.CS,
-                OpType.Sdg: OpType.CSdg,
-                OpType.X: OpType.CX,
-                OpType.Y: OpType.CY,
-                OpType.Z: OpType.CZ,
-                OpType.Rz: OpType.CRz,
-                OpType.Rx: OpType.CRx,
-                OpType.Ry: OpType.CRy,
-                OpType.CX: OpType.CCX,
-            }
-
-            def _emit_controlled(cmds, tag_q, payload_base):
-                """Emit each gate controlled on tag_q, with wires offset to payload."""
-                from pytket.circuit import QControlBox, Op
-                for cmd in cmds:
-                    phys_qubits = [p.apply_new_to_old(q.index[0] + payload_base)
-                                   for q in cmd.qubits]
-                    ctrl_op = _ctrl_gate.get(cmd.op.type)
-                    if ctrl_op is not None:
-                        circ.add_gate(ctrl_op, cmd.op.params,
-                                      [tag_q] + phys_qubits)
-                    else:
-                        base_op = Op.create(cmd.op.type, cmd.op.params)
-                        qcb = QControlBox(base_op, 1)
-                        circ.add_qcontrolbox(qcb, [tag_q] + phys_qubits)
-
-            # Compile branches to sub-circuits
-            left_dom, _ = type_of(t.left)
-            left_w = width(left_dom)
-            left_cmds = _decompose_and_get_cmds(compile(t.left, materialize=True).circuit) if left_w > 0 else []
-
-            right_dom, _ = type_of(t.right)
-            right_w = width(right_dom)
-            right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
-
-            payload_base = offset + k
-
-            # Left branch: anti-controlled (tag=0) → X; ctrl-gates; X
-            if left_cmds:
-                circ.X(tag_phys)
-                _emit_controlled(left_cmds, tag_phys, payload_base)
-                circ.X(tag_phys)
-
-            # Right branch: controlled (tag=1) → ctrl-gates directly
-            if right_cmds:
-                _emit_controlled(right_cmds, tag_phys, payload_base)
-
-            if explain:
-                log.append(f"Case: {len(left_cmds)} left gates (anti-ctrl), "
-                           f"{len(right_cmds)} right gates (ctrl) at offset {offset}")
+            go(PlusMap(t.ty_left, t.ty_right, t.left, t.right), offset, env)
             return
 
         # CaseExpr: pattern-matching case with variable binding
-        # Layout: [tag | payload]. Scrutinee produces A+B, then branches operate on payload.
+        # Compile scrutinee, then dispatch branches using _emit_controlled_branch.
         if isinstance(t, CaseExpr):
-            from lang.types import Plus
-            from pytket.circuit import OpType
-
-            # First compile the scrutinee - it produces A + B on wires
             go(t.scrut, offset, env)
 
-            # Now the wires at offset have layout [outer_tag | payload]
-            # Binary sum always uses 1 outer tag bit (regardless of nested structure)
-            k = 1
             tag_phys = p.apply_new_to_old(offset)
-            payload_base = offset + k
+            payload_base = offset + 1
 
-            # Payload width is max of left/right payload types
-            payload_width = max(width(t.ty_x), width(t.ty_y))
+            left_env = {**env, t.x: (0, width(t.ty_x))}
+            left_w = width(type_of(t.left)[0])
+            left_cmds = _decompose_and_get_cmds(compile(t.left, materialize=True, env=left_env).circuit) if left_w > 0 else []
 
-            # Map gate types to their controlled versions
-            _ctrl_gate = {
-                OpType.H: OpType.CH,
-                OpType.S: OpType.CS,
-                OpType.Sdg: OpType.CSdg,
-                OpType.X: OpType.CX,
-                OpType.Y: OpType.CY,
-                OpType.Z: OpType.CZ,
-                OpType.Rz: OpType.CRz,
-                OpType.Rx: OpType.CRx,
-                OpType.Ry: OpType.CRy,
-                OpType.CX: OpType.CCX,
-            }
+            right_env = {**env, t.y: (0, width(t.ty_y))}
+            right_w = width(type_of(t.right)[0])
+            right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True, env=right_env).circuit) if right_w > 0 else []
 
-            def _emit_controlled_case(cmds, tag_q, payload_base_local):
-                """Emit each gate controlled on tag_q, with wires offset to payload."""
-                from pytket.circuit import QControlBox, Op
-                for cmd in cmds:
-                    phys_qubits = [p.apply_new_to_old(q.index[0] + payload_base_local)
-                                   for q in cmd.qubits]
-                    ctrl_op = _ctrl_gate.get(cmd.op.type)
-                    if ctrl_op is not None:
-                        circ.add_gate(ctrl_op, cmd.op.params,
-                                      [tag_q] + phys_qubits)
-                    else:
-                        base_op = Op.create(cmd.op.type, cmd.op.params)
-                        qcb = QControlBox(base_op, 1)
-                        circ.add_qcontrolbox(qcb, [tag_q] + phys_qubits)
-
-            # Left branch: bind x to payload wires, compile, emit anti-controlled
-            left_env = {**env, t.x: (0, width(t.ty_x))}  # x at wire 0 in sub-circuit
-            # Compile left body to a sub-circuit with env
-            left_dom, _ = type_of(t.left)
-            left_w = width(left_dom)
-            if left_w > 0:
-                # Compile left branch with variable binding
-                left_cmds = _decompose_and_get_cmds(compile(t.left, materialize=True, env=left_env).circuit)
-            else:
-                left_cmds = []
-
-            # Right branch: bind y to payload wires, compile, emit controlled
-            right_env = {**env, t.y: (0, width(t.ty_y))}  # y at wire 0 in sub-circuit
-            right_dom, _ = type_of(t.right)
-            right_w = width(right_dom)
-            if right_w > 0:
-                # Compile right branch with variable binding
-                right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True, env=right_env).circuit)
-            else:
-                right_cmds = []
-
-            # Left branch: anti-controlled (tag=0) → X; ctrl-gates; X
+            wire_map = lambda w: p.apply_new_to_old(w + payload_base)
             if left_cmds:
-                circ.X(tag_phys)
-                _emit_controlled_case(left_cmds, tag_phys, payload_base)
-                circ.X(tag_phys)
-
-            # Right branch: controlled (tag=1) → ctrl-gates directly
+                _emit_controlled_branch(tag_phys, left_cmds, wire_map, anti=True)
             if right_cmds:
-                _emit_controlled_case(right_cmds, tag_phys, payload_base)
+                _emit_controlled_branch(tag_phys, right_cmds, wire_map)
 
             if explain:
                 log.append(f"CaseExpr: scrut compiled, {t.x} bound at [{payload_base},{payload_base+width(t.ty_x)}), "
@@ -1054,28 +980,13 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
         # After P: MSB=0 → left summands, MSB=1 → right summands.
         if isinstance(t, PlusMap):
             from lang.types import Plus, flatten_plus, tag_width as tw_fn, payload_width
-            from pytket.circuit import OpType
             import math
 
             # Compute structure of the sum type
             n_left = len(flatten_plus(t.ty_left)) if isinstance(t.ty_left, Plus) else 1
             n_right = len(flatten_plus(t.ty_right)) if isinstance(t.ty_right, Plus) else 1
-            n = n_left + n_right
-            k = math.ceil(math.log2(n)) if n > 1 else 0
-
-            # Map gate types to their controlled versions
-            _ctrl_gate = {
-                OpType.H: OpType.CH,
-                OpType.S: OpType.CS,
-                OpType.Sdg: OpType.CSdg,
-                OpType.X: OpType.CX,
-                OpType.Y: OpType.CY,
-                OpType.Z: OpType.CZ,
-                OpType.Rz: OpType.CRz,
-                OpType.Rx: OpType.CRx,
-                OpType.Ry: OpType.CRy,
-                OpType.CX: OpType.CCX,
-            }
+            n_sum = n_left + n_right
+            k = math.ceil(math.log2(n_sum)) if n_sum > 1 else 0
 
             # Compile branches to sub-circuits
             left_dom, _ = type_of(t.left)
@@ -1087,30 +998,15 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
 
             if k <= 1:
-                # Simple binary case: 1 outer tag bit, existing approach
+                # Simple binary case: 1 outer tag bit
                 tag_phys = p.apply_new_to_old(offset)
                 payload_base = offset + max(k, 1)
 
-                def _emit_controlled_pm_k1(cmds, tag_q, pb):
-                    from pytket.circuit import QControlBox, Op
-                    for cmd in cmds:
-                        phys_qubits = [p.apply_new_to_old(q.index[0] + pb)
-                                       for q in cmd.qubits]
-                        ctrl_op = _ctrl_gate.get(cmd.op.type)
-                        if ctrl_op is not None:
-                            circ.add_gate(ctrl_op, cmd.op.params,
-                                          [tag_q] + phys_qubits)
-                        else:
-                            base_op = Op.create(cmd.op.type, cmd.op.params)
-                            qcb = QControlBox(base_op, 1)
-                            circ.add_qcontrolbox(qcb, [tag_q] + phys_qubits)
-
+                wire_map = lambda w: p.apply_new_to_old(w + payload_base)
                 if left_cmds:
-                    circ.X(tag_phys)
-                    _emit_controlled_pm_k1(left_cmds, tag_phys, payload_base)
-                    circ.X(tag_phys)
+                    _emit_controlled_branch(tag_phys, left_cmds, wire_map, anti=True)
                 if right_cmds:
-                    _emit_controlled_pm_k1(right_cmds, tag_phys, payload_base)
+                    _emit_controlled_branch(tag_phys, right_cmds, wire_map)
 
                 if explain:
                     log.append(f"PlusMap(k=1): {len(left_cmds)} left gates (anti-ctrl), "
@@ -1118,13 +1014,10 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 return
 
             # k >= 2: Strategy A — tag permutation sandwich
-            # Requires both halves to fit: max(n_left, n_right) <= 2^(k-1)
             half = 2 ** (k - 1)
 
             if n_left > half or n_right > half:
                 # Strategy B: full unitary synthesis for asymmetric splits.
-                # When n_left > half, w_f == w (same total width), so U_f
-                # is the same size as the full unitary. Override right blocks.
                 import numpy as np
                 pw = payload_width(Plus(t.ty_left, t.ty_right))
                 w = k + pw
@@ -1135,7 +1028,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 dim = 2 ** w
 
                 if n_left > half:
-                    # U_f is dim×dim; override right tag blocks with U_g
                     U_full = U_f.copy()
                     w_g = width(type_of(t.right)[0])
                     for tr in range(n_right):
@@ -1149,10 +1041,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                             g_rs = tr * dim_pw
                             U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
                 else:
-                    # n_right > half: U_g is dim×dim; override left blocks with U_f
-                    U_full = U_g.copy()
-                    # Shift U_g indices: U_g inner tag t maps to full tag n_left+t
-                    # Need to rearrange: move U_g blocks to their correct positions
                     U_full = np.eye(dim, dtype=complex)
                     w_f = width(type_of(t.left)[0])
                     for tl in range(n_left):
@@ -1168,7 +1056,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                         g_rs = tr * dim_pw
                         U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
 
-                # Emit as UnitaryBox
                 phys = [p.apply_new_to_old(offset + i) for i in range(w)]
                 if w == 2:
                     from pytket.circuit import Unitary2qBox
@@ -1190,14 +1077,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             dim = 2 ** k
 
             # Build permutation P: left indices → MSB=0 half, right → MSB=1 half
-            # In ILO convention: MSB is bit k-1, so MSB=0 half = {0..half-1},
-            # MSB=1 half = {half..dim-1}.
             P_list = [None] * dim
             for i in range(n_left):
-                P_list[i] = i  # left indices stay in MSB=0 half
+                P_list[i] = i
             for i in range(n_right):
-                P_list[n_left + i] = half + i  # right indices → MSB=1 half
-            # Fill unused slots
+                P_list[n_left + i] = half + i
             used_targets = set(v for v in P_list if v is not None)
             free_targets = sorted(set(range(dim)) - used_targets)
             j = 0
@@ -1208,62 +1092,26 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             P_tup = tuple(P_list)
             is_identity_P = (P_tup == tuple(range(dim)))
 
-            # Compute sub-circuit tag widths for wire remapping
             tw_left = tw_fn(t.ty_left) if isinstance(t.ty_left, Plus) else 0
             tw_right = tw_fn(t.ty_right) if isinstance(t.ty_right, Plus) else 0
-
-            def _sub_wire_to_full(sub_wire, sub_tw):
-                """Map sub-circuit wire index to full-circuit logical wire index.
-
-                Sub-circuit layout: [inner_tag₀..inner_tag_{tw-1} | payload₀..]
-                Full layout (big-endian): [MSB | inner_tag₀..inner_tag_{k-2} | payload₀..]
-                MSB is at offset (the control qubit).
-                Inner tag bits are at offset+1..offset+k-1.
-                Payload starts at offset+k.
-                """
-                if sub_wire < sub_tw:
-                    return offset + 1 + sub_wire  # inner tag bits (after MSB)
-                else:
-                    return offset + k + (sub_wire - sub_tw)  # payload
-
-            def _emit_controlled_pm_remap(cmds, ctrl_q, sub_tw, anti=False):
-                """Emit controlled gates with wire remapping for nested sums."""
-                from pytket.circuit import QControlBox, Op
-                if anti:
-                    circ.X(ctrl_q)
-                for cmd in cmds:
-                    phys_qubits = [p.apply_new_to_old(_sub_wire_to_full(q.index[0], sub_tw))
-                                   for q in cmd.qubits]
-                    ctrl_op = _ctrl_gate.get(cmd.op.type)
-                    if ctrl_op is not None:
-                        circ.add_gate(ctrl_op, cmd.op.params,
-                                      [ctrl_q] + phys_qubits)
-                    else:
-                        # Fallback: wrap with QControlBox for arbitrary gates
-                        base_op = Op.create(cmd.op.type, cmd.op.params)
-                        qcb = QControlBox(base_op, 1)
-                        circ.add_qcontrolbox(qcb, [ctrl_q] + phys_qubits)
-                if anti:
-                    circ.X(ctrl_q)
 
             # Step 1: Emit P (tag permutation) if non-identity
             if not is_identity_P:
                 _emit_tag_perm_unitary(circ, p, P_tup, k, offset, explain, log)
 
             # Step 2: PlusMap_bit controlled on MSB
-            # pytket uses big-endian: q[0] (at offset) is the MSB of the tag.
-            # Values < half have MSB=0 (left), values >= half have MSB=1 (right).
             msb_phys = p.apply_new_to_old(offset)
 
-            # Left branch: anti-controlled on MSB (MSB=0 → left)
             if left_cmds:
-                _emit_controlled_pm_remap(left_cmds, msb_phys, tw_left, anti=True)
-
-            # Right branch: controlled on MSB (MSB=1 → right)
+                left_wm = lambda w, stw=tw_left: p.apply_new_to_old(
+                    _sub_wire_to_full(w, stw, offset, k))
+                _emit_controlled_branch(msb_phys, left_cmds, left_wm, anti=True)
             if right_cmds:
-                _emit_controlled_pm_remap(right_cmds, msb_phys, tw_right, anti=False)
+                right_wm = lambda w, stw=tw_right: p.apply_new_to_old(
+                    _sub_wire_to_full(w, stw, offset, k))
+                _emit_controlled_branch(msb_phys, right_cmds, right_wm)
 
-            # Step 3: Emit P⁻¹ (inverse tag permutation) if non-identity
+            # Step 3: Emit P⁻¹ if non-identity
             if not is_identity_P:
                 P_inv = [0] * dim
                 for i in range(dim):
@@ -1279,30 +1127,14 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
         # PhasedPlusMap: like PlusMap but with phase z = e^{iθ} on left branch
         if isinstance(t, PhasedPlusMap):
             from lang.types import Plus, flatten_plus, tag_width as tw_fn, payload_width
-            from pytket.circuit import OpType
             import math
 
             theta = t.theta
 
-            # Compute structure of the sum type
             n_left = len(flatten_plus(t.ty_left)) if isinstance(t.ty_left, Plus) else 1
             n_right = len(flatten_plus(t.ty_right)) if isinstance(t.ty_right, Plus) else 1
-            n = n_left + n_right
-            k = math.ceil(math.log2(n)) if n > 1 else 0
-
-            # Map gate types to their controlled versions
-            _ctrl_gate = {
-                OpType.H: OpType.CH,
-                OpType.S: OpType.CS,
-                OpType.Sdg: OpType.CSdg,
-                OpType.X: OpType.CX,
-                OpType.Y: OpType.CY,
-                OpType.Z: OpType.CZ,
-                OpType.Rz: OpType.CRz,
-                OpType.Rx: OpType.CRx,
-                OpType.Ry: OpType.CRy,
-                OpType.CX: OpType.CCX,
-            }
+            n_sum = n_left + n_right
+            k = math.ceil(math.log2(n_sum)) if n_sum > 1 else 0
 
             # Compile branches to sub-circuits
             left_dom, _ = type_of(t.left)
@@ -1314,30 +1146,14 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
 
             if k <= 1:
-                # Simple binary case
                 tag_phys = p.apply_new_to_old(offset)
                 payload_base = offset + max(k, 1)
 
-                def _emit_controlled_ppm_k1(cmds, tag_q, pb):
-                    from pytket.circuit import QControlBox, Op
-                    for cmd in cmds:
-                        phys_qubits = [p.apply_new_to_old(q.index[0] + pb)
-                                       for q in cmd.qubits]
-                        ctrl_op = _ctrl_gate.get(cmd.op.type)
-                        if ctrl_op is not None:
-                            circ.add_gate(ctrl_op, cmd.op.params,
-                                          [tag_q] + phys_qubits)
-                        else:
-                            base_op = Op.create(cmd.op.type, cmd.op.params)
-                            qcb = QControlBox(base_op, 1)
-                            circ.add_qcontrolbox(qcb, [tag_q] + phys_qubits)
-
+                wire_map = lambda w: p.apply_new_to_old(w + payload_base)
                 if left_cmds:
-                    circ.X(tag_phys)
-                    _emit_controlled_ppm_k1(left_cmds, tag_phys, payload_base)
-                    circ.X(tag_phys)
+                    _emit_controlled_branch(tag_phys, left_cmds, wire_map, anti=True)
                 if right_cmds:
-                    _emit_controlled_ppm_k1(right_cmds, tag_phys, payload_base)
+                    _emit_controlled_branch(tag_phys, right_cmds, wire_map)
 
                 # Phase application: X; U1(θ/π); X for left branch (tag=0)
                 half_turns = theta / math.pi
@@ -1350,7 +1166,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                                f"{len(right_cmds)} right at offset {offset}")
                 return
 
-            # k >= 2: Strategy A — tag permutation sandwich (same as PlusMap)
+            # k >= 2: Strategy A — tag permutation sandwich
             half = 2 ** (k - 1)
 
             if n_left > half or n_right > half:
@@ -1436,41 +1252,21 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             tw_left = tw_fn(t.ty_left) if isinstance(t.ty_left, Plus) else 0
             tw_right = tw_fn(t.ty_right) if isinstance(t.ty_right, Plus) else 0
 
-            def _sub_wire_to_full_ppm(sub_wire, sub_tw):
-                if sub_wire < sub_tw:
-                    return offset + 1 + sub_wire  # inner tag bits (after MSB)
-                else:
-                    return offset + k + (sub_wire - sub_tw)  # payload
-
-            def _emit_controlled_ppm_remap(cmds, ctrl_q, sub_tw, anti=False):
-                from pytket.circuit import QControlBox, Op
-                if anti:
-                    circ.X(ctrl_q)
-                for cmd in cmds:
-                    phys_qubits = [p.apply_new_to_old(_sub_wire_to_full_ppm(q.index[0], sub_tw))
-                                   for q in cmd.qubits]
-                    ctrl_op = _ctrl_gate.get(cmd.op.type)
-                    if ctrl_op is not None:
-                        circ.add_gate(ctrl_op, cmd.op.params,
-                                      [ctrl_q] + phys_qubits)
-                    else:
-                        base_op = Op.create(cmd.op.type, cmd.op.params)
-                        qcb = QControlBox(base_op, 1)
-                        circ.add_qcontrolbox(qcb, [ctrl_q] + phys_qubits)
-                if anti:
-                    circ.X(ctrl_q)
-
             # Step 1: Emit P
             if not is_identity_P:
                 _emit_tag_perm_unitary(circ, p, P_tup, k, offset, explain, log)
 
-            # Step 2: PlusMap_bit on MSB (big-endian: MSB at offset)
+            # Step 2: PlusMap_bit on MSB
             msb_phys = p.apply_new_to_old(offset)
 
             if left_cmds:
-                _emit_controlled_ppm_remap(left_cmds, msb_phys, tw_left, anti=True)
+                left_wm = lambda w, stw=tw_left: p.apply_new_to_old(
+                    _sub_wire_to_full(w, stw, offset, k))
+                _emit_controlled_branch(msb_phys, left_cmds, left_wm, anti=True)
             if right_cmds:
-                _emit_controlled_ppm_remap(right_cmds, msb_phys, tw_right, anti=False)
+                right_wm = lambda w, stw=tw_right: p.apply_new_to_old(
+                    _sub_wire_to_full(w, stw, offset, k))
+                _emit_controlled_branch(msb_phys, right_cmds, right_wm)
 
             # Step 3: Emit P⁻¹
             if not is_identity_P:
@@ -1480,17 +1276,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 _emit_tag_perm_unitary(circ, p, tuple(P_inv), k, offset, explain, log)
 
             # Phase application on left branch (tag ∈ left_set)
-            # After P⁻¹ restored original encoding, apply phase when
-            # ALL tag bits are 0 (summand 0 = first left summand).
-            # For general left set, we need phase on all left summands.
-            # The phase applies to the MSB=0 subspace in the permuted basis,
-            # but since P⁻¹ has been applied, we apply phase in original basis.
             sum_ty = Plus(t.ty_left, t.ty_right)
             total_tag_bits = tw_fn(sum_ty)
             half_turns = theta / math.pi
             tag_qubits = [p.apply_new_to_old(offset + i) for i in range(total_tag_bits)]
 
-            # Flip all tag qubits, apply multi-controlled phase, unflip
             for tq in tag_qubits:
                 circ.X(tq)
             if total_tag_bits == 1:
@@ -1511,7 +1301,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
         # PhasedControl: phase-weighted n-ary control
         if isinstance(t, PhasedControl):
             from lang.types import tag_width
-            from pytket.circuit import OpType
             import math
 
             arity = t.arity
