@@ -304,6 +304,43 @@ let phase_w_nary = phased_control w_datatype phases one [| id one; id one; id on
 2. Multi-controlled U1(θ/π) gate (half-turns)
 3. X gates restore original state
 
+### N-ary Coherent Sum Eliminator (NPlusMap)
+
+For n-ary sum types `A₁ + ... + Aₙ`, dispatches one morphism per summand:
+
+```python
+NPlusMap(summand_types=(A₁,...,Aₙ), branches=(f₁,...,fₙ))
+# where fᵢ : Aᵢ → Bᵢ
+# Type: (A₁ + ... + Aₙ) → (B₁ + ... + Bₙ)
+```
+
+**Why NPlusMap?** Binary `PlusMap` cannot handle flat n-ary sums with n > 2.
+Nesting binary PlusMaps creates a binary tree that doesn't match the flat
+⌈log₂(n)⌉ tag encoding. NPlusMap compiles directly against the flat layout.
+
+**Compilation pattern** for branch i with k = ⌈log₂(n)⌉ tag qubits (big-endian):
+1. X-flip: apply X to each tag qubit j where bit `(i >> (k-1-j)) & 1 == 0`
+2. Multi-controlled gates: all k tag qubits are now |1⟩ for branch i,
+   wrap each gate with QControlBox (or built-in controlled gate for k=1)
+3. X-unflip: undo the X gates from step 1
+
+**Example (Python) — Z₈ phase action:**
+```python
+from lang.types import Q, build_plus_tree
+from lang.terms import NPlusMap, Rz
+
+summands = tuple(Q() for _ in range(8))
+branches = tuple(Rz(m * 0.25, i=0, ty_total=Q()) for m in range(8))
+action = NPlusMap(summands, branches)
+# Compiles to 32 gates on 4 qubits (3 tag + 1 payload)
+```
+
+**Properties:**
+- Identity law: `NPlusMap(Id,...,Id) ≡ Id`
+- Composition: `Seq(NPlusMap(f₁,...), NPlusMap(g₁,...)) ≡ NPlusMap(Seq(f₁,g₁),...)`
+- 2-way: `NPlusMap([A,B],[f,g]) ≡ PlusMap(A,B,f,g)` (matches binary case)
+- Non-power-of-2: unused tag values (n ≤ idx < 2^k) act as identity
+
 ### Qubit Encoding Isomorphism
 
 Convert between primitive qubit Q and encoded qubit I + I:

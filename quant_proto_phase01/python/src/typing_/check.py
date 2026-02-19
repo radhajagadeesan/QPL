@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Tuple
 
-from lang.types import Ty, Q as Q_ty, Ten, Plus, Dual, Unit, Arrow, width, pretty, dual
+from lang.types import Ty, Q as Q_ty, Ten, Plus, Dual, Unit, Arrow, width, pretty, dual, build_plus_tree
 from lang.terms import (
     Term,
     Id, Seq, TenTerm,
@@ -31,6 +31,7 @@ from lang.terms import (
     Case,
     CaseExpr,
     PlusMap,
+    NPlusMap,
     PhasedPlusMap,
     PhasedControl,
     # Exponentials of structural involutions
@@ -312,6 +313,28 @@ def type_of(t: Term) -> DomCod:
         dom = Plus(t.ty_left, t.ty_right)
         cod = Plus(left_cod, right_cod)
         return (dom, cod)
+
+    # NPlusMap: n-ary coherent sum eliminator
+    if isinstance(t, NPlusMap):
+        n = len(t.summand_types)
+        if n < 2:
+            raise TypeCheckError("NPlusMap needs at least 2 summands")
+        if len(t.branches) != n:
+            raise TypeCheckError(
+                f"NPlusMap: {n} summand types but {len(t.branches)} branches"
+            )
+        dom_sum = build_plus_tree(list(t.summand_types))
+        cod_types = []
+        for i, (st, br) in enumerate(zip(t.summand_types, t.branches)):
+            d, c = type_of(br)
+            if width(d) != width(st):
+                raise TypeCheckError(
+                    f"NPlusMap branch {i}: domain width {width(d)} "
+                    f"!= summand width {width(st)}"
+                )
+            cod_types.append(c)
+        cod_sum = build_plus_tree(cod_types)
+        return (dom_sum, cod_sum)
 
     # PhasedPlusMap: like PlusMap but with phase on left branch
     if isinstance(t, PhasedPlusMap):

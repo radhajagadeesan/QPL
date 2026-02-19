@@ -32,6 +32,7 @@ from lang.terms import (
     Case,
     CaseExpr,
     PlusMap,
+    NPlusMap,
     PhasedPlusMap,
     PhasedControl,
     # Exponentials of structural involutions
@@ -342,6 +343,39 @@ def _decompose_and_get_cmds(circuit):
     from pytket.passes import DecomposeBoxes
     DecomposeBoxes().apply(circuit)
     return list(circuit.get_commands())
+
+
+def _emit_nway_controlled(circ, tag_qubits, branch_idx, sub_cmds, wire_map_fn):
+    """Emit multi-controlled gates for a single branch of NPlusMap.
+
+    For branch index `i` with `k` tag qubits (big-endian):
+    1. X-flip: For each tag qubit j where bit (i >> (k-1-j)) & 1 == 0, apply X
+    2. Multi-controlled gates: All k tag qubits are now 1 for branch i
+    3. X-unflip: Undo the X gates from step 1
+    """
+    from pytket.circuit import QControlBox, Op
+    k = len(tag_qubits)
+
+    # X-flip: make all tag bits 1 for this branch
+    for j in range(k):
+        if not ((branch_idx >> (k - 1 - j)) & 1):
+            circ.X(tag_qubits[j])
+
+    # Multi-controlled gates
+    for cmd in sub_cmds:
+        phys_qubits = [wire_map_fn(q.index[0]) for q in cmd.qubits]
+        ctrl_op = _CTRL_GATE_MAP.get(cmd.op.type)
+        if ctrl_op is not None and k == 1:
+            circ.add_gate(ctrl_op, cmd.op.params, [tag_qubits[0]] + phys_qubits)
+        else:
+            base_op = Op.create(cmd.op.type, cmd.op.params)
+            qcb = QControlBox(base_op, k)
+            circ.add_qcontrolbox(qcb, tag_qubits + phys_qubits)
+
+    # X-unflip
+    for j in range(k):
+        if not ((branch_idx >> (k - 1 - j)) & 1):
+            circ.X(tag_qubits[j])
 
 
 # Module-level map from gate types to their controlled versions
@@ -834,7 +868,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     return
 
                 # Inductive: Ctrl(PlusMap/Case/...) — compile body, decompose, control each gate
-                if isinstance(body, (PlusMap, Case, CaseExpr, PhasedPlusMap, PhasedControl)):
+                if isinstance(body, (PlusMap, Case, CaseExpr, NPlusMap, PhasedPlusMap, PhasedControl)):
                     from pytket.circuit import QControlBox, Op
                     sub = compile(body, materialize=True)
                     sub_cmds = _decompose_and_get_cmds(sub.circuit)
@@ -1122,6 +1156,41 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 log.append(f"PlusMap(k={k}, Strategy A): n_left={n_left}, n_right={n_right}, "
                            f"P={P_tup}, {len(left_cmds)} left gates, {len(right_cmds)} right gates "
                            f"at offset {offset}")
+            return
+
+        # NPlusMap: n-ary coherent sum eliminator
+        # Uses per-branch X-flip + multi-controlled gates + X-unflip
+        if isinstance(t, NPlusMap):
+            from lang.types import (Plus, flatten_plus, tag_width as tw_fn,
+                                    payload_width, build_plus_tree)
+            import math
+
+            n_branches = len(t.summand_types)
+            assert n_branches >= 2
+            sum_ty = build_plus_tree(list(t.summand_types))
+            k = tw_fn(sum_ty)
+            pw = payload_width(sum_ty)
+
+            tag_phys = [p.apply_new_to_old(offset + j) for j in range(k)]
+            payload_base = offset + k
+
+            for i, (st, br) in enumerate(zip(t.summand_types, t.branches)):
+                sub = compile(br, materialize=True)
+                sub_cmds = _decompose_and_get_cmds(sub.circuit)
+
+                if not sub_cmds:
+                    continue  # Id branch, nothing to emit
+
+                def make_wire_map(pb=payload_base):
+                    def wire_map(w):
+                        return p.apply_new_to_old(pb + w)
+                    return wire_map
+
+                _emit_nway_controlled(circ, tag_phys, i, sub_cmds, make_wire_map())
+
+            if explain:
+                log.append(f"NPlusMap(n={n_branches}, k={k}): "
+                           f"{n_branches} branches at offset {offset}")
             return
 
         # PhasedPlusMap: like PlusMap but with phase z = e^{iθ} on left branch

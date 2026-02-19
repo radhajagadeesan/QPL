@@ -705,6 +705,23 @@ class PlusMap:
 
 
 @dataclass(frozen=True, slots=True)
+class NPlusMap:
+    """N-ary coherent sum eliminator.
+
+    NPlusMap(summand_types=(A₁,...,Aₙ), branches=(f₁,...,fₙ))
+    where fᵢ : Aᵢ → Bᵢ
+
+    Domain:  A₁ + ... + Aₙ   (flat Plus tree)
+    Codomain: B₁ + ... + Bₙ  (flat Plus tree)
+
+    Compiles directly against the flat tag encoding using
+    per-branch X-flip + multi-controlled gates + X-unflip.
+    """
+    summand_types: tuple  # (Ty, ...) — input summand types
+    branches: tuple       # (Term, ...) — one morphism per summand
+
+
+@dataclass(frozen=True, slots=True)
 class PhasedPlusMap:
     """Phase-weighted bifunctorial action on sums.
 
@@ -855,6 +872,8 @@ Term = Union[
     CaseExpr,
     # Bifunctorial action on sums (⊕-Map)
     PlusMap,
+    # N-ary coherent sum eliminator
+    NPlusMap,
     # Phase-weighted bifunctorial action
     PhasedPlusMap,
     # Phase-weighted n-ary control

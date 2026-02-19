@@ -147,6 +147,31 @@ On superposition inputs, both branches execute coherently (indefinite causal ord
 - Case: `[f, g] : (A + B) → C` — copairing, both branches produce same output type
 - PlusMap: `f ⊕ g : (A + B) → (C + D)` — bifunctor, branches can have different output types
 
+### N-ary Sum Eliminator
+
+| Term | Type | Description |
+|------|------|-------------|
+| `NPlusMap(summand_types, branches)` | (A₁+...+Aₙ) → (B₁+...+Bₙ) | N-ary coherent sum eliminator |
+
+**NPlusMap signature:**
+```python
+NPlusMap(
+    summand_types: tuple,  # (A₁, ..., Aₙ) — input summand types
+    branches: tuple        # (f₁, ..., fₙ) — one morphism per summand, fᵢ : Aᵢ → Bᵢ
+) -> Term
+# Returns: term of type (A₁ + ... + Aₙ) → (B₁ + ... + Bₙ)
+# Domain/codomain built as balanced binary Plus trees via build_plus_tree()
+```
+
+**Compilation:** Per-branch X-flip + multi-controlled gates + X-unflip on flat ⌈log₂(n)⌉ tag encoding.
+
+**Type helper:**
+```python
+build_plus_tree(types: list[Ty]) -> Ty
+# Builds balanced binary Plus tree: build_plus_tree([A,B,C,D]) == Plus(Plus(A,B), Plus(C,D))
+# Inverse of flatten_plus
+```
+
 ### Phase-Weighted Bifunctors
 
 | Term | Type | Description |

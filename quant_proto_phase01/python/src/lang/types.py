@@ -267,3 +267,15 @@ def flatten_plus(ty: Ty) -> List[Ty]:
     if isinstance(ty, Plus):
         return flatten_plus(ty.left) + flatten_plus(ty.right)
     return [ty]
+
+
+def build_plus_tree(types: List[Ty]) -> Ty:
+    """Build a balanced binary Plus tree from a flat list of summand types.
+
+    build_plus_tree([A, B, C, D]) == Plus(Plus(A, B), Plus(C, D))
+    Invariant: flatten_plus(build_plus_tree(ts)) == ts
+    """
+    if len(types) == 1:
+        return types[0]
+    mid = len(types) // 2
+    return Plus(build_plus_tree(types[:mid]), build_plus_tree(types[mid:]))

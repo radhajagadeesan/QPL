@@ -203,6 +203,34 @@ This achieves O(log n) gate count for coherent control over n-element groups.
 
 ---
 
+## Z₈ Coherent Action Demo
+
+Demonstrates `NPlusMap` (n-ary coherent sum eliminator) with cyclic group actions:
+
+**Run:**
+```bash
+PYTHONPATH=python/src python python/demos/z8_coherent_action_demo.py
+```
+
+**What it shows:**
+
+| Group | Summands | Tag Bits | Payload | Total Qubits | Gates |
+|-------|----------|----------|---------|--------------|-------|
+| Z₄ | 4 × Q | 2 | 1 | 3 | 12 |
+| Z₅ | 5 × Q | 3 | 1 | 4 | 25 |
+| Z₈ | 8 × Q | 3 | 1 | 4 | 32 |
+
+**Key insight:** NPlusMap compiles directly against the flat ⌈log₂(n)⌉ tag encoding
+using per-branch X-flip + multi-controlled gates + X-unflip. This avoids the
+binary-tree nesting problem that makes binary PlusMap inadequate for n > 2.
+
+**Properties verified:**
+- Block-diagonal unitary structure (each branch acts independently)
+- Functoriality (composition law)
+- Non-power-of-2 support (Z₅: unused tag values act as identity)
+
+---
+
 ## ExpInvolution Demo
 
 Infrastructure test verifying the composition law for exponentials of involutions:
