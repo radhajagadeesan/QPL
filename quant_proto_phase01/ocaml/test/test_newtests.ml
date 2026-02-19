@@ -10,6 +10,7 @@
     - §7: Tensor × sum interaction
     - §8: Bool→Bool unitaries
     - §9: Property-based fuzz suite (PROP-TAG-01, PROP-TAG-02)
+    - §10: N-ary quantum case (3/4-ctor identity, gates, classical)
 *)
 
 open Qpl_surface
@@ -854,6 +855,77 @@ let test_section_9 () =
   print_endline ""
 
 (* ================================================================ *)
+(* §10. N-ary quantum case                                           *)
+(* ================================================================ *)
+
+let test_section_10 () =
+  print_endline "§10. N-ary quantum case";
+  print_endline "────────────────────────";
+
+  (* Type abbreviations for n-ary sums *)
+  (* 3-way: (Q + Q) + Q *)
+  let ty3 = Ast.TyPlus (Ast.TyPlus (Ast.TyQ, Ast.TyQ), Ast.TyQ) in
+  (* 4-way: ((Q + Q) + Q) + Q *)
+  let ty4 = Ast.TyPlus (ty3, Ast.TyQ) in
+
+  (* --- NCASE-3-ID: 3-ctor identity case compiles ok --- *)
+  let env3 = make_ty_env [("x", ty3)] in
+  let ncase3_id = Ast.Case (Ast.Var "x", [
+    (Ast.PatCtor ("A", "a"), Ast.Ctor ("A", Ast.Var "a"));
+    (Ast.PatCtor ("B", "b"), Ast.Ctor ("B", Ast.Var "b"));
+    (Ast.PatCtor ("C", "c"), Ast.Ctor ("C", Ast.Var "c"));
+  ]) in
+  ignore (expect_compile_ok ~ty_env:env3 "NCASE-3-ID: 3-ctor identity" ncase3_id);
+
+  (* --- NCASE-3-ID-EQ: 3-ctor identity == id (eq_circ) --- *)
+  let id3 = Ast.Id ty3 in
+  expect_eq_circ ~ty_env:env3 "NCASE-3-ID-EQ: 3-ctor identity == id" ncase3_id id3;
+
+  (* --- NCASE-3-GATES: 3-ctor with H/S/Z per branch compiles ok --- *)
+  let ncase3_gates = Ast.Case (Ast.Var "x", [
+    (Ast.PatCtor ("A", "a"), Ast.Ctor ("A", Ast.App (Ast.Lam ("q", Ast.TyQ, Ast.Seq (Ast.Var "q", Ast.GateH 0)), Ast.Var "a")));
+    (Ast.PatCtor ("B", "b"), Ast.Ctor ("B", Ast.App (Ast.Lam ("q", Ast.TyQ, Ast.Seq (Ast.Var "q", Ast.GateS 0)), Ast.Var "b")));
+    (Ast.PatCtor ("C", "c"), Ast.Ctor ("C", Ast.App (Ast.Lam ("q", Ast.TyQ, Ast.Seq (Ast.Var "q", Ast.GateZ 0)), Ast.Var "c")));
+  ]) in
+  ignore (expect_compile_ok ~ty_env:env3 "NCASE-3-GATES: 3-ctor H/S/Z" ncase3_gates);
+
+  (* --- NCASE-4-ID: 4-ctor identity compiles ok --- *)
+  let env4 = make_ty_env [("x", ty4)] in
+  let ncase4_id = Ast.Case (Ast.Var "x", [
+    (Ast.PatCtor ("A", "a"), Ast.Ctor ("A", Ast.Var "a"));
+    (Ast.PatCtor ("B", "b"), Ast.Ctor ("B", Ast.Var "b"));
+    (Ast.PatCtor ("C", "c"), Ast.Ctor ("C", Ast.Var "c"));
+    (Ast.PatCtor ("D", "d"), Ast.Ctor ("D", Ast.Var "d"));
+  ]) in
+  ignore (expect_compile_ok ~ty_env:env4 "NCASE-4-ID: 4-ctor identity" ncase4_id);
+
+  (* --- NCASE-4-ID-EQ: 4-ctor identity == id (eq_circ) --- *)
+  let id4 = Ast.Id ty4 in
+  expect_eq_circ ~ty_env:env4 "NCASE-4-ID-EQ: 4-ctor identity == id" ncase4_id id4;
+
+  (* --- NCASE-4-GATES: 4-ctor with different gates compiles ok --- *)
+  let ncase4_gates = Ast.Case (Ast.Var "x", [
+    (Ast.PatCtor ("A", "a"), Ast.Ctor ("A", Ast.App (Ast.Lam ("q", Ast.TyQ, Ast.Seq (Ast.Var "q", Ast.GateH 0)), Ast.Var "a")));
+    (Ast.PatCtor ("B", "b"), Ast.Ctor ("B", Ast.App (Ast.Lam ("q", Ast.TyQ, Ast.Seq (Ast.Var "q", Ast.GateS 0)), Ast.Var "b")));
+    (Ast.PatCtor ("C", "c"), Ast.Ctor ("C", Ast.App (Ast.Lam ("q", Ast.TyQ, Ast.Seq (Ast.Var "q", Ast.GateZ 0)), Ast.Var "c")));
+    (Ast.PatCtor ("D", "d"), Ast.Ctor ("D", Ast.App (Ast.Lam ("q", Ast.TyQ, Ast.Seq (Ast.Var "q", Ast.GateX 0)), Ast.Var "d")));
+  ]) in
+  ignore (expect_compile_ok ~ty_env:env4 "NCASE-4-GATES: 4-ctor H/S/Z/X" ncase4_gates);
+
+  (* --- NCASE-CLASSICAL-3: 3-ctor classical case (known ctor) reduces correctly --- *)
+  (* case Ctor("B", Id Q) should select branch B and apply S *)
+  let ncase_classical = Ast.Case (Ast.Ctor ("B", Ast.Id Ast.TyQ), [
+    (Ast.PatCtor ("A", "a"), Ast.Seq (Ast.Var "a", Ast.GateH 0));
+    (Ast.PatCtor ("B", "b"), Ast.Seq (Ast.Var "b", Ast.GateS 0));
+    (Ast.PatCtor ("C", "c"), Ast.Seq (Ast.Var "c", Ast.GateZ 0));
+  ]) in
+  (* Classical case selects branch B, so result should be: id;S = S *)
+  let just_s = Ast.GateS 0 in
+  expect_eq_circ "NCASE-CLASSICAL-3: classical 3-ctor selects branch B" ncase_classical just_s;
+
+  print_endline ""
+
+(* ================================================================ *)
 (* Main: Run all sections                                            *)
 (* ================================================================ *)
 
@@ -873,6 +945,7 @@ let () =
   test_section_7 ();
   test_section_8 ();
   test_section_9 ();
+  test_section_10 ();
 
   print_endline "================================================================";
   Printf.printf "Results: %d/%d passed, %d failed, %d skipped\n"

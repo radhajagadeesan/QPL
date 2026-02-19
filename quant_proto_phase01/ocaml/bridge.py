@@ -160,22 +160,54 @@ def parse_general_gate(j: dict, ty_total: Ty) -> Term:
         else:
             raise ValueError(f"No single-controlled version of gate: {name}")
 
-    # Multiple controls: decompose using the first control + recursion
-    # C^n[G] = C[C^{n-1}[G]] implemented as nested controlled gates
+    # Multiple controls: construct nested Ctrl terms
+    # Gate(name, [target], [c0, c1, ...]) → Ctrl(Ctrl(...Ctrl(base_gate)...))
+    # The Ctrl layout places controls as the first N wires, payload after.
+    # This matches the lift_to_controlled pattern from OCaml elaboration.
     else:
-        # For multi-controlled gates, we decompose:
-        # CC...C[G] with controls [c0, c1, ..., cn] on target t
-        # becomes a sequence that uses ancilla or direct decomposition
-        #
-        # For now, use the simple (but gate-expensive) decomposition:
-        # Apply controlled version with first control, where the "base gate"
-        # is itself controlled by the remaining controls
-        #
-        # This is handled by the to_pytket compiler which supports multi-controlled ops
-        raise ValueError(
-            f"Multi-controlled gate ({len(controls)} controls) not yet supported in bridge. "
-            f"Gate: {name}, controls: {controls}, target: {target}"
-        )
+        from lang.terms import Ctrl, Rz as RzTerm, Rx as RxTerm, Ry as RyTerm, CX as CXTerm
+        import re
+
+        n_ctrls = len(controls)
+        inner_target = target - n_ctrls
+
+        # Build base gate with adjusted wire index
+        if name == "H":
+            base = H(inner_target, ty_total)
+        elif name == "S":
+            base = S(inner_target, ty_total)
+        elif name == "Sdg":
+            base = Sdg(inner_target, ty_total)
+        elif name == "T":
+            base = T(inner_target, ty_total)
+        elif name == "Tdg":
+            base = Tdg(inner_target, ty_total)
+        elif name == "X":
+            base = X(inner_target, ty_total)
+        elif name == "Y":
+            base = Y(inner_target, ty_total)
+        elif name == "Z":
+            base = Z(inner_target, ty_total)
+        elif name.startswith("Rz("):
+            theta = float(re.search(r'Rz\(([^)]+)\)', name).group(1))
+            base = RzTerm(theta, inner_target, ty_total)
+        elif name.startswith("Rx("):
+            theta = float(re.search(r'Rx\(([^)]+)\)', name).group(1))
+            base = RxTerm(theta, inner_target, ty_total)
+        elif name.startswith("Ry("):
+            theta = float(re.search(r'Ry\(([^)]+)\)', name).group(1))
+            base = RyTerm(theta, inner_target, ty_total)
+        else:
+            raise ValueError(
+                f"Multi-controlled gate not supported for: {name}. "
+                f"Controls: {controls}, target: {target}"
+            )
+
+        # Wrap in n_ctrls levels of Ctrl
+        result = base
+        for _ in range(n_ctrls):
+            result = Ctrl(result)
+        return result
 
 
 def _build_ty_total(n_qubits: int) -> Ty:

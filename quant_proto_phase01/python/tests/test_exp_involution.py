@@ -140,39 +140,40 @@ class TestExpInvolutionCompilation:
         assert perm.new_to_old == [1, 0]
 
     def test_exp_twistten_compiles(self):
-        """exp(iθ · TwistTen) compiles to ExpSwap(0,1)."""
+        """exp(iθ · TwistTen) compiles via direct unitary synthesis."""
+        import numpy as np
         body = TwistTen(Q(), Q())
-        exp = ExpInvolution(theta=0.5, body=body)
+        theta = 0.5
+        exp = ExpInvolution(theta=theta, body=body)
 
-        result = compile(exp)
-        cmds = list(result.circuit.get_commands())
+        result = compile(exp, materialize=True)
+        U = result.circuit.get_unitary()
 
-        # TwistTen is one transposition (0,1), so 3 gates
-        assert len(cmds) == 3
-
-        # All on wires 0 and 1
-        for cmd in cmds:
-            qubits = [q.index[0] for q in cmd.qubits]
-            assert set(qubits) == {0, 1}
+        # TwistTen = SWAP, so exp(iθ·SWAP) = cos(θ)·I + i·sin(θ)·SWAP
+        SWAP = np.array([[1,0,0,0],[0,0,1,0],[0,1,0,0],[0,0,0,1]], dtype=complex)
+        expected = math.cos(theta) * np.eye(4) + 1j * math.sin(theta) * SWAP
+        assert np.allclose(U, expected, atol=1e-9)
 
     def test_exp_twistplus_compiles(self):
-        """exp(iθ · TwistPlus) compiles with Option B encoding.
+        """exp(iθ · TwistPlus) compiles correctly via direct unitary synthesis.
 
-        With Option B, TwistPlus(Q,Q) has wire perm = identity (tag flip
-        is symbolic, not a wire permutation). ExpInvolution sees identity →
-        0 transpositions → 0 gates.
-
-        NOTE: This means ExpInvolution does not capture tag flips. A future
-        enhancement would extend ExpInvolution to handle tag relabelings.
+        TwistPlus(Q,Q) = X⊗I on Plus(Q,Q) (2 qubits: 1 tag + 1 payload).
+        ExpInvolution compiles the body to get U, verifies U²=I, and emits
+        cos(θ)·I + i·sin(θ)·U.
         """
+        import numpy as np
         body = TwistPlus(Q(), Q())
-        exp = ExpInvolution(theta=0.5, body=body)
+        theta = 0.5
+        exp = ExpInvolution(theta=theta, body=body)
 
-        result = compile(exp)
-        cmds = list(result.circuit.get_commands())
+        result = compile(exp, materialize=True)
+        U = result.circuit.get_unitary()
 
-        # Wire perm is identity → 0 transpositions → 0 ExpSwap gates
-        assert len(cmds) == 0
+        # TwistPlus(Q,Q) = X⊗I on 2 qubits (tag flip on wire 0, identity on payload)
+        X_mat = np.array([[0,1],[1,0]], dtype=complex)
+        body_U = np.kron(X_mat, np.eye(2))
+        expected = math.cos(theta) * np.eye(4) + 1j * math.sin(theta) * body_U
+        assert np.allclose(U, expected, atol=1e-9)
 
     def test_exp_identity_produces_no_gates(self):
         """exp(iθ · Id) produces no gates (identity has no transpositions)."""
@@ -205,18 +206,18 @@ class TestExpInvolutionCompilation:
         # This should fail during compilation because the body is not involutive
         with pytest.raises(TypeCheckError) as exc:
             compile(exp)
-        assert "involutive" in str(exc.value).lower()
+        assert "involution" in str(exc.value).lower()
 
-    def test_exp_involution_rejects_gates(self):
-        """ExpInvolution body cannot contain gates."""
-        # Body contains a gate (H)
+    def test_exp_involution_rejects_non_involution(self):
+        """ExpInvolution rejects body where U² ≠ I."""
+        # SWAP · (H⊗I) is not an involution
         ty = Ten(Q(), Q())
         body = Seq(TwistTen(Q(), Q()), H(0, ty))
         exp = ExpInvolution(theta=0.5, body=body, ty_total=ty)
 
         with pytest.raises(TypeCheckError) as exc:
             compile(exp)
-        assert "purely structural" in str(exc.value).lower()
+        assert "involution" in str(exc.value).lower()
 
 
 class TestDecomposeInvolution:
@@ -254,22 +255,22 @@ class TestExpInvolutionIntegration:
 
     def test_exp_involution_in_sequence(self):
         """ExpInvolution can be used in sequence with gates."""
+        import numpy as np
         ty = Ten(Q(), Q())
+        theta = 0.5
         prog = Seq(
             H(0, ty),
-            ExpInvolution(theta=0.5, body=TwistTen(Q(), Q()), ty_total=ty),
+            ExpInvolution(theta=theta, body=TwistTen(Q(), Q()), ty_total=ty),
             CX(0, 1, ty),
         )
 
-        result = compile(prog)
-        cmds = list(result.circuit.get_commands())
+        result = compile(prog, materialize=True)
 
-        # 1 H + 3 ExpSwap gates + 1 CX = 5 gates
-        assert len(cmds) == 5
-
-        op_names = [c.op.type.name for c in cmds]
-        assert op_names[0] == "H"
-        assert op_names[-1] == "CX"
+        # Verify the circuit produces a valid unitary
+        U = result.circuit.get_unitary()
+        assert U.shape == (4, 4)
+        # Unitary check: U†U = I
+        assert np.allclose(U @ U.conj().T, np.eye(4), atol=1e-9)
 
 
 class TestExpInvolutionCompositionLaw:
@@ -407,12 +408,10 @@ class TestPauliConjugation:
         assert match, "Z[0] should be Pauli-Z"
 
     def test_conjugation_equals_y(self):
-        """X ; Z ; X = -Z (not Y) since ExpInvolution doesn't capture tag flips.
+        """exp(iπ/4 · X) ; Z ; exp(-iπ/4 · X) = -Y (Pauli conjugation).
 
-        With Option B, ExpInvolution(TwistPlus) produces identity (0 gates),
-        so the conjugation reduces to just Z. This test verifies the current
-        behavior. A proper exp(iθ·X) ; Z ; exp(-iθ·X) = Y test would require
-        ExpInvolution to handle tag flips, which is future work.
+        With direct unitary synthesis, ExpInvolution(TwistPlus) correctly
+        produces exp(iθ·X). Conjugating Z by exp(iπ/4·X) rotates Z → -Y.
         """
         import numpy as np
         from lang.types import Unit, Plus
@@ -420,7 +419,6 @@ class TestPauliConjugation:
         ty = Plus(Unit(), Unit())
         twist = TwistPlus(Unit(), Unit())
 
-        # ExpInvolution sees identity wire perm → produces no gates
         exp_X_pos = ExpInvolution(theta=math.pi/4, body=twist, ty_total=ty)
         exp_X_neg = ExpInvolution(theta=-math.pi/4, body=twist, ty_total=ty)
         Z_gate = Z(0, ty)
@@ -428,7 +426,7 @@ class TestPauliConjugation:
         conjugation = Seq(exp_X_pos, Z_gate, exp_X_neg)
         U = compile(conjugation, materialize=True).circuit.get_unitary()
 
-        # Since ExpInvolution produces no gates, this is just Z
-        expected_Z = np.array([[1,0],[0,-1]], dtype=complex)
-        match, _ = self.matrices_equal_up_to_phase(U, expected_Z)
-        assert match, "With current ExpInvolution, conjugation reduces to Z"
+        # exp(iπ/4·X) Z exp(-iπ/4·X) = -Y
+        expected_neg_Y = np.array([[0, 1], [-1, 0]], dtype=complex)
+        match, _ = self.matrices_equal_up_to_phase(U, expected_neg_Y)
+        assert match, f"Conjugation should give -Y, got:\n{U}"

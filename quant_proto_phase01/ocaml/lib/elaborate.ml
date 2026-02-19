@@ -179,6 +179,8 @@ module Core = struct
     | Apply of term * term  (* Application: f arg, compiled via GOI trace *)
     (* Quantum case: compiled by Python Case combinator *)
     | Case of ty * ty * term * term * term  (* left_payload_ty, right_payload_ty, scrutinee, left_body, right_body *)
+    | NCase of ty list * term * term list
+      (* payload_types, scrutinee, branch_bodies — converts to NPlusMap *)
 
   (** Smart constructors for gates (backward compatibility) *)
   let gate_h i = Gate { name = GH; targets = [i]; controls = [] }
@@ -247,7 +249,18 @@ module Core = struct
         Printf.sprintf "case(%s, %s, %s, %s, %s)"
           (Ast.ty_to_string lt) (Ast.ty_to_string rt)
           (term_to_string scrut) (term_to_string left) (term_to_string right)
+    | NCase (tys, scrut, branches) ->
+        Printf.sprintf "ncase([%s], %s, [%s])"
+          (String.concat ", " (List.map Ast.ty_to_string tys))
+          (term_to_string scrut)
+          (String.concat ", " (List.map term_to_string branches))
 end
+
+(** Flatten a Plus type into its leaf summands.
+    TyPlus(TyPlus(A, B), C) → [A; B; C] *)
+let rec flatten_plus_ty = function
+  | Ast.TyPlus (a, b) -> flatten_plus_ty a @ flatten_plus_ty b
+  | other -> [other]
 
 (** Calculate the wire count (width) of a type.
 
@@ -746,6 +759,12 @@ and lift_to_controlled ~anti ctrl term =
                    lift_to_controlled ~anti:false ctrl left,
                    lift_to_controlled ~anti:false ctrl right)
 
+    (* N-ary case terms: lift recursively *)
+    | Core.NCase (tys, scrut, branches) ->
+        Core.NCase (tys,
+          lift_to_controlled ~anti:false ctrl scrut,
+          List.map (lift_to_controlled ~anti:false ctrl) branches)
+
 (** Elaborate case expression.
 
     For a case like:
@@ -778,8 +797,8 @@ and elaborate_case ~base ~forced_prefix tyvar_env ty_env dt_env scrutinee branch
     (* Quantum case with 2 constructors *)
     elaborate_quantum_case_2 ~base ~forced_prefix tyvar_env ty_env dt_env scrutinee branches
   else
-    (* n > 2: general quantum case (TODO) *)
-    failwith (Printf.sprintf "elaborate_case: %d-constructor quantum case not yet implemented" n)
+    (* n > 2: general quantum case via NPlusMap *)
+    elaborate_quantum_case_n ~base ~forced_prefix tyvar_env ty_env dt_env scrutinee branches
 
 (** Classical case: scrutinee is a known constructor.
     Select the matching branch at compile time. *)
@@ -916,6 +935,66 @@ and elaborate_quantum_case_2 ~base:_ ~forced_prefix tyvar_env ty_env dt_env scru
   else
     case_term
 
+(** N-ary quantum case (n > 2 constructors).
+
+    case x of A(a) => f(a) | B(b) => g(b) | C(c) => h(c)
+
+    Elaborates to: NCase(payload_types, scrutinee, [f'; g'; h'])
+    which bridges to: Seq(scrutinee, NPlusMap(types, [f'; g'; h']))
+
+    Each branch body is a payload-level morphism. The outer constructor
+    wrapping (if present) is stripped, and the pattern variable is
+    substituted with Id(payload_ty).
+
+    MVP: No constructor permutation detection — branches must preserve
+    order (branch i handles summand i).
+*)
+and elaborate_quantum_case_n ~base:_ ~forced_prefix:_ tyvar_env ty_env dt_env scrutinee branches =
+  (* Get scrutinee type and flatten to n payload types *)
+  let scrut_ty = match scrutinee with
+    | Ast.Var x ->
+      (match TyEnv.lookup ty_env x with
+       | Some ty -> ty
+       | None -> failwith "elaborate_quantum_case_n: scrutinee not in type env")
+    | Ast.Id ty -> ty
+    | _ -> failwith "elaborate_quantum_case_n: cannot determine scrutinee type"
+  in
+  let payload_types = flatten_plus_ty scrut_ty in
+  let n = List.length payload_types in
+  let n_branches = List.length branches in
+  if n <> n_branches then
+    failwith (Printf.sprintf
+      "elaborate_quantum_case_n: %d summands but %d branches" n n_branches);
+
+  (* Process each branch *)
+  let branch_elabs = List.map2 (fun payload_ty (pat, body) ->
+    let var = match pat with
+      | Ast.PatCtor (_, v) -> v
+      | Ast.PatWild -> "_"
+    in
+    (* Check linearity: pattern variable must be used exactly once *)
+    if var <> "_" then check_linear_use var body;
+    (* Normalize Ctor chains to InjPath and strip the outermost constructor *)
+    let body_n = normalize_inj body in
+    let inner = match body_n with
+      | Ast.InjPath (_ :: rest, payload) ->
+        if rest = [] then payload
+        else Ast.InjPath (rest, payload)
+      | Ast.Ctor (_, payload) -> payload
+      | other -> other
+    in
+    (* Substitute pattern variable with Id(payload_ty) *)
+    let body' = subst var (Ast.Id payload_ty) inner in
+    (* Elaborate at base 0 *)
+    elaborate ~base:0 ~forced_prefix:[] tyvar_env ty_env dt_env body'
+  ) payload_types branches in
+
+  (* Elaborate scrutinee *)
+  let scrut_elab = elaborate ~base:0 ~forced_prefix:[] tyvar_env ty_env dt_env scrutinee in
+
+  (* Return NCase *)
+  Core.NCase (payload_types, scrut_elab, branch_elabs)
+
 (** Elaborate a definition *)
 let elaborate_def tyvar_env ty_env dt_env = function
   | Ast.DefType (name, tyvars, ctors) ->
@@ -1020,6 +1099,14 @@ let rec core_to_bridge (term : Core.term) : Bridge.term =
   | Core.Case (lt, rt, scrut, left, right) ->
     Bridge.TCase (ty_to_rep lt, ty_to_rep rt,
                   core_to_bridge scrut, core_to_bridge left, core_to_bridge right)
+  | Core.NCase (tys, scrut, branches) ->
+    Bridge.TSeq (
+      core_to_bridge scrut,
+      Bridge.TNPlusMap (
+        Array.of_list (List.map ty_to_rep tys),
+        Array.of_list (List.map core_to_bridge branches)
+      )
+    )
 
 (** Convert Core.gate to Bridge.term *)
 and gate_to_bridge (g : Core.gate) : Bridge.term =

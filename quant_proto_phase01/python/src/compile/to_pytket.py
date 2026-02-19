@@ -886,10 +886,61 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                             circ.add_qcontrolbox(qcb, ctrl_phys + phys_qubits)
                     return
 
-                # Fallback: unsupported multi-controlled gate
+                # Fallback: primitive gates with n >= 2 controls via QControlBox
+                def _prim_to_qcontrolbox(body, n_ctrls, ctrls, pay_off):
+                    """Try to emit a primitive gate with n controls using QControlBox.
+                    Returns True if handled, False otherwise."""
+                    from pytket.circuit import QControlBox, Op
+                    # Map term types to (OpType, params, target_wires)
+                    if isinstance(body, H):
+                        base_op = Op.create(OpType.H)
+                        targets = [body.i]
+                    elif isinstance(body, S):
+                        base_op = Op.create(OpType.S)
+                        targets = [body.i]
+                    elif isinstance(body, Sdg):
+                        base_op = Op.create(OpType.Sdg)
+                        targets = [body.i]
+                    elif isinstance(body, X):
+                        base_op = Op.create(OpType.X)
+                        targets = [body.i]
+                    elif isinstance(body, Y):
+                        base_op = Op.create(OpType.Y)
+                        targets = [body.i]
+                    elif isinstance(body, Z):
+                        base_op = Op.create(OpType.Z)
+                        targets = [body.i]
+                    elif isinstance(body, T):
+                        base_op = Op.create(OpType.T)
+                        targets = [body.i]
+                    elif isinstance(body, Tdg):
+                        base_op = Op.create(OpType.Tdg)
+                        targets = [body.i]
+                    elif isinstance(body, Rz):
+                        base_op = Op.create(OpType.Rz, [body.theta])
+                        targets = [body.i]
+                    elif isinstance(body, Rx):
+                        base_op = Op.create(OpType.Rx, [body.theta])
+                        targets = [body.i]
+                    elif isinstance(body, Ry):
+                        base_op = Op.create(OpType.Ry, [body.theta])
+                        targets = [body.i]
+                    elif isinstance(body, CX):
+                        base_op = Op.create(OpType.CX)
+                        targets = [body.i, body.j]
+                    else:
+                        return False
+                    qcb = QControlBox(base_op, n_ctrls)
+                    phys_targets = [p.apply_new_to_old(t + pay_off) for t in targets]
+                    ctrl_phys = [p.apply_new_to_old(c) for c in ctrls]
+                    circ.add_qcontrolbox(qcb, ctrl_phys + phys_targets)
+                    return True
+
+                if _prim_to_qcontrolbox(body, n_ctrls, ctrls, pay_off):
+                    return
+
                 raise NotImplementedError(
                     f"Multi-controlled ({n_ctrls} controls) not implemented for: {type(body).__name__}. "
-                    f"Only X (CCX/Toffoli) is supported for 2 controls. "
                     f"Use structural decomposition or primitive gates."
                 )
 
@@ -923,26 +974,55 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             emit_ExpSwap(t.theta, t.i, t.j, offset); return
 
         if isinstance(t, ExpInvolution):
-            # Compile the body as a structural term to get its permutation
-            # We need to compile only the structural part, not gates
-            body_perm = _compile_structural_to_perm(t.body)
+            # Direct unitary synthesis: compile body to get U, verify U²≈I,
+            # then emit cos(θ)·I + i·sin(θ)·U as a unitary box.
+            # This correctly handles tag flips, tag perms, and multi-transpositions.
+            import numpy as np
+            import math as _math
 
-            # Verify it's an involution
-            if not is_involution(body_perm):
+            body_result = compile(t.body, materialize=True)
+            U = body_result.circuit.get_unitary()
+            body_n = U.shape[0]
+            body_w = int(_math.log2(body_n))
+
+            # Verify involution: U² ≈ I
+            UU = U @ U
+            if not np.allclose(UU, np.eye(body_n), atol=1e-9):
                 raise TypeCheckError(
-                    f"ExpInvolution body must compile to an involutive permutation, "
-                    f"but got perm with π² ≠ id"
+                    f"ExpInvolution body must be an involution (U²=I), "
+                    f"but U² deviates from I by {np.max(np.abs(UU - np.eye(body_n))):.2e}"
                 )
 
-            # Decompose into disjoint transpositions
-            swaps = decompose_involution(body_perm)
+            # If U ≈ I, then exp(iθ·I) = e^{iθ}·I (global phase) — skip
+            if np.allclose(U, np.eye(body_n), atol=1e-9):
+                if explain:
+                    log.append(f"ExpInvolution theta={t.theta} body=I (global phase, skipped)")
+                return
 
-            # Emit ExpSwap for each transposition
-            for (a, b) in swaps:
-                emit_ExpSwap(t.theta, a, b, offset)
+            # M = cos(θ)·I + i·sin(θ)·U
+            M = _math.cos(t.theta) * np.eye(body_n) + 1j * _math.sin(t.theta) * U
+
+            # Emit as UnitaryNqBox
+            phys_wires = [p.apply_new_to_old(i + offset) for i in range(body_w)]
+
+            if body_w == 1:
+                from pytket.circuit import Unitary1qBox
+                box = Unitary1qBox(M)
+                circ.add_unitary1qbox(box, phys_wires[0])
+            elif body_w == 2:
+                from pytket.circuit import Unitary2qBox
+                box = Unitary2qBox(M)
+                circ.add_unitary2qbox(box, phys_wires[0], phys_wires[1])
+            elif body_w == 3:
+                from pytket.circuit import Unitary3qBox
+                box = Unitary3qBox(M)
+                circ.add_unitary3qbox(box, phys_wires[0], phys_wires[1], phys_wires[2])
+            else:
+                raise NotImplementedError(
+                    f"ExpInvolution on {body_w} qubits (> 3) not yet supported")
 
             if explain:
-                log.append(f"ExpInvolution theta={t.theta} body_perm={body_perm.new_to_old} swaps={swaps}")
+                log.append(f"ExpInvolution theta={t.theta} body_w={body_w} via direct unitary synthesis")
             return
 
         # Qubit encoding isomorphism: Q ↔ I + I

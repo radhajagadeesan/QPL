@@ -289,9 +289,20 @@ class TestCtrlNested:
         ])
         assert np.allclose(ctrl_U, expected, atol=1e-10)
 
-    def test_nested_ctrl_h_not_supported(self):
-        """Ctrl(Ctrl(H)) raises NotImplementedError (no CCH primitive)."""
+    def test_nested_ctrl_h_compiles(self):
+        """Ctrl(Ctrl(H)) = CCH compiles via QControlBox."""
         inner = Ctrl(H(0, Q()))
         outer = Ctrl(inner)
-        with pytest.raises(NotImplementedError, match="Multi-controlled.*not implemented"):
-            compile(outer, materialize=True)
+        result = compile(outer, materialize=True)
+        # CCH should produce a valid circuit
+        assert result.circuit.n_gates >= 1
+        # Verify unitary: block-diagonal with H in bottom-right 2x2
+        U = result.circuit.get_unitary()
+        H_mat = np.array([[1, 1], [1, -1]]) / np.sqrt(2)
+        expected = np.block([
+            [np.eye(2), np.zeros((2, 2)), np.zeros((2, 2)), np.zeros((2, 2))],
+            [np.zeros((2, 2)), np.eye(2), np.zeros((2, 2)), np.zeros((2, 2))],
+            [np.zeros((2, 2)), np.zeros((2, 2)), np.eye(2), np.zeros((2, 2))],
+            [np.zeros((2, 2)), np.zeros((2, 2)), np.zeros((2, 2)), H_mat],
+        ])
+        assert np.allclose(U, expected, atol=1e-10)
