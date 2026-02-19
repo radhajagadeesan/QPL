@@ -196,6 +196,19 @@ val omap0 : 'a ty -> 'b ty
          -> (unit, [`Lolli of 'b * 'd]) prog
          -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
 
+(** N-ary omap for n-ary sums: [omapn summand_types branches]
+    where summand_types has n types and branches has n morphisms.
+
+    NPlusMap(\[A₁,...,Aₙ\], \[f₁,...,fₙ\]) : (A₁+...+Aₙ) → (B₁+...+Bₙ)
+
+    Compiles directly against flat ⌈log₂(n)⌉ tag encoding using
+    per-branch X-flip + multi-controlled gates + X-unflip.
+
+    Requires at least 2 summand types. *)
+val omapn : _ ty array
+         -> (unit, [`Lolli of 'a * 'b]) prog array
+         -> (unit, [`Lolli of 'c * 'd]) prog
+
 (** Phase-weighted omap: [phased_omap0 z ty_left ty_right f g]
 
     Like [omap0], but applies phase weight [z] to the left branch.

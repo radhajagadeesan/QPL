@@ -148,6 +148,10 @@ type (_, _) prog =
   | OMap0 : Rep.t * Rep.t * (unit, [`Lolli of 'a * 'c]) prog * (unit, [`Lolli of 'b * 'd]) prog
          -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
 
+  (* N-ary omap for n-ary sums *)
+  | NMap : Rep.t array * (unit, [`Lolli of 'a * 'b]) prog array
+        -> (unit, [`Lolli of 'c * 'd]) prog
+
   (* Phase-weighted omap: applies phase z to left branch *)
   | PhasedOMap0 : float * Rep.t * Rep.t * (unit, [`Lolli of 'a * 'c]) prog * (unit, [`Lolli of 'b * 'd]) prog
               -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
@@ -216,6 +220,14 @@ let seq0 f g = Seq0 (f, g)
 let par0 f g = Par0 (f, g)
 
 let omap0 ty_left ty_right f g = OMap0 (ty_left, ty_right, f, g)
+
+let omapn summand_types branches =
+  if Array.length summand_types < 2 then
+    invalid_arg "omapn: need at least 2 summand types";
+  if Array.length summand_types <> Array.length branches then
+    invalid_arg (Printf.sprintf "omapn: %d summand types but %d branches"
+      (Array.length summand_types) (Array.length branches));
+  NMap (summand_types, branches)
 
 (* Phase-weighted omap: applies phase z to left branch
    Validates |z| = 1 within tolerance *)
@@ -317,6 +329,8 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
   | Prim (name, _dom, _cod) -> Bridge.TGate (name, [0], [])
   | OMap0 (ty_left, ty_right, f, g) ->
       Bridge.TPlusMap (ty_left, ty_right, emit_any f, emit_any g)
+  | NMap (summand_types, branches) ->
+      Bridge.TNPlusMap (summand_types, Array.map emit_any branches)
   | PhasedOMap0 (theta, ty_left, ty_right, f, g) ->
       Bridge.TPhasedPlusMap (theta, ty_left, ty_right, emit_any f, emit_any g)
   | PhasedCtrl (name, arity, phases, dt_rep, a_ty) ->

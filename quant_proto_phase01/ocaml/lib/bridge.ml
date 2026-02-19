@@ -119,6 +119,8 @@ type term =
   | TPhasedPlusMap of float * Rep.t * Rep.t * term * term  (* phase θ, ty_left, ty_right, f, g *)
   (* Phase-weighted n-ary control: applies phase zᵢ to branch i *)
   | TPhasedControl of string * int * float list * Rep.t * Rep.t  (* name, arity, phases, dt_rep, a_ty *)
+  (* N-ary bifunctorial action on sums *)
+  | TNPlusMap of Rep.t array * term array  (* summand_types, branches *)
   (* Pattern-matching case on sums *)
   | TCase of Rep.t * Rep.t * term * term * term  (* case scrut of Left => left | Right => right *)
 
@@ -218,6 +220,14 @@ let rec term_to_json = function
   | TPhasedPlusMap (theta, ty_left, ty_right, left, right) ->
     Printf.sprintf {|{"node": "PhasedPlusMap", "theta": %f, "ty_left": %s, "ty_right": %s, "left": %s, "right": %s}|}
       theta (type_to_json ty_left) (type_to_json ty_right) (term_to_json left) (term_to_json right)
+  (* N-ary bifunctorial action on sums *)
+  | TNPlusMap (summand_types, branches) ->
+    let types_json = Printf.sprintf "[%s]"
+      (String.concat ", " (Array.to_list (Array.map type_to_json summand_types))) in
+    let branches_json = Printf.sprintf "[%s]"
+      (String.concat ", " (Array.to_list (Array.map term_to_json branches))) in
+    Printf.sprintf {|{"node": "NPlusMap", "summand_types": %s, "branches": %s}|}
+      types_json branches_json
   (* Phase-weighted n-ary control *)
   | TPhasedControl (name, arity, phases, dt_rep, a_ty) ->
     let phases_json = Printf.sprintf "[%s]"

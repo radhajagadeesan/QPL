@@ -163,6 +163,14 @@ NPlusMap(
 # Domain/codomain built as balanced binary Plus trees via build_plus_tree()
 ```
 
+**OCaml Linear DSL equivalent:**
+```ocaml
+val omapn : _ ty array
+         -> (unit, [`Lolli of 'a * 'b]) prog array
+         -> (unit, [`Lolli of 'c * 'd]) prog
+(* omapn summand_types branches — requires at least 2 summand types *)
+```
+
 **Compilation:** Per-branch X-flip + multi-controlled gates + X-unflip on flat ⌈log₂(n)⌉ tag encoding.
 
 **Type helper:**

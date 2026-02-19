@@ -298,8 +298,61 @@ KEY INSIGHTS
   print_datatype z4;
   print_datatype z5;
 
+  Printf.printf "  (Z8 declared in PART 7 using NPlusMap)\n";
+
   (* =========================================================================
-     PART 7: Summary
+     PART 7: Z8 Coherent Action via NPlusMap
+     ========================================================================= *)
+  banner "PART 7: Z8 Coherent Action via NPlusMap";
+
+  print_endline "
+TYPE STRUCTURE
+--------------
+    Z8 = I + (I + (I + (I + (I + (I + (I + I))))))  (8 elements)
+    A  = Q
+
+    Tag width: 3 qubits (flat log2 encoding)
+
+NPlusMap APPROACH
+-----------------
+    Instead of manual binary decomposition, NPlusMap dispatches
+    one morphism per summand. The compiler handles the tag encoding.
+
+    Branch m: Rz(m * 0.25) half-turns
+    m=0: Rz(0.00)  m=1: Rz(0.25)  m=2: Rz(0.50)  m=3: Rz(0.75)
+    m=4: Rz(1.00)  m=5: Rz(1.25)  m=6: Rz(1.50)  m=7: Rz(1.75)
+";
+
+  let z8 = datatype
+    ~name:"Z8"
+    ~arity:8
+    ~labels:["0";"1";"2";"3";"4";"5";"6";"7"]
+    ~ops:[("add", lolli (self **. self) (self **. self));
+          ("neg", lolli self self)]
+  in
+
+  Printf.printf "  Z8: arity=%d, rep width=%d tag qubits\n" z8.arity (tag_width z8.arity);
+
+  (* Build NPlusMap: 8 branches, each Rz(m * 0.25) half-turns *)
+  let summand_types = Array.make 8 q in
+  let branches = Array.init 8 (fun m ->
+    gate_rz (float_of_int m *. 0.25)
+  ) in
+  let z8_action = omapn summand_types branches in
+  let z8_term = emit z8_action in
+
+  Printf.printf "  Z8 NPlusMap term emitted\n";
+  Printf.printf "  Bridge JSON: %s\n" (Bridge.term_to_json z8_term);
+
+  (match Bridge.compile z8_term with
+   | Bridge.CompileOk (perm, size) ->
+       Printf.printf "  Compiled: %d gates, perm.n=%d\n" size perm.n
+   | Bridge.CompileError err ->
+       Printf.printf "  FAILED: %s\n" err;
+       exit 1);
+
+  (* =========================================================================
+     PART 8: Summary
      ========================================================================= *)
   banner "SUMMARY";
 
@@ -312,16 +365,19 @@ Demonstrated: Coherent control over cyclic groups
     Z2 (Bool):     1 tag qubit,  1 gate  (CZ)
     Z4:            2 tag qubits, 2 gates (CS ; CZ)
     Z5:            3 tag qubits, 3 gates (CRz ; CRz ; CRz)
+    Z8 (NPlusMap): 3 tag qubits, compiled via NPlusMap (8 branches)
 
 Key formula:
     control_Zn : (Zn ⊸ (A ⊸ A)) ⊸ (Zn ⊗ A ⊸ Zn ⊗ A)
+
+NPlusMap: n-ary coherent sum eliminator.
+  No manual binary decomposition needed!
+  Compiles directly against flat tag encoding.
 
 This is the quantum analogue of \"case\" that:
   - Applies operations indexed by group elements
   - Preserves the index in superposition
   - Never observes/collapses the control
-
-Binary decomposition gives O(log n) gate count!
 ";
 
   banner "DEMO COMPLETE"

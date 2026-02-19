@@ -38,6 +38,8 @@ from lang.terms import (
     ExpSwap, ExpInvolution,
     # Bifunctorial action on sums
     PlusMap,
+    # N-ary coherent sum eliminator
+    NPlusMap,
     # Phase-weighted bifunctorial action
     PhasedPlusMap,
     # Phase-weighted n-ary control
@@ -353,6 +355,12 @@ def parse_term(j: dict, ty_total: Ty = None, min_qubits: int = 1) -> Term:
         left = parse_term(j["left"], ty_left)
         right = parse_term(j["right"], ty_right)
         return PlusMap(ty_left, ty_right, left, right)
+
+    # N-ary coherent sum eliminator
+    elif node == "NPlusMap":
+        summand_types = tuple(parse_type(t) for t in j["summand_types"])
+        branches = tuple(parse_term(b, st) for b, st in zip(j["branches"], summand_types))
+        return NPlusMap(summand_types, branches)
 
     # Phase-weighted bifunctorial action
     elif node == "PhasedPlusMap":

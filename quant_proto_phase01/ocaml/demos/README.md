@@ -63,6 +63,7 @@ Coherent control over cyclic groups:
 - Z2 (Bool): CZ gate (1 gate)
 - Z4: Binary decomposition with CS, CZ (2 gates)
 - Z5: CRz binary decomposition (3 gates)
+- Z8: NPlusMap n-ary coherent sum eliminator (8 branches, no manual decomposition)
 - O(log n) gate count via binary decomposition
 
 ### short_circuit_e2e.ml

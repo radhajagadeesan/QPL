@@ -335,6 +335,19 @@ action = NPlusMap(summands, branches)
 # Compiles to 32 gates on 4 qubits (3 tag + 1 payload)
 ```
 
+**Example (OCaml Linear DSL) — Z₈ phase action:**
+```ocaml
+open Qpl_surface.Linear
+
+let summand_types = Array.make 8 q in
+let branches = Array.init 8 (fun m ->
+  gate_rz (float_of_int m *. 0.25)
+) in
+let z8_action = omapn summand_types branches in
+let z8_term = emit z8_action in
+(* Compiles to 32 gates on 4 qubits (3 tag + 1 payload) *)
+```
+
 **Properties:**
 - Identity law: `NPlusMap(Id,...,Id) ≡ Id`
 - Composition: `Seq(NPlusMap(f₁,...), NPlusMap(g₁,...)) ≡ NPlusMap(Seq(f₁,g₁),...)`
