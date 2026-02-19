@@ -166,6 +166,13 @@ val gate_rz : float -> (unit, [`Lolli of [`Q] * [`Q]]) prog
 *)
 val phase : Complex.t -> 'a ty -> (unit, [`Lolli of 'a * 'a]) prog
 
+(** Exponential of a structural involution: [exp_i theta body]
+    where body is a closed endomorphism satisfying body^2 = id.
+    Computes exp(i*theta*body) = cos(theta)*I + i*sin(theta)*body.
+    Involution property is verified at compile time by the Python backend. *)
+val exp_i : float -> (unit, [`Lolli of 'a * 'a]) prog
+         -> (unit, [`Lolli of 'a * 'a]) prog
+
 (** {2 Composition (Derived)} *)
 
 (** Identity on a type: [id ty : Prog(∅, A ⊸ A)] *)

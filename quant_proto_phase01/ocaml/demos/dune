@@ -29,3 +29,7 @@
 (executable
  (name algorithmic_snippets)
  (libraries qpl_surface))
+
+(executable
+ (name exp_twist_e2e)
+ (libraries qpl_surface str))

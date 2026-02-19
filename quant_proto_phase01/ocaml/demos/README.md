@@ -21,6 +21,7 @@ dune exec demos/abstract_qswitch_e2e.exe
 dune exec demos/qswitch_instantiated_e2e.exe
 dune exec demos/zn_controlled_phase_e2e.exe
 dune exec demos/short_circuit_e2e.exe
+dune exec demos/exp_twist_e2e.exe
 dune exec demos/linear_demo.exe
 dune exec demos/datatype_demo.exe
 ```
@@ -73,6 +74,17 @@ Short-circuit conjunction with witness routing and quantum phase marking:
 - `phased_omap0` for phase-weighted bifunctors
 - `phased_control` for n-ary datatypes
 - Creates interference between execution paths
+
+### exp_twist_e2e.ml
+
+Exponential of involution (`exp_i`) E2E verification:
+- `TwistTen(Q,Q)` compilation sanity check
+- `exp_i(pi/4, twist)` via direct unitary synthesis
+- `exp_i(pi/4, twist) ; exp_i(pi/4, twist)` composition
+- Composition law: `exp(pi/4);exp(pi/4) = exp(pi/2)` via `eq_circ`
+- `exp_i(pi/4, twist_plus I I)` on sum types
+
+Uses the `exp_i` Linear DSL combinator (wraps `ExpInvolution`).
 
 ### linear_demo.ml
 

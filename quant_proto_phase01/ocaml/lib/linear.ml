@@ -128,6 +128,10 @@ type (_, _) prog =
   | Phase : float * 'a ty -> (unit, [`Lolli of 'a * 'a]) prog
       (* Stores the angle θ where z = e^{iθ}; ty is the type being scaled *)
 
+  (* Exponential of involution: exp(iθ·P) where P² = I *)
+  | ExpI : float * (unit, [`Lolli of 'a * 'a]) prog
+        -> (unit, [`Lolli of 'a * 'a]) prog
+
   (* Identity *)
   | Id : 'a ty -> (unit, [`Lolli of 'a * 'a]) prog
 
@@ -210,6 +214,8 @@ let phase z ty =
   else
     let theta = Complex.arg z in
     Phase (theta, ty)
+
+let exp_i theta body = ExpI (theta, body)
 
 let id ty = Id ty
 
@@ -321,6 +327,7 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
         (* Multi-qubit: emit Id (phase is global, unobservable in isolation) *)
         Bridge.TId ty
 
+  | ExpI (theta, body) -> Bridge.TExpInvolution (theta, emit_any body)
   | Id ty -> Bridge.TId ty
   | Seq (f, g) -> Bridge.TSeq (emit_any f, emit_any g)
   | Seq0 (f, g) -> Bridge.TSeq (emit_any f, emit_any g)

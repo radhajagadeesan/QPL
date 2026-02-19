@@ -331,6 +331,13 @@ ExpSwap(theta: float, i: int, j: int, ty_total: Ty) -> Term
 # Returns: term of type ty_total → ty_total
 ```
 
+**OCaml Linear DSL:**
+```ocaml
+val exp_i : float -> (unit, [`Lolli of 'a * 'a]) prog
+         -> (unit, [`Lolli of 'a * 'a]) prog
+(* exp_i theta body — emits Bridge.TExpInvolution *)
+```
+
 **ExpSwap unitary:**
 ```
 exp(iθ · SWAP) = cos(θ)·I + i·sin(θ)·SWAP

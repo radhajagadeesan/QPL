@@ -236,6 +236,12 @@ exp_i(θ, P) : A → A
 | `exp_i(θ, P)` | A → A | Exponential of involution P : A → A |
 | `ExpSwap(θ, i, j)` | Q⊗Q → Q⊗Q | Atomic exp(iθ·SWAP) on wires i,j |
 
+**OCaml Linear DSL:**
+```ocaml
+(* exp_i : float -> (unit, A ⊸ A) prog -> (unit, A ⊸ A) prog *)
+let e = exp_i (Float.pi /. 4.0) (twist_tensor q q)
+```
+
 The compiler:
 1. Verifies P is involutive (P² = id)
 2. Decomposes P into disjoint transpositions
@@ -529,6 +535,7 @@ See `python/demos/README.md` and `ocaml/demos/README.md` for full details.
 | Instantiated QSwitch | `qswitch_instantiated_e2e.ml` | Compositional use of QSwitch combinator |
 | Zn Controlled Phase | `zn_controlled_phase_e2e.ml` | Z2, Z4, Z5 with binary decomposition |
 | **Short-Circuit Conjunction** | `short_circuit_e2e.ml` | Witness routing, phased_omap0, phased_control |
+| **ExpInvolution** | `exp_twist_e2e.ml` | exp_i combinator, composition law, eq_circ verification |
 | Linear DSL Demo | `linear_demo.ml` | Core DSL features + E2E compilation |
 | Datatype Demo | `datatype_demo.ml` | Datatypes, control, phase rotations + E2E |
 
