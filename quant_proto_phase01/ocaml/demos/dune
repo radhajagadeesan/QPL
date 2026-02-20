@@ -33,3 +33,7 @@
 (executable
  (name exp_twist_e2e)
  (libraries qpl_surface str))
+
+(executable
+ (name ctrl_from_dist_e2e)
+ (libraries qpl_surface str))

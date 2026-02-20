@@ -367,6 +367,9 @@ def _emit_nway_controlled(circ, tag_qubits, branch_idx, sub_cmds, wire_map_fn):
         ctrl_op = _CTRL_GATE_MAP.get(cmd.op.type)
         if ctrl_op is not None and k == 1:
             circ.add_gate(ctrl_op, cmd.op.params, [tag_qubits[0]] + phys_qubits)
+        elif cmd.op.type == OpType.CnX:
+            # CnX is n-ary controlled X; prepend k more controls
+            circ.add_gate(OpType.CnX, [], tag_qubits + phys_qubits)
         else:
             base_op = Op.create(cmd.op.type, cmd.op.params)
             qcb = QControlBox(base_op, k)
@@ -640,6 +643,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             ctrl_op = _CTRL_GATE_MAP.get(cmd.op.type)
             if ctrl_op is not None:
                 circ.add_gate(ctrl_op, cmd.op.params, [ctrl_q] + phys_qubits)
+            elif cmd.op.type == OpType.CnX:
+                # CnX is n-ary controlled X; just prepend one more control
+                circ.add_gate(OpType.CnX, [], [ctrl_q] + phys_qubits)
             else:
                 base_op = Op.create(cmd.op.type, cmd.op.params)
                 qcb = QControlBox(base_op, 1)
@@ -932,6 +938,10 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     ctrl_op = _CTRL_GATE_MAP.get(cmd.op.type) if n_ctrls == 1 else None
                     if ctrl_op is not None:
                         circ.add_gate(ctrl_op, cmd.op.params,
+                                      ctrl_phys + phys_qubits)
+                    elif cmd.op.type == OpType.CnX:
+                        # CnX is n-ary controlled X; prepend more controls
+                        circ.add_gate(OpType.CnX, [],
                                       ctrl_phys + phys_qubits)
                     else:
                         base_op = Op.create(cmd.op.type, cmd.op.params)
