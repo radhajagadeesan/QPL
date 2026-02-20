@@ -867,25 +867,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     compile_multi_ctrl(body.body, ctrls + [inner_ctrl], inner_pay_off)
                     return
 
-                # Inductive: Ctrl(PlusMap/Case/...) — compile body, decompose, control each gate
-                if isinstance(body, (PlusMap, Case, CaseExpr, NPlusMap, PhasedPlusMap, PhasedControl)):
-                    from pytket.circuit import QControlBox, Op
-                    sub = compile(body, materialize=True)
-                    sub_cmds = _decompose_and_get_cmds(sub.circuit)
-                    for cmd in sub_cmds:
-                        phys_qubits = [p.apply_new_to_old(q.index[0] + pay_off)
-                                       for q in cmd.qubits]
-                        ctrl_phys = [p.apply_new_to_old(c) for c in ctrls]
-                        ctrl_op = _CTRL_GATE_MAP.get(cmd.op.type) if n_ctrls == 1 else None
-                        if ctrl_op is not None:
-                            circ.add_gate(ctrl_op, cmd.op.params,
-                                          ctrl_phys + phys_qubits)
-                        else:
-                            base_op = Op.create(cmd.op.type, cmd.op.params)
-                            qcb = QControlBox(base_op, n_ctrls)
-                            circ.add_qcontrolbox(qcb, ctrl_phys + phys_qubits)
-                    return
-
                 # Fallback: primitive gates with n >= 2 controls via QControlBox
                 def _prim_to_qcontrolbox(body, n_ctrls, ctrls, pay_off):
                     """Try to emit a primitive gate with n controls using QControlBox.
@@ -939,10 +920,24 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 if _prim_to_qcontrolbox(body, n_ctrls, ctrls, pay_off):
                     return
 
-                raise NotImplementedError(
-                    f"Multi-controlled ({n_ctrls} controls) not implemented for: {type(body).__name__}. "
-                    f"Use structural decomposition or primitive gates."
-                )
+                # General fallback: compile any body to a sub-circuit,
+                # decompose to primitives, and control each gate.
+                from pytket.circuit import QControlBox, Op
+                sub = compile(body, materialize=True)
+                sub_cmds = _decompose_and_get_cmds(sub.circuit)
+                for cmd in sub_cmds:
+                    phys_qubits = [p.apply_new_to_old(q.index[0] + pay_off)
+                                   for q in cmd.qubits]
+                    ctrl_phys = [p.apply_new_to_old(c) for c in ctrls]
+                    ctrl_op = _CTRL_GATE_MAP.get(cmd.op.type) if n_ctrls == 1 else None
+                    if ctrl_op is not None:
+                        circ.add_gate(ctrl_op, cmd.op.params,
+                                      ctrl_phys + phys_qubits)
+                    else:
+                        base_op = Op.create(cmd.op.type, cmd.op.params)
+                        qcb = QControlBox(base_op, n_ctrls)
+                        circ.add_qcontrolbox(qcb, ctrl_phys + phys_qubits)
+                return
 
             compile_multi_ctrl(t.body, [ctrl_wire], payload_offset)
             if explain:
@@ -1437,8 +1432,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             elif total_tag_bits == 2:
                 circ.add_gate(OpType.CU1, [half_turns], [tag_qubits[0], tag_qubits[1]])
             else:
-                raise NotImplementedError(
-                    f"PhasedPlusMap with {total_tag_bits} tag bits not yet fully implemented.")
+                # k >= 3: multi-controlled U1 via QControlBox
+                from pytket.circuit import QControlBox, Op
+                base_op = Op.create(OpType.U1, [half_turns])
+                qcb = QControlBox(base_op, total_tag_bits - 1)
+                circ.add_qcontrolbox(qcb, tag_qubits)
             for tq in reversed(tag_qubits):
                 circ.X(tq)
 
@@ -1488,11 +1486,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 elif n_tag_bits == 2:
                     circ.add_gate(OpType.CU1, [theta_ht], [tag_qubits[0], tag_qubits[1]])
                 else:
-                    # For 3+ tag qubits, need multi-controlled U1 decomposition
-                    # This is complex; for now raise NotImplementedError
-                    raise NotImplementedError(
-                        f"PhasedControl with {n_tag_bits} tag bits not yet fully implemented. "
-                        "Only 1-2 tag bits (arity ≤ 4) supported.")
+                    # k >= 3: multi-controlled U1 via QControlBox
+                    from pytket.circuit import QControlBox, Op
+                    base_op = Op.create(OpType.U1, [theta_ht])
+                    qcb = QControlBox(base_op, n_tag_bits - 1)
+                    circ.add_qcontrolbox(qcb, tag_qubits)
 
                 # Apply X to restore the 0-bits
                 for bit_pos in reversed(bits_to_flip):

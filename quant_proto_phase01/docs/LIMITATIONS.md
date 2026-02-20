@@ -1,105 +1,87 @@
 # Known Limitations
 
-This document lists all known limitations of the QPL compiler. Each entry states what fails, why, and what the workaround is (if any).
-
-Last updated: 2026-02-14.
+Last updated: 2026-02-19.
 
 ---
 
-## 1. Sum Type Arity (pytket backend)
+## 1. Sum Type Arity — pytket
 
-**Affected operations:** `TwistPlus`, `AssocPlus`, `PlusMap`, `PhasedPlusMap`, `PhasedControl`, and any structural operation that emits a tag permutation.
+**Root cause:** pytket provides `Unitary2qBox` (2 qubits) and `Unitary3qBox` (3 qubits) but no general `UnitaryNqBox`. Tag permutation unitaries and full PlusMap block-diagonal unitaries are emitted through these boxes.
 
-**Root cause:** pytket provides `Unitary2qBox` (2 qubits) and `Unitary3qBox` (3 qubits) but no general `UnitaryNqBox`. Tag permutations and full PlusMap unitaries are emitted through these boxes.
+**Precise pytket limitation:** `pytket.circuit` exposes `Unitary2qBox` and `Unitary3qBox` only. There is no `UnitaryNqBox` for arbitrary n. If pytket added one, limitations 1a and 1b would be eliminated.
 
-### 1a. Tag permutations: k ≤ 3 tag qubits (up to 8 summands)
+### 1a. Tag permutations: ≤ 8 summands (k ≤ 3 tag qubits)
 
 Tag register width k = ceil(log₂(n)) where n is the number of leaf summands after flattening. `_emit_tag_perm_unitary` supports k ≤ 3.
 
 | Summands (n) | Tag bits (k) | Supported? |
 |:---:|:---:|:---:|
-| 2 | 1 | ✅ no unitary needed (X gate) |
+| 2 | 1 | ✅ X gate (no unitary box needed) |
 | 3–4 | 2 | ✅ `Unitary2qBox` |
 | 5–8 | 3 | ✅ `Unitary3qBox` |
 | 9+ | 4+ | ❌ `NotImplementedError` |
 
-**What this blocks:** Any sum type with 9+ leaf summands. In practice this means 4+ levels of binary `⊕` nesting (e.g., `((((Q+Q)+(Q+Q))+((Q+Q)+(Q+Q)))+Q)`).
+**Affected operations:** `TwistPlus`, `AssocPlus`, `PlusMap`, `PhasedPlusMap`, and any structural operation that emits a tag permutation on sums with 9+ leaf summands.
 
-### 1b. PlusMap / PhasedPlusMap: Strategy B full unitary (w ≤ 3 total width)
+### 1b. PlusMap Strategy B: total width ≤ 3
 
-When PlusMap has an **asymmetric split** (one side has more than half the codeword space), Strategy A (tag permutation sandwich with MSB control) cannot partition left/right indices. Strategy B builds the full block-diagonal unitary and emits it as a single box.
+When PlusMap has an asymmetric split (one side exceeds half the codeword space), Strategy A (tag permutation sandwich with MSB control) cannot partition left/right indices. Strategy B builds the full block-diagonal unitary and emits it as a single box.
 
 Total width w = k + payload_width. Strategy B requires w ≤ 3 (for `Unitary3qBox`).
 
-With single-qubit payloads (pw = 1):
-
-| Split | n | k | w | Strategy | Supported? |
-|:---:|:---:|:---:|:---:|:---:|:---:|
-| 2/1 | 3 | 2 | 3 | A | ✅ |
-| 3/1 | 4 | 2 | 3 | B | ✅ |
-| 2/2 | 4 | 2 | 3 | A | ✅ |
-| 4/1 | 5 | 3 | 4 | A | ✅ |
-| 3/2 | 5 | 3 | 4 | A | ✅ |
-| 5/1 | 6 | 3 | 4 | B (w=4) | ❌ |
-| 4/2 | 6 | 3 | 4 | A | ✅ |
-| 3/3 | 6 | 3 | 4 | A | ✅ |
-
 **What this blocks:** Deeply left-skewed sums with 6+ summands where the outer PlusMap has a 5/1 or worse split. Balanced or moderately skewed splits up to 8 summands work via Strategy A.
-
-### 1c. PhasedPlusMap / PhasedControl: phase emission (k ≤ 2 tag qubits)
-
-Phase application on tag subspaces uses `U1` (1 tag bit) or `CU1` (2 tag bits). For k ≥ 3 tag bits, the multi-controlled `U1` decomposition is not yet implemented.
-
-| Tag bits (k) | Arity | Supported? |
-|:---:|:---:|:---:|
-| 1 | 2 | ✅ `U1` |
-| 2 | 3–4 | ✅ `CU1` |
-| 3+ | 5+ | ❌ `NotImplementedError` |
-
-**What this blocks:** `PhasedPlusMap` and `PhasedControl` on sum types with 5+ summands. Plain `PlusMap` is unaffected (no phase).
 
 ---
 
-## 2. Feedback (reserved, not compiled)
+## 2. ExpInvolution: ≤ 3 qubits — pytket
+
+`ExpInvolution(θ, P)` synthesizes the unitary cos(θ)·I + i·sin(θ)·U and emits it via `Unitary2qBox` or `Unitary3qBox`.
+
+| Body width | Supported? |
+|:---:|:---:|
+| 1 qubit | ✅ `Unitary1qBox` |
+| 2 qubits | ✅ `Unitary2qBox` |
+| 3 qubits | ✅ `Unitary3qBox` |
+| 4+ qubits | ❌ `NotImplementedError` |
+
+**Same root cause as §1:** pytket lacks `UnitaryNqBox`. If pytket added one, this limitation would be eliminated.
+
+---
+
+## 3. Feedback — language design
 
 `Feedback(k, body)` exists as a term constructor but has no compilation path. Any term containing `Feedback` raises `NotImplementedError`.
 
-**Status:** Reserved for future traced monoidal structure. No workaround.
+Reserved for future traced monoidal structure. Not a pytket limitation.
 
 ---
 
-## 3. Multi-Controlled Gates (Ctrl nesting)
+## 4. Python Linearity Checking — language design
 
-`Ctrl(Ctrl(f))` (doubly-controlled gates) supports:
-- Primitive gates: `H`, `S`, `X`, `Y`, `Z`, `Rz`, `Rx`, `Ry` → single control via hardcoded map
-- `CX` → `CCX` (Toffoli)
-- `TenTerm(f, g)` → recursive decomposition
-- `Ctrl(inner)` → accumulates controls
-
-All other doubly-controlled bodies (e.g., `Ctrl(PlusMap(...))`) raise `NotImplementedError`.
-
-**Workaround:** Decompose into supported primitives before wrapping in `Ctrl`.
-
----
-
-## 4. Python Linearity Checking
-
-The Python core API does **not** enforce linearity. Variables can be duplicated (contraction) or discarded (weakening) without error. Ill-formed terms compile to **incorrect circuits** silently.
+The Python core API does **not** enforce linearity. Variables can be duplicated (contraction) or discarded (weakening) without error. Ill-formed terms compile to incorrect circuits silently.
 
 **Workaround:** Use the OCaml surface language, which enforces linearity at elaboration time (runtime check) or via the Linear GADT module (compile-time enforcement).
 
-See `COMPILER_API_GUIDE.md` for details.
+Not a pytket limitation.
 
 ---
 
-## Summary: What Works
+## Summary
 
-For reference, here is what is fully supported with no limitations:
+| Limitation | Root cause | Eliminated by pytket `UnitaryNqBox`? |
+|:---|:---:|:---:|
+| 1a. Sum ≤ 8 summands | pytket | ✅ Yes |
+| 1b. PlusMap Strategy B ≤ 3 width | pytket | ✅ Yes |
+| 2. ExpInvolution ≤ 3 qubits | pytket | ✅ Yes |
+| 3. Feedback not compiled | language design | No |
+| 4. No Python linearity checking | language design | No |
 
-- **Binary sums** (`A ⊕ B`): all operations (PlusMap, PhasedPlusMap, Case, TwistPlus, structural ops)
-- **Nested sums up to 4 summands** in any bracketing: all operations including asymmetric PlusMap
-- **Nested sums up to 8 summands** with balanced or moderately balanced splits: PlusMap via Strategy A, structural ops via tag permutations
-- **Tensor types**: unlimited nesting depth and width
-- **Higher-order terms**: Lam, Apply, Cup, Cap, Var, LetPair
-- **All gates**: H, S, X, Y, Z, T, Rz, Rx, Ry, CX, plus controlled variants
-- **Full OCaml → Python → circuit pipeline**: elaboration, Bridge serialization, compilation
+**What works without limitation:**
+
+- Binary sums (`A ⊕ B`): all operations
+- Nested sums up to 8 summands (balanced splits): PlusMap, PhasedPlusMap, PhasedControl, structural ops
+- Tensor types: unlimited nesting depth and width
+- Higher-order terms: Lam, Apply, Cup, Cap, Var, LetPair
+- All gates with arbitrary control nesting via `QControlBox`
+- Multi-controlled composites: `Ctrl(PlusMap(...))`, `Ctrl(ExpInvolution(...))`, etc.
+- Full OCaml → Python → circuit pipeline
