@@ -275,6 +275,59 @@ let indexed_fold n ty gen =
   let stages = List.init n gen in
   fold ty stages
 
+(* ========== Case Sugar ========== *)
+
+(* Branch helper: build G⊗A → A⊗C from body: G → C.
+   Useful when the branch ignores the tag arm and just processes context.
+   Desugars to: twist(G,A) ; (id_A ⊗ body) *)
+let make_branch (ty_g : 'g ty) (ty_a : 'a ty) (body : (unit, [`Lolli of 'g * 'c]) prog)
+    : (unit, [`Lolli of [`Tensor of 'g * 'a] * [`Tensor of 'a * 'c]]) prog =
+  seq0 (twist_tensor ty_g ty_a) (par0 (id ty_a) body)
+
+(* Homogeneous case without context:
+   (A⊕B) → (A⊕B) ⊗ C
+   Branches f: A → A⊗C, g: B → B⊗C
+   Desugars to: omap0(f, g) ; undist_l *)
+let case_hom0 (ty_a : 'a ty) (ty_b : 'b ty) (ty_c : 'c ty)
+    (f : (unit, [`Lolli of 'a * [`Tensor of 'a * 'c]]) prog)
+    (g : (unit, [`Lolli of 'b * [`Tensor of 'b * 'c]]) prog)
+    : (unit, [`Lolli of [`Plus of 'a * 'b] * [`Tensor of [`Plus of 'a * 'b] * 'c]]) prog =
+  seq0 (omap0 ty_a ty_b f g) (undist_l ty_a ty_b ty_c)
+
+(* Homogeneous case with shared context:
+   G ⊗ (A⊕B) → (A⊕B) ⊗ C
+   Branches f: G⊗A → A⊗C, g: G⊗B → B⊗C
+   Desugars to: dist_r ; omap0(f, g) ; undist_l *)
+let case_hom (ty_a : 'a ty) (ty_b : 'b ty) (ty_g : 'g ty) (ty_c : 'c ty)
+    (f : (unit, [`Lolli of [`Tensor of 'g * 'a] * [`Tensor of 'a * 'c]]) prog)
+    (g : (unit, [`Lolli of [`Tensor of 'g * 'b] * [`Tensor of 'b * 'c]]) prog)
+    : (unit, [`Lolli of [`Tensor of 'g * [`Plus of 'a * 'b]]
+                        * [`Tensor of [`Plus of 'a * 'b] * 'c]]) prog =
+  seq0 (seq0 (dist_r ty_g ty_a ty_b) (omap0 (ty_g ** ty_a) (ty_g ** ty_b) f g))
+       (undist_l ty_a ty_b ty_c)
+
+(* Heterogeneous case without context:
+   (A⊕B) → (A⊗C) ⊕ (B⊗D)
+   Branches f: A → A⊗C, g: B → B⊗D
+   Alias for omap0 — provided for naming consistency. *)
+let case_het0 (ty_a : 'a ty) (ty_b : 'b ty)
+    (f : (unit, [`Lolli of 'a * [`Tensor of 'a * 'c]]) prog)
+    (g : (unit, [`Lolli of 'b * [`Tensor of 'b * 'd]]) prog)
+    : (unit, [`Lolli of [`Plus of 'a * 'b]
+                        * [`Plus of [`Tensor of 'a * 'c] * [`Tensor of 'b * 'd]]]) prog =
+  omap0 ty_a ty_b f g
+
+(* Heterogeneous case with shared context:
+   G ⊗ (A⊕B) → (A⊗C) ⊕ (B⊗D)
+   Branches f: G⊗A → A⊗C, g: G⊗B → B⊗D
+   Desugars to: dist_r ; omap0(f, g) *)
+let case_het (ty_a : 'a ty) (ty_b : 'b ty) (ty_g : 'g ty)
+    (f : (unit, [`Lolli of [`Tensor of 'g * 'a] * [`Tensor of 'a * 'c]]) prog)
+    (g : (unit, [`Lolli of [`Tensor of 'g * 'b] * [`Tensor of 'b * 'd]]) prog)
+    : (unit, [`Lolli of [`Tensor of 'g * [`Plus of 'a * 'b]]
+                        * [`Plus of [`Tensor of 'a * 'c] * [`Tensor of 'b * 'd]]]) prog =
+  seq0 (dist_r ty_g ty_a ty_b) (omap0 (ty_g ** ty_a) (ty_g ** ty_b) f g)
+
 (* ========== Emission to Bridge.term ========== *)
 
 (* Emit any program to Bridge.term.
@@ -428,6 +481,41 @@ let oapp0 f arg = OApp (f, arg, SNil)
 let oplusmap0 ty_l ty_r f g = OPlusMap (ty_l, ty_r, f, g, SNil)
 let oseq0 f g = OSeq (f, g, SNil)
 let oletpair0 x y ty_x ty_y pair body = OLetPair (x, y, ty_x, ty_y, pair, body, SNil)
+
+(* ========== Oterm Case Sugar ========== *)
+
+(** Homogeneous case without context (oterm level).
+    (A⊕B) → (A⊕B) ⊗ C
+    Branches f: A→A⊗C, g: B→B⊗C (closed oterms).
+    Desugars to: oplusmap0(f,g) ; undist_l *)
+let ocase_hom0 ty_a ty_b ty_c left right =
+  oseq0 (oplusmap0 ty_a ty_b left right)
+        (oembed (undist_l ty_a ty_b ty_c))
+
+(** Homogeneous case with shared context G (oterm level).
+    G⊗(A+B) → (A+B)⊗C
+    Branches f: G⊗A→A⊗C, g: G⊗B→B⊗C (closed oterms).
+    Desugars to: dist_r(G,A,B) ; oplusmap0(f,g) ; undist_l(A,B,C) *)
+let ocase_hom ty_a ty_b ty_g ty_c left right =
+  oseq0 (oembed (dist_r ty_g ty_a ty_b))
+        (oseq0 (oplusmap0 (ty_g ** ty_a) (ty_g ** ty_b) left right)
+               (oembed (undist_l ty_a ty_b ty_c)))
+
+(** Heterogeneous case without context (oterm level).
+    (A⊕B) → (A⊗C) ⊕ (B⊗D)
+    Alias for oplusmap0 — provided for naming consistency. *)
+let ocase_het0 = oplusmap0
+
+(** Heterogeneous case with context G (oterm level).
+    G⊗(A+B) → (A⊗C)+(B⊗D)
+    Desugars to: dist_r(G,A,B) ; oplusmap0(f,g) *)
+let ocase_het ty_a ty_b ty_g left right =
+  oseq0 (oembed (dist_r ty_g ty_a ty_b))
+        (oplusmap0 (ty_g ** ty_a) (ty_g ** ty_b) left right)
+
+(** Embed prog-level make_branch into oterm.
+    Only works when body is a closed prog. *)
+let omake_branch ty_g ty_a body = oembed (make_branch ty_g ty_a body)
 
 (** Compute the Rep.t representation of an oterm's context.
     For a term of type [('g, 'a) oterm], returns the Rep.t of 'g. *)

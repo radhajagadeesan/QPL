@@ -15,9 +15,10 @@
           b₀ ↦ f(g(x))
           b₁ ↦ g(f(x))
 
-    Case desugaring (distR pattern from the paper):
-      Γ ⊗ (A+B) →[distL] (I⊗Γ) + (I⊗Γ) →[f̂⊕ĝ] (I⊗Q) + (I⊗Q) →[undistL] (I+I)⊗Q
+    Case desugaring via ocase_hom:
+      Γ ⊗ (A+B) →[distR] (Γ⊗I) + (Γ⊗I) →[f̂⊕ĝ] (I⊗Q) + (I⊗Q) →[undistL] (I+I)⊗Q
 
+    ocase_hom handles the dist_r/plusmap/undist_l plumbing internally.
     The PlusMap branches f̂, ĝ are CLOSED morphisms (bare LetPair chains),
     not lambda values. They receive the context Γ = f⊗(g⊗x) via distribution,
     destructure it, and apply the functions.
@@ -48,24 +49,25 @@ let qq_ty = q -@ q
 (** Bool ⊗ Q *)
 let bq_ty = bool_ty ** q
 
-(** (Q⊸Q) ⊗ (Q⊸Q) ⊗ Bool ⊗ Q  — right associated *)
-let rest2_ty = bq_ty            (* Bool ⊗ Q *)
-let rest_ty = qq_ty ** rest2_ty (* (Q⊸Q) ⊗ (Bool ⊗ Q) *)
-let input_ty = qq_ty ** rest_ty (* (Q⊸Q) ⊗ ((Q⊸Q) ⊗ (Bool ⊗ Q)) *)
+(** (Q⊸Q) ⊗ ((Q⊸Q) ⊗ (Bool ⊗ Q))  — right associated *)
+let input_ty = qq_ty ** (qq_ty ** bq_ty)
 
 (* ========================================================================= *)
 (* Abstract QSwitch as a Lambda term                                          *)
 (* ========================================================================= *)
 
-(** Context-distribution approach (from the paper's case desugaring):
+(** Approach: structural rearrangement + ocase_hom.
 
-    PlusMap branches must be closed MORPHISMS, not lambdas.
-    The context Γ = (Q⊸Q) ⊗ ((Q⊸Q) ⊗ Q) is bundled into the payload
-    BEFORE distribution. After dist_l, each summand is I ⊗ Γ.
-    The branches destructure Γ from input — they're bare LetPair chains.
+    The input f ⊗ (g ⊗ (b ⊗ x)) is rearranged to b ⊗ (f ⊗ (g ⊗ x))
+    using structural isomorphisms (assoc, twist — all 0 gates).
+    Then twist converts Bool⊗Γ to Γ⊗Bool for ocase_hom's G⊗(A+B) convention.
+    ocase_hom handles dist_r/plusmap/undist_l internally.
 
-    Branch: I⊗Γ → I⊗Q
-      let (tag, payload) = input in      -- tag:I, payload:Γ
+    NO destructuring, NO re-pairing, NO split witnesses in the body.
+    The only splits are inside the branches (inherent to function application).
+
+    Branch: Γ⊗I → I⊗Q where Γ = (Q⊸Q) ⊗ ((Q⊸Q) ⊗ Q)
+      let (payload, tag) = input in      -- payload:Γ, tag:I
       let (f, gx) = payload in           -- f:Q⊸Q, gx:(Q⊸Q)⊗Q
       let (g, x) = gx in                 -- g:Q⊸Q, x:Q
       (tag, f(g(x)))                     -- for left branch
@@ -73,94 +75,69 @@ let input_ty = qq_ty ** rest_ty (* (Q⊸Q) ⊗ ((Q⊸Q) ⊗ (Bool ⊗ Q)) *)
 *)
 
 let abstract_qswitch : (unit, [`Lolli of _ * _]) oterm =
-  (* Payload type: (Q⊸Q) ⊗ ((Q⊸Q) ⊗ Q) *)
   let gx_ty = qq_ty ** q in         (* (Q⊸Q) ⊗ Q *)
-  let payload_ty = qq_ty ** gx_ty in (* (Q⊸Q) ⊗ ((Q⊸Q) ⊗ Q) *)
-  let ip_ty = one ** payload_ty in   (* I ⊗ payload *)
-  let _iq_ty = one ** q in           (* I ⊗ Q — used by type_of, not directly *)
+  let payload_ty = qq_ty ** gx_ty in (* (Q⊸Q) ⊗ ((Q⊸Q) ⊗ Q) = Γ *)
+  let gi_ty = payload_ty ** one in   (* Γ ⊗ I — branch input after dist_r *)
 
-  (* Left branch (b=0): CLOSED morphism I⊗Γ → I⊗Q, apply g then f.
-     All variables bound by oletpair from the oid scrutinee.
+  (* Structural rearrangement (all 0 gates):
+     f ⊗ (g ⊗ (b ⊗ x)) → b ⊗ (f ⊗ (g ⊗ x))
 
-     Context after each oletpair:
-       1st: [tag:one, payload:payload_ty]
-       2nd: [f:qq, gx:gx_ty, tag:one]
-       3rd: [g:qq, x:q, f:qq, tag:one]
+     Step 1: swap g and b inside the inner tensor
+       f ⊗ (g ⊗ (b ⊗ x)) → f ⊗ (b ⊗ (g ⊗ x))
+     Step 2: swap f and b to bring b to the front
+       f ⊗ (b ⊗ (g ⊗ x)) → b ⊗ (f ⊗ (g ⊗ x)) *)
+  let rearrange =
+    let swap_inner =  (* g ⊗ (b ⊗ x) → b ⊗ (g ⊗ x) *)
+      seq0 (assoc_tensor_r qq_ty bool_ty q)
+        (seq0 (par0 (twist_tensor qq_ty bool_ty) (id q))
+              (assoc_tensor_l bool_ty qq_ty q)) in
+    let step1 = par0 (id qq_ty) swap_inner in  (* f ⊗ (...) → f ⊗ (b ⊗ gx) *)
+    let swap_outer =  (* f ⊗ (b ⊗ gx) → b ⊗ (f ⊗ gx) = b ⊗ Γ *)
+      seq0 (assoc_tensor_r qq_ty bool_ty gx_ty)
+        (seq0 (par0 (twist_tensor qq_ty bool_ty) (id gx_ty))
+              (assoc_tensor_l bool_ty qq_ty gx_ty)) in
+    seq0 step1 swap_outer  (* input_ty → Bool ⊗ Γ *)
+  in
 
-     Innermost splits:
-       opair:     tag→left, (g,x,f)→right
-       oapp(f,·): f→left, (g,x)→right
-       oapp(g,x): g→left, x→right *)
+  (* Left branch (b=0): CLOSED morphism Γ⊗I → I⊗Q, apply g then f.
+     Context after oletpairs: [payload, tag] → [f, gx, tag] → [g, x, f, tag] *)
   let left_branch =
-    oletpair0 "tag" "payload" one payload_ty (oid ip_ty)
+    oletpair0 "payload" "tag" payload_ty one (oid gi_ty)
       (oletpair "f" "gx" qq_ty gx_ty (ovar "payload" payload_ty)
         (oletpair "g" "x" qq_ty q (ovar "gx" gx_ty)
           (opair (ovar "tag" one)
                  (oapp (ovar "f" qq_ty)
-                       (oapp (ovar "g" qq_ty)
-                             (ovar "x" q)
-                             (SLeft (SRight SNil)))
-                       (SRight (SRight (SLeft SNil))))
-                 (SRight (SRight (SRight (SLeft SNil)))))
-          (SRight (SLeft (SRight SNil))))
-        (SRight (SLeft SNil)))
+                       (oapp (ovar "g" qq_ty) (ovar "x" q)
+                             (SLeft (SRight SNil)))       (* g→left, x→right *)
+                       (SRight (SRight (SLeft SNil))))    (* g,x→right, f→left *)
+                 (SRight (SRight (SRight (SLeft SNil))))) (* tag→left, rest→right *)
+          (SRight (SLeft (SRight SNil))))   (* gx→left, (f,tag)→right *)
+        (SLeft (SRight SNil)))             (* payload→left, tag→right *)
   in
-  (* Right branch (b=1): CLOSED morphism I⊗Γ → I⊗Q, apply f then g.
-     Same context structure as left branch.
-
-     Innermost splits (swapped application order):
-       opair:     tag→left, (g,x,f)→right
-       oapp(g,·): g→left, (x,f)→right
-       oapp(f,x): f→left, x→right *)
+  (* Right branch (b=1): CLOSED morphism Γ⊗I → I⊗Q, apply f then g. *)
   let right_branch =
-    oletpair0 "tag" "payload" one payload_ty (oid ip_ty)
+    oletpair0 "payload" "tag" payload_ty one (oid gi_ty)
       (oletpair "f" "gx" qq_ty gx_ty (ovar "payload" payload_ty)
         (oletpair "g" "x" qq_ty q (ovar "gx" gx_ty)
           (opair (ovar "tag" one)
                  (oapp (ovar "g" qq_ty)
-                       (oapp (ovar "f" qq_ty)
-                             (ovar "x" q)
-                             (SRight (SLeft SNil)))
-                       (SLeft (SRight (SRight SNil))))
-                 (SRight (SRight (SRight (SLeft SNil)))))
+                       (oapp (ovar "f" qq_ty) (ovar "x" q)
+                             (SRight (SLeft SNil)))       (* x→right, f→left *)
+                       (SLeft (SRight (SRight SNil))))    (* g→left, (x,f)→right *)
+                 (SRight (SRight (SRight (SLeft SNil))))) (* tag→left, rest→right *)
           (SRight (SLeft (SRight SNil))))
-        (SRight (SLeft SNil)))
+        (SLeft (SRight SNil)))
   in
-  (* Body: destructure input, re-pair, dist, plusmap, undist.
 
-     Context after oletpairs:
-       1st: [f:qq, rest:rest_ty]
-       2nd: [g:qq, rest2:rest2_ty, f:qq]
-       3rd: [b:bool_ty, x:q, g:qq, f:qq]
-
-     repaired = (b, (f, (g, x))) pairs all variables.
-     pipeline is fully closed (oseq0/oplusmap0).
-     oapp: pipeline is closed → all context goes to argument. *)
-  let body =
-    oletpair "f" "rest" qq_ty rest_ty (ovar "input" input_ty)
-      (oletpair "g" "rest2" qq_ty rest2_ty (ovar "rest" rest_ty)
-        (oletpair "b" "x" bool_ty q (ovar "rest2" rest2_ty)
-          (let repaired =
-            opair (ovar "b" bool_ty)
-                  (opair (ovar "f" qq_ty)
-                         (opair (ovar "g" qq_ty)
-                                (ovar "x" q)
-                                (SRight (SLeft SNil)))
-                         (SRight (SRight (SLeft SNil))))
-                  (SLeft (SRight (SRight (SRight SNil))))
-          in
-          let pipeline =
-            oseq0 (oembed (dist_l one one payload_ty))
-              (oseq0 (oplusmap0 ip_ty ip_ty left_branch right_branch)
-                     (oembed (undist_l one one q)))
-          in
-          oapp pipeline repaired
-            (SRight (SRight (SRight (SRight SNil)))))
-          (SRight (SLeft (SRight SNil))))
-        (SRight (SLeft SNil)))
-      (SLeft SNil)
+  (* Pipeline: rearrange → twist → ocase_hom (ALL CLOSED) *)
+  let pipeline =
+    oseq0 (oembed (seq0 rearrange (twist_tensor bool_ty payload_ty)))
+          (ocase_hom one one payload_ty q left_branch right_branch)
   in
-  olam "input" input_ty bq_ty body
+
+  (* Body: just apply the closed pipeline to the input. ONE split. *)
+  olam "input" input_ty bq_ty
+    (oapp pipeline (ovar "input" input_ty) (SRight SNil))
 
 
 (* ========================================================================= *)
@@ -200,12 +177,10 @@ let () =
   print_endline "(it includes the function application overhead).\n";
 
   let meta_qswitch_hs =
-    let distribute = dist_l one one q in
-    let left_branch = par0 (id one) (seq0 gate_s gate_h) in
-    let right_branch = par0 (id one) (seq0 gate_h gate_s) in
-    let apply_branches = omap0 (one ** q) (one ** q) left_branch right_branch in
-    let undistribute = undist_l one one q in
-    seq0 distribute (seq0 apply_branches undistribute)
+    (* Using case sugar: twist + case_hom with make_branch *)
+    let left  = make_branch q one (seq0 gate_s gate_h) in
+    let right = make_branch q one (seq0 gate_h gate_s) in
+    seq0 (twist_tensor bool_ty q) (case_hom one one q q left right)
   in
   let meta_term = emit meta_qswitch_hs in
   incr tests_run;

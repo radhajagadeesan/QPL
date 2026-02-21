@@ -276,6 +276,78 @@ val indexed_fold : int -> 'a ty
                 -> (int -> (unit, [`Lolli of 'a * 'a]) prog)
                 -> (unit, [`Lolli of 'a * 'a]) prog
 
+(** {1 Case Sugar}
+
+    Combinators for pattern-matching on [A⊕B] with shared context,
+    eliminating manual dist/omap/undist plumbing and split witnesses.
+
+    All combinators work at the [prog] level (closed, unit context).
+    No new GADT constructors — these desugar to existing structural ops.
+
+    {b Homogeneous} ([case_hom], [case_hom0]): both branches produce the same
+    result type C, so the output can be [undist]'d back to [(A⊕B) ⊗ C].
+
+    {b Heterogeneous} ([case_het], [case_het0]): branches produce different types
+    C and D, so the output is [(A⊗C) ⊕ (B⊗D)].
+*)
+
+(** Branch helper: build [G⊗A → A⊗C] from [body : G → C].
+
+    Useful when the branch ignores the tag arm A (e.g., A=I for Bool)
+    and just processes context G into result C, re-pairing with the tag.
+
+    Desugars to: [twist(G,A) ; (id_A ⊗ body)] *)
+val make_branch : 'g ty -> 'a ty
+               -> (unit, [`Lolli of 'g * 'c]) prog
+               -> (unit, [`Lolli of [`Tensor of 'g * 'a] * [`Tensor of 'a * 'c]]) prog
+
+(** Homogeneous case without context.
+
+    Input: [A⊕B], Output: [(A⊕B) ⊗ C].
+    Branches [f : A → A⊗C], [g : B → B⊗C].
+
+    Desugars to: [omap0(f, g) ; undist_l(A, B, C)] *)
+val case_hom0 : 'a ty -> 'b ty -> 'c ty
+             -> (unit, [`Lolli of 'a * [`Tensor of 'a * 'c]]) prog
+             -> (unit, [`Lolli of 'b * [`Tensor of 'b * 'c]]) prog
+             -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Tensor of [`Plus of 'a * 'b] * 'c]]) prog
+
+(** Homogeneous case with shared context.
+
+    Input: [G ⊗ (A⊕B)], Output: [(A⊕B) ⊗ C].
+    Branches [f : G⊗A → A⊗C], [g : G⊗B → B⊗C].
+
+    Desugars to: [dist_r(G,A,B) ; omap0(f,g) ; undist_l(A,B,C)] *)
+val case_hom : 'a ty -> 'b ty -> 'g ty -> 'c ty
+            -> (unit, [`Lolli of [`Tensor of 'g * 'a] * [`Tensor of 'a * 'c]]) prog
+            -> (unit, [`Lolli of [`Tensor of 'g * 'b] * [`Tensor of 'b * 'c]]) prog
+            -> (unit, [`Lolli of [`Tensor of 'g * [`Plus of 'a * 'b]]
+                                * [`Tensor of [`Plus of 'a * 'b] * 'c]]) prog
+
+(** Heterogeneous case without context.
+
+    Input: [A⊕B], Output: [(A⊗C) ⊕ (B⊗D)].
+    Branches [f : A → A⊗C], [g : B → B⊗D].
+
+    Alias for [omap0] — provided for naming consistency with [case_hom0]. *)
+val case_het0 : 'a ty -> 'b ty
+             -> (unit, [`Lolli of 'a * [`Tensor of 'a * 'c]]) prog
+             -> (unit, [`Lolli of 'b * [`Tensor of 'b * 'd]]) prog
+             -> (unit, [`Lolli of [`Plus of 'a * 'b]
+                                * [`Plus of [`Tensor of 'a * 'c] * [`Tensor of 'b * 'd]]]) prog
+
+(** Heterogeneous case with shared context.
+
+    Input: [G ⊗ (A⊕B)], Output: [(A⊗C) ⊕ (B⊗D)].
+    Branches [f : G⊗A → A⊗C], [g : G⊗B → B⊗D].
+
+    Desugars to: [dist_r(G,A,B) ; omap0(f,g)] *)
+val case_het : 'a ty -> 'b ty -> 'g ty
+            -> (unit, [`Lolli of [`Tensor of 'g * 'a] * [`Tensor of 'a * 'c]]) prog
+            -> (unit, [`Lolli of [`Tensor of 'g * 'b] * [`Tensor of 'b * 'd]]) prog
+            -> (unit, [`Lolli of [`Tensor of 'g * [`Plus of 'a * 'b]]
+                                * [`Plus of [`Tensor of 'a * 'c] * [`Tensor of 'b * 'd]]]) prog
+
 (** {1 Emission} *)
 
 (** Emit a closed program to Bridge term for compilation. *)
@@ -370,6 +442,73 @@ val oplusmap0 : 'a ty -> 'b ty
 val oseq0 : (unit, [`Lolli of 'a * 'b]) oterm
           -> (unit, [`Lolli of 'b * 'c]) oterm
           -> (unit, [`Lolli of 'a * 'c]) oterm
+
+(** {2 Oterm Case Sugar}
+
+    Mirror of the prog-level case sugar at the oterm level.
+    All are closed oterm combinators (unit context) that wrap
+    structural progs via [oembed] and use [oplusmap0] for branches.
+
+    {b Important:} At the oterm level, [oplusmap0] branches are {i bare terms}
+    whose output type becomes the output summand type — they are NOT morphisms
+    (unlike prog-level [omap0] branches which are Lolli-typed).
+
+    For homogeneous case, branches produce [A⊗C] and [B⊗C] values.
+    For [omake_branch], which produces Lolli-typed oterms, use
+    [oembed (case_hom ...)] instead of [ocase_hom].
+*)
+
+(** Homogeneous case without context (oterm level).
+
+    Input: [A⊕B], Output: [(A⊕B) ⊗ C].
+    Branches are bare tensor oterms producing [A⊗C] and [B⊗C].
+
+    Desugars to: [oplusmap0(f, g) ; undist_l(A, B, C)] *)
+val ocase_hom0 : 'a ty -> 'b ty -> 'c ty
+              -> (unit, [`Tensor of 'a * 'c]) oterm
+              -> (unit, [`Tensor of 'b * 'c]) oterm
+              -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Tensor of [`Plus of 'a * 'b] * 'c]]) oterm
+
+(** Homogeneous case with shared context (oterm level).
+
+    Input: [G ⊗ (A⊕B)], Output: [(A⊕B) ⊗ C].
+    Branches are bare tensor oterms producing [A⊗C] and [B⊗C].
+
+    Desugars to: [dist_r(G,A,B) ; oplusmap0(f,g) ; undist_l(A,B,C)] *)
+val ocase_hom : 'a ty -> 'b ty -> 'g ty -> 'c ty
+             -> (unit, [`Tensor of 'a * 'c]) oterm
+             -> (unit, [`Tensor of 'b * 'c]) oterm
+             -> (unit, [`Lolli of [`Tensor of 'g * [`Plus of 'a * 'b]]
+                                 * [`Tensor of [`Plus of 'a * 'b] * 'c]]) oterm
+
+(** Heterogeneous case without context (oterm level).
+
+    Input: [A⊕B], Output: [(A⊗C) ⊕ (B⊗D)].
+    Alias for [oplusmap0]. *)
+val ocase_het0 : 'a ty -> 'b ty
+              -> (unit, 'c) oterm -> (unit, 'd) oterm
+              -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) oterm
+
+(** Heterogeneous case with context G (oterm level).
+
+    Input: [G ⊗ (A⊕B)], Output: [(A⊗C) ⊕ (B⊗D)].
+    Branches are bare oterms producing output summand values.
+
+    Desugars to: [dist_r(G,A,B) ; oplusmap0(f,g)] *)
+val ocase_het : 'a ty -> 'b ty -> 'g ty
+             -> (unit, 'c) oterm -> (unit, 'd) oterm
+             -> (unit, [`Lolli of [`Tensor of 'g * [`Plus of 'a * 'b]]
+                                 * [`Plus of 'c * 'd]]) oterm
+
+(** Embed prog-level [make_branch] into oterm.
+
+    [omake_branch ty_g ty_a body] wraps a closed prog branch as an oterm.
+    Only works when [body] is a closed prog (unit context).
+    Returns a Lolli-typed oterm — for use with [oembed (case_hom ...)],
+    not directly with [ocase_hom]. *)
+val omake_branch : 'g ty -> 'a ty
+                -> (unit, [`Lolli of 'g * 'c]) prog
+                -> (unit, [`Lolli of [`Tensor of 'g * 'a] * [`Tensor of 'a * 'c]]) oterm
 
 (** {2 Context representation} *)
 

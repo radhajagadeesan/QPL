@@ -635,6 +635,103 @@ let h8 = pow2 3 q gate_h
 (* Produces: H^8 *)
 ```
 
+### Case Sugar
+
+Writing case expressions (pattern-matching on `A⊕B` with shared context) manually
+requires dist/omap/undist plumbing. The case sugar combinators handle this automatically.
+
+#### Homogeneous Case (`case_hom`, `case_hom0`)
+
+Both branches produce the same result type C, so the output can be undist'd:
+
+```ocaml
+(* case_hom: G ⊗ (A⊕B) → (A⊕B) ⊗ C
+   Desugars to: dist_r ; omap0(f, g) ; undist_l *)
+let result = case_hom ty_a ty_b ty_g ty_c
+  left_branch   (* G⊗A → A⊗C *)
+  right_branch  (* G⊗B → B⊗C *)
+
+(* case_hom0: no shared context — just (A⊕B) → (A⊕B) ⊗ C
+   Desugars to: omap0(f, g) ; undist_l *)
+let result = case_hom0 ty_a ty_b ty_c
+  left_branch   (* A → A⊗C *)
+  right_branch  (* B → B⊗C *)
+```
+
+#### Heterogeneous Case (`case_het`, `case_het0`)
+
+Branches produce different types C and D:
+
+```ocaml
+(* case_het: G ⊗ (A⊕B) → (A⊗C) ⊕ (B⊗D)
+   Desugars to: dist_r ; omap0(f, g) *)
+let result = case_het ty_a ty_b ty_g
+  left_branch   (* G⊗A → A⊗C *)
+  right_branch  (* G⊗B → B⊗D *)
+```
+
+#### Branch Helper (`make_branch`)
+
+The most common branch pattern: ignore the tag arm A, process context G into result C:
+
+```ocaml
+(* make_branch: builds G⊗A → A⊗C from body: G → C
+   Desugars to: twist(G,A) ; (id_A ⊗ body) *)
+let branch = make_branch ty_g ty_a body
+```
+
+#### Example: ctrl via case_hom
+
+The `ctrl` combinator (controlled gate application) can be expressed using case sugar:
+
+```ocaml
+(* ctrl(f) using case_hom — compare with 6-line manual version *)
+let ctrl_sugar f =
+  let left  = make_branch q one (id q) in   (* do nothing *)
+  let right = make_branch q one f in         (* apply f *)
+  seq0 (twist_tensor (one ++ one) q)
+       (case_hom one one q q left right)
+```
+
+The sugar separates **case structure** (handled automatically) from **branch logic** (user-supplied).
+
+### Oterm Case Sugar
+
+The case sugar is also available at the **oterm level** for the full source language
+(lambdas, variables, function application). Oterm case combinators mirror the prog-level
+combinators but work with `oplusmap0` which takes **bare tensor-typed** branches.
+
+**Key difference from prog-level:** At the oterm level, `oplusmap0` branches are bare
+terms whose output type becomes the output summand — they are NOT morphisms. Branches
+produce `A⊗C` and `B⊗C` values directly (e.g., via `oletpair` destructuring + `opair`).
+
+```ocaml
+(* ocase_hom: G ⊗ (A⊕B) → (A⊕B) ⊗ C  — oterm level
+   Branches are bare tensor oterms producing A⊗C and B⊗C.
+   Desugars to: dist_r ; oplusmap0(f, g) ; undist_l *)
+let result = ocase_hom ty_a ty_b ty_g ty_c
+  left_branch   (* bare oterm producing A⊗C *)
+  right_branch  (* bare oterm producing B⊗C *)
+
+(* ocase_hom0: no context — (A⊕B) → (A⊕B) ⊗ C *)
+let result = ocase_hom0 ty_a ty_b ty_c
+  left_branch right_branch
+
+(* ocase_het: heterogeneous — G ⊗ (A⊕B) → (A⊗C) ⊕ (B⊗D) *)
+let result = ocase_het ty_a ty_b ty_g
+  left_branch right_branch
+```
+
+For prog-level branches (e.g., `make_branch`), embed the whole prog-level case:
+```ocaml
+(* Using prog-level case_hom with make_branch, embedded as oterm *)
+let ctrl_oterm f =
+  let left  = make_branch q one (id q) in
+  let right = make_branch q one f in
+  oseq0 (oembed (twist_tensor (one ++ one) q))
+        (oembed (case_hom one one q q left right))
+```
+
 ### Building and Running
 
 ```bash

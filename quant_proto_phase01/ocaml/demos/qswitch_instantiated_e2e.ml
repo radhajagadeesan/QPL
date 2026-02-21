@@ -1,4 +1,4 @@
-(** Instantiated QSwitch E2E Demo - Using Linear DSL Properly
+(** Instantiated QSwitch E2E Demo - Using Case Sugar Combinators
 
     Full pipeline: OCaml Linear DSL -> Bridge -> Python compile -> Circuit
 
@@ -6,7 +6,7 @@
     - Define QSwitch as a reusable Linear DSL combinator
     - Instantiate with different gate pairs
     - Compose multiple QSwitch applications
-    - All using proper structural isomorphisms (dist_l, omap0, undist_l)
+    - Uses case_hom + make_branch sugar (no manual dist/omap/undist)
 *)
 
 open Qpl_surface
@@ -19,24 +19,17 @@ let banner title =
   print_endline (String.make 74 '=')
 
 (** Bool = I + I (the 2-element type) *)
-let _bool_ty = one ++ one
-
-(** I ⊗ Q type (payload in each branch after distribution) *)
-let iq_ty = one ** q
+let bool_ty = one ++ one
 
 (** QSwitch[f, g] : Bool ⊗ Q → Bool ⊗ Q
 
-    Built properly using the Linear DSL structural isomorphisms:
+    Built using case_hom + make_branch sugar.
 
-    1. dist_l : (I+I) ⊗ Q → (I⊗Q) + (I⊗Q)
-       Distribute tensor over sum
+    case_hom desugars to: dist_r ; omap0(left, right) ; undist_l
+    make_branch desugars to: twist(G,A) ; par0(id_A, body)
 
-    2. omap0 : Apply different operations to each branch
-       Left branch (ctrl=0):  I ⊗ Q → I ⊗ Q via id_I ⊗ (g ; f)
-       Right branch (ctrl=1): I ⊗ Q → I ⊗ Q via id_I ⊗ (f ; g)
-
-    3. undist_l : (I⊗Q) + (I⊗Q) → (I+I) ⊗ Q
-       Undistribute back to Bool ⊗ Q
+    The twist at the front converts Bool⊗Q → Q⊗Bool for case_hom's
+    G⊗(A⊕B) input shape (where G=Q, A=B=I).
 
     Semantics:
       |0⟩ ⊗ |ψ⟩ → |0⟩ ⊗ f(g(|ψ⟩))   (apply g then f)
@@ -47,23 +40,24 @@ let qswitch
     (g : (unit, [`Lolli of [`Q] * [`Q]]) prog)
     : (unit, [`Lolli of [`Tensor of [`Plus of [`One] * [`One]] * [`Q]]
                       * [`Tensor of [`Plus of [`One] * [`One]] * [`Q]]]) prog =
+  (* Branches: Q⊗I → I⊗Q via make_branch (twist + par0(id, body)) *)
+  let left  = make_branch q one (seq0 g f) in  (* ctrl=0: apply g then f *)
+  let right = make_branch q one (seq0 f g) in  (* ctrl=1: apply f then g *)
+  (* twist Bool⊗Q → Q⊗Bool, then case_hom handles dist_r ; omap0 ; undist_l *)
+  seq0 (twist_tensor bool_ty q) (case_hom one one q q left right)
 
-  (* Step 1: Distribute (I+I) ⊗ Q → (I⊗Q) + (I⊗Q) *)
+(** Original QSwitch for equivalence verification (manual dist/omap/undist) *)
+let qswitch_manual
+    (f : (unit, [`Lolli of [`Q] * [`Q]]) prog)
+    (g : (unit, [`Lolli of [`Q] * [`Q]]) prog)
+    : (unit, [`Lolli of [`Tensor of [`Plus of [`One] * [`One]] * [`Q]]
+                      * [`Tensor of [`Plus of [`One] * [`One]] * [`Q]]]) prog =
+  let iq_ty = one ** q in
   let distribute = dist_l one one q in
-
-  (* Step 2: Build branches *)
-  (* Left branch: when ctrl=0, apply g then f *)
   let left_branch = par0 (id one) (seq0 g f) in
-  (* Right branch: when ctrl=1, apply f then g *)
   let right_branch = par0 (id one) (seq0 f g) in
-
-  (* Step 3: Apply omap0 to create bifunctorial action on the sum *)
   let apply_branches = omap0 iq_ty iq_ty left_branch right_branch in
-
-  (* Step 4: Undistribute (I⊗Q) + (I⊗Q) → (I+I) ⊗ Q *)
   let undistribute = undist_l one one q in
-
-  (* Compose: dist ; omap ; undist *)
   seq0 distribute (seq0 apply_branches undistribute)
 
 
@@ -84,10 +78,10 @@ let () =
   let project_root = Filename.dirname (Sys.getcwd ()) in
   Bridge.set_project_root project_root;
 
-  banner "INSTANTIATED QSWITCH E2E DEMO (Linear DSL)";
+  banner "INSTANTIATED QSWITCH E2E DEMO (Case Sugar)";
   print_endline "\nDemonstrating compositional use of abstract QSwitch\n";
-  print_endline "All QSwitch instances use proper Linear DSL:";
-  print_endline "  dist_l ; omap0 left_branch right_branch ; undist_l\n";
+  print_endline "All QSwitch instances use case sugar combinators:";
+  print_endline "  twist(Bool, Q) ; case_hom(I, I, Q, Q, make_branch(...), make_branch(...))\n";
 
   (* =========================================================================
      PART 1: Basic Instantiations
@@ -176,21 +170,33 @@ Using Rz rotations:
   compile_and_report "QSwitch[Rz(π/4), Rz(-π/4)]" (emit (qswitch rz_pi4 rz_neg_pi4));
 
   (* =========================================================================
-     PART 5: Verify Structural Isomorphisms
+     PART 5: Verify Case Sugar ≡ Manual (eq_circ)
      ========================================================================= *)
-  banner "PART 5: Verify Structural Isomorphisms";
+  banner "PART 5: Verify Case Sugar = Manual (eq_circ)";
 
-  print_endline "\nVerifying that dist_l and undist_l are proper inverses:\n";
+  print_endline "
+Verifying that case-sugar QSwitch produces the same unitary
+as the manual dist_l ; omap0 ; undist_l version.
+";
 
-  let dist = dist_l one one q in
-  let undist = undist_l one one q in
-  let roundtrip = seq0 dist undist in
-
-  Printf.printf "dist_l one one q:\n  %s\n\n" (Bridge.term_to_json (emit dist));
-  Printf.printf "undist_l one one q:\n  %s\n\n" (Bridge.term_to_json (emit undist));
-
-  print_endline "dist_l ; undist_l (should be identity):";
-  compile_and_report "Roundtrip" (emit roundtrip);
+  let verify_equiv name f g =
+    let sugar_term = emit (qswitch f g) in
+    let manual_term = emit (qswitch_manual f g) in
+    match Bridge.eq_circ sugar_term manual_term with
+    | Bridge.EqCircOk (equal, fidelity) ->
+        Printf.printf "  %-25s %s (fidelity=%.6f)\n"
+          name (if equal then "EQUAL" else "NOT EQUAL") fidelity;
+        if not equal then had_failure := true
+    | Bridge.EqCircError err ->
+        Printf.printf "  %-25s ERROR: %s\n" name err;
+        had_failure := true
+  in
+  verify_equiv "QSwitch[H, S]" gate_h gate_s;
+  verify_equiv "QSwitch[X, Z]" gate_x gate_z;
+  verify_equiv "QSwitch[H, Y]" gate_h gate_y;
+  verify_equiv "QSwitch[H, H]" gate_h gate_h;
+  verify_equiv "QSwitch[Rz(pi/4), Rz(pi/8)]"
+    (gate_rz (Float.pi /. 4.0)) (gate_rz (Float.pi /. 8.0));
 
   (* =========================================================================
      SUMMARY
@@ -213,14 +219,26 @@ Demonstrated compositional use of abstract QSwitch:
 4. SELF-INVERSE CASE
    qswitch gate_h gate_h - when both gates are the same
 
-5. STRUCTURAL ISOMORPHISMS
-   dist_l ; undist_l = id  (verified by compilation)
+5. CASE SUGAR = MANUAL
+   eq_circ verification: case-sugar and manual versions produce
+   identical unitaries for all tested gate pairs.
 
-Key insight: QSwitch is a FIRST-CLASS COMBINATOR in the Linear DSL
-  - Defined using proper structural isomorphisms
-  - GADT-enforced linearity
-  - Composes naturally with type safety
-  - No Bridge term hacking!
+QSwitch definition using case sugar:
+
+  let qswitch f g =
+    let left  = make_branch q one (seq0 g f) in
+    let right = make_branch q one (seq0 f g) in
+    seq0 (twist_tensor bool_ty q) (case_hom one one q q left right)
+
+Compare with manual version (8 lines of dist/omap/undist plumbing):
+
+  let qswitch_manual f g =
+    let distribute = dist_l one one q in
+    let left_branch = par0 (id one) (seq0 g f) in
+    let right_branch = par0 (id one) (seq0 f g) in
+    let apply_branches = omap0 iq_ty iq_ty left_branch right_branch in
+    let undistribute = undist_l one one q in
+    seq0 distribute (seq0 apply_branches undistribute)
 ";
 
   banner "DEMO COMPLETE";

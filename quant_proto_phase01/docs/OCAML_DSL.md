@@ -262,6 +262,47 @@ let bool = datatype
 - Elaborates to `I^{⊕k}` (k-ary sum of unit)
 - Operations are primitive constants
 
+### Case Sugar Combinators
+
+Case expressions on `A⊕B` with shared context require manual dist/omap/undist plumbing.
+The case sugar combinators handle this at the `prog` level (closed, unit context):
+
+| Combinator | Type | Description |
+|------------|------|-------------|
+| `make_branch g a body` | `G⊗A → A⊗C` | Build branch from `body : G → C` (twist + parallel) |
+| `case_hom0 a b c f g` | `A⊕B → (A⊕B)⊗C` | Homogeneous case, no context |
+| `case_hom a b g c f g` | `G⊗(A⊕B) → (A⊕B)⊗C` | Homogeneous case with shared context |
+| `case_het0 a b f g` | `A⊕B → (A⊗C)⊕(B⊗D)` | Heterogeneous case, no context (alias for `omap0`) |
+| `case_het a b g f g` | `G⊗(A⊕B) → (A⊗C)⊕(B⊗D)` | Heterogeneous case with context |
+
+These desugar to existing structural ops — no new GADT constructors needed.
+
+```ocaml
+(* Example: ctrl using case_hom + make_branch *)
+let ctrl f =
+  let left  = make_branch q one (id q) in
+  let right = make_branch q one f in
+  seq0 (twist_tensor (one ++ one) q)
+       (case_hom one one q q left right)
+```
+
+### Oterm Case Sugar
+
+The same case sugar pattern is available at the **oterm level** for the full source
+language (lambdas, variables, function application):
+
+| Combinator | Type | Description |
+|------------|------|-------------|
+| `ocase_hom0 a b c f g` | `A⊕B → (A⊕B)⊗C` | Homogeneous case, no context (oterm) |
+| `ocase_hom a b g c f g` | `G⊗(A⊕B) → (A⊕B)⊗C` | Homogeneous case with context (oterm) |
+| `ocase_het0 a b f g` | `A⊕B → (A⊗C)⊕(B⊗D)` | Heterogeneous case, no context (alias for `oplusmap0`) |
+| `ocase_het a b g f g` | `G⊗(A⊕B) → (A⊗C)⊕(B⊗D)` | Heterogeneous case with context (oterm) |
+| `omake_branch g a body` | `G⊗A → A⊗C` | Embed prog-level `make_branch` as oterm |
+
+**Key difference:** Oterm branches are bare tensor-typed oterms (their output type
+becomes the output summand), not morphisms. For prog-level `make_branch` branches,
+use `oembed (case_hom ...)` instead.
+
 ### Coherent Control
 
 The `control` combinator applies operations based on a datatype value:

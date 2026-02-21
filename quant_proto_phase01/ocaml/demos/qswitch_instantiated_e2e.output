@@ -1,12 +1,12 @@
 
 ==========================================================================
-  INSTANTIATED QSWITCH E2E DEMO (Linear DSL)
+  INSTANTIATED QSWITCH E2E DEMO (Case Sugar)
 ==========================================================================
 
 Demonstrating compositional use of abstract QSwitch
 
-All QSwitch instances use proper Linear DSL:
-  dist_l ; omap0 left_branch right_branch ; undist_l
+All QSwitch instances use case sugar combinators:
+  twist(Bool, Q) ; case_hom(I, I, Q, Q, make_branch(...), make_branch(...))
 
 
 ==========================================================================
@@ -177,22 +177,17 @@ QSwitch[Rz(π/4), Rz(-π/4)]:
   perm: [0, 1]
 
 ==========================================================================
-  PART 5: Verify Structural Isomorphisms
+  PART 5: Verify Case Sugar = Manual (eq_circ)
 ==========================================================================
 
-Verifying that dist_l and undist_l are proper inverses:
+Verifying that case-sugar QSwitch produces the same unitary
+as the manual dist_l ; omap0 ; undist_l version.
 
-dist_l one one q:
-  {"node": "DistL", "a": {"node": "Unit"}, "b": {"node": "Unit"}, "c": {"node": "Q"}}
-
-undist_l one one q:
-  {"node": "UndistL", "a": {"node": "Unit"}, "b": {"node": "Unit"}, "c": {"node": "Q"}}
-
-dist_l ; undist_l (should be identity):
-
-Roundtrip:
-2 qubits, 0 gates
-  perm: [0, 1]
+  QSwitch[H, S]             EQUAL (fidelity=1.000000)
+  QSwitch[X, Z]             EQUAL (fidelity=1.000000)
+  QSwitch[H, Y]             EQUAL (fidelity=1.000000)
+  QSwitch[H, H]             EQUAL (fidelity=1.000000)
+  QSwitch[Rz(pi/4), Rz(pi/8)] EQUAL (fidelity=1.000000)
 
 ==========================================================================
   SUMMARY
@@ -213,14 +208,26 @@ Demonstrated compositional use of abstract QSwitch:
 4. SELF-INVERSE CASE
    qswitch gate_h gate_h - when both gates are the same
 
-5. STRUCTURAL ISOMORPHISMS
-   dist_l ; undist_l = id  (verified by compilation)
+5. CASE SUGAR = MANUAL
+   eq_circ verification: case-sugar and manual versions produce
+   identical unitaries for all tested gate pairs.
 
-Key insight: QSwitch is a FIRST-CLASS COMBINATOR in the Linear DSL
-  - Defined using proper structural isomorphisms
-  - GADT-enforced linearity
-  - Composes naturally with type safety
-  - No Bridge term hacking!
+QSwitch definition using case sugar:
+
+  let qswitch f g =
+    let left  = make_branch q one (seq0 g f) in
+    let right = make_branch q one (seq0 f g) in
+    seq0 (twist_tensor bool_ty q) (case_hom one one q q left right)
+
+Compare with manual version (8 lines of dist/omap/undist plumbing):
+
+  let qswitch_manual f g =
+    let distribute = dist_l one one q in
+    let left_branch = par0 (id one) (seq0 g f) in
+    let right_branch = par0 (id one) (seq0 f g) in
+    let apply_branches = omap0 iq_ty iq_ty left_branch right_branch in
+    let undistribute = undist_l one one q in
+    seq0 distribute (seq0 apply_branches undistribute)
 
 
 ==========================================================================
