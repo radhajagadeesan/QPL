@@ -149,7 +149,7 @@ CH(0, 1, ty)            # Controlled-H
 Rz(0.5, 0, ty)          # Rz(θ) on wire 0
 Rx(0.5, 0, ty)          # Rx(θ) on wire 0
 Ry(0.5, 0, ty)          # Ry(θ) on wire 0
-Phase(0.5, 0, ty)       # Global phase gate
+Phase(0.5, 0, ty)       # Global phase e^{iφ} on wire 0
 
 # Three-qubit
 ty3 = Ten(Ten(Q(), Q()), Q())
@@ -158,7 +158,9 @@ CCX(0, 1, 2, ty3)       # Toffoli
 
 ### Structural Primitives
 
-All structural primitives compile to **pure wire permutations** (no gates).
+Tensor structurals compile to **pure wire permutations** (0 gates).
+Sum structurals (TwistPlus) may emit X gates on tag bits.
+Distributivity compiles to pure permutations (0 gates).
 
 ```python
 from lang.terms import (
@@ -167,19 +169,23 @@ from lang.terms import (
     DistL, DistR
 )
 
-# Tensor isomorphisms
+# Tensor isomorphisms (pure wire permutations, 0 gates)
 TwistTen(a, b)          # a ⊗ b → b ⊗ a
 AssocTenL(a, b, c)      # (a ⊗ b) ⊗ c → a ⊗ (b ⊗ c)
 AssocTenR(a, b, c)      # a ⊗ (b ⊗ c) → (a ⊗ b) ⊗ c
 
-# Sum isomorphisms (pure permutations with one-hot encoding)
-TwistPlus(a, b)         # a + b → b + a (swaps tags and data)
+# Sum isomorphisms (TwistPlus emits X gates on tag bits)
+TwistPlus(a, b)         # a + b → b + a (X gates on tag bits)
 AssocPlusL(a, b, c)     # (a + b) + c → a + (b + c)
 AssocPlusR(a, b, c)     # a + (b + c) → (a + b) + c
 
-# Distributivity (pure permutations)
+# Distributivity (pure permutations, 0 gates)
 DistL(a, b, c)          # (a + b) ⊗ c → (a ⊗ c) + (b ⊗ c)
 DistR(a, b, c)          # a ⊗ (b + c) → (a ⊗ b) + (a ⊗ c)
+
+# Inverse distributivity (pure permutations, 0 gates)
+UndistL(a, b, c)        # (a ⊗ c) + (b ⊗ c) → (a + b) ⊗ c
+UndistR(a, b, c)        # (a ⊗ b) + (a ⊗ c) → a ⊗ (b + c)
 ```
 
 ### Higher-Order Terms
@@ -220,6 +226,10 @@ Pair(fst, snd)
 # Tensor elimination: let (x, y) = t in u
 # Binds x to first width(A) wires, y to next width(B) wires
 LetPair(x, y, ty_x, ty_y, pair, body)
+
+# Case expression: case scrut of inl x => left | inr y => right
+# Quantum: both branches execute coherently via controlled gates
+CaseExpr(scrut, x, y, ty_x, ty_y, left_body, right_body)
 ```
 
 **Example: Destructuring a pair**
@@ -261,10 +271,10 @@ ExpInvolution : (θ: float, P: Term, ty: Ty) → Term
 ```
 
 At compile time, `ExpInvolution`:
-1. Compiles body P to WirePerm π
-2. Verifies π is involutive (π² = identity)
-3. Decomposes π into disjoint transpositions
-4. Emits `ExpSwap(θ, a, b)` for each transposition (a, b)
+1. Compiles body P to a unitary matrix U
+2. Verifies U is involutive (U² ≈ I)
+3. Computes `M = cos(θ)·I + i·sin(θ)·U` via direct unitary synthesis
+4. Emits the result as a `UnitaryNqBox` (1, 2, or 3 qubits)
 
 ---
 
@@ -292,7 +302,14 @@ swaps = decompose_involution(p)  # [(0, 1)]
 ```python
 from compile.to_pytket import compile, Compiled
 
-result: Compiled = compile(term, materialize=False, explain=False)
+result: Compiled = compile(term, materialize=False, explain=False, env=None)
+
+# Parameters:
+# term         — the Term to compile
+# materialize  — if True, emit SWAP gates for wire permutations
+# explain      — if True, populate result.log with compilation trace
+# env          — optional Env (dict[str, (int, int)]) mapping variable names
+#                to (start_wire, width) for open terms with free variables
 
 # Result fields:
 result.circuit          # pytket Circuit
@@ -335,18 +352,16 @@ ty = Ten(Q(), Q())
 # Create exp(iθ · SWAP)
 term = ExpInvolution(theta=0.5, body=swap, ty_total=ty)
 
-# Compile - verifies involution and emits ExpSwap atoms
+# Compile - verifies involution and emits UnitaryNqBox
 result = compile(term, materialize=True)
-# Produces XXPhase, YYPhase, ZZPhase gates
+# Produces a single UnitaryNqBox via direct unitary synthesis
 ```
 
-If the body is not a wire-permutation involution, compilation raises an error:
-```
-InvolutionError: ExpInvolution body must be involutive (π² ≠ id)
-```
+If the body is not involutive (U² ≠ I), compilation raises an error.
 
-**Note:** `TwistPlus` on sum types emits an X gate (tag flip), not a wire permutation.
-Use `TwistTen` on tensor types for ExpInvolution.
+**Note:** Both `TwistTen` and `TwistPlus` work as ExpInvolution bodies.
+`TwistPlus` emits an X gate (tag flip) which is correctly handled by
+the unitary synthesis path.
 
 ---
 
@@ -442,6 +457,6 @@ PYTHONPATH=python/src python my_program.py
 - `API_REFERENCE.md` — Complete API signatures
 - `IR_DESIGN.md` — IR architecture and compilation semantics
 - `python/demos/qswitch_demo.py` — Working higher-order example
-- `python/demos/qswitch_abstract_circuit_demo.py` — Abstract QSwitch circuit diagrams (no instantiation)
+- `python/demos/qswitch_abstract_circuit_theory_demo.py` — Abstract QSwitch circuit diagrams (no instantiation)
 - `python/demos/qswitch_instantiation_demo.py` — QSwitch[H,H] vs QSwitch[H,S] with simplification analysis
 - `ocaml/demos/` — OCaml E2E demos (full pipeline to circuits)

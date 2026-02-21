@@ -94,14 +94,8 @@ The tag qubit passes through unchanged. Both branches execute coherently on supe
 OCaml serializes the Core IR to JSON. Python's `bridge.py` deserializes it to `lang/terms.py` AST nodes.
 
 ```bash
-# Run OCaml demo that outputs JSON
-cd ocaml && dune exec demos/qswitch_demo.exe
-
 # Run OCaml E2E demo (full pipeline to circuits)
 cd ocaml && dune exec demos/abstract_qswitch_oterm_e2e.exe
-
-# Python reads JSON and compiles
-PYTHONPATH=python/src python -c "from bridge import load_term; ..."
 ```
 
 ---
@@ -158,30 +152,33 @@ Sum types use log-sized tag register + shared payload.
 
 ```
 quant_proto_phase01/
-├── ocaml/                 # OCaml surface language
+├── ocaml/                    # OCaml surface language
 │   ├── lib/
-│   │   ├── ast.ml          # Surface AST
-│   │   ├── elaborate.ml    # Elaboration to Core IR
-│   │   ├── core.ml         # Core IR types
-│   │   └── bridge.ml       # JSON serialization
-│   ├── demos/              # OCaml demos and E2E demos (full pipeline to circuits)
+│   │   ├── ast.ml             # Surface AST
+│   │   ├── elaborate.ml       # Elaboration to Core IR
+│   │   ├── linear.ml          # GADT-enforced Linear DSL
+│   │   ├── bridge.ml          # JSON serialization + Python bridge
+│   │   └── rep.ml             # Type representation
+│   ├── bridge.py              # JSON bridge script (OCaml → Python)
+│   ├── demos/                 # OCaml E2E demos (full pipeline to circuits)
+│   ├── test/                  # OCaml tests
 │   └── dune-project
 │
-├── src/                     # Python core compiler
-│   ├── lang/
-│   │   ├── types.py        # Type system (Q, Ten, Plus, ...)
-│   │   └── terms.py        # Term AST (Seq, H, CX, ...)
-│   ├── core/
-│   │   └── perm.py         # Wire permutations
-│   ├── compile/
-│   │   └── to_pytket.py    # Main compiler
-│   ├── typing_/
-│   │   └── check.py        # Type inference
-│   └── bridge.py           # JSON → Python AST
+├── python/
+│   ├── src/                   # Python core compiler
+│   │   ├── lang/
+│   │   │   ├── types.py       # Type system (Q, Ten, Plus, ...)
+│   │   │   └── terms.py       # Term AST (Seq, H, CX, ...)
+│   │   ├── core/
+│   │   │   └── perm.py        # Wire permutations
+│   │   ├── compile/
+│   │   │   └── to_pytket.py   # Main compiler
+│   │   └── typing_/
+│   │       └── check.py       # Type inference
+│   ├── tests/                 # pytest test suite
+│   └── demos/                 # Python demos with outputs
 │
-├── tests/                   # pytest test suite
-├── python/demos/            # Python demos with outputs
-└── docs/                    # Documentation
+└── docs/                      # Documentation
 ```
 
 ---
@@ -218,11 +215,8 @@ let json = Core.to_json core_ir
 
 ```python
 # Python side
-from bridge import load_term
 from compile.to_pytket import compile
-
-term = load_term("my_term.json")
-result = compile(term)
+# Terms are passed via JSON stdin to ocaml/bridge.py
 ```
 
 ### Running Demos
@@ -232,11 +226,6 @@ result = compile(term)
 cd quant_proto_phase01
 PYTHONPATH=python/src python python/demos/qswitch_demo.py
 PYTHONPATH=python/src python python/demos/exp_twist_demo.py
-PYTHONPATH=python/src python python/demos/pauli_conjugation_demo.py
-
-# OCaml demos (AST → Core IR)
-cd ocaml
-dune exec demos/qswitch_demo.exe
 
 # OCaml E2E demos (full pipeline to circuits)
 cd ocaml

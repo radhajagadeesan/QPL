@@ -185,7 +185,9 @@ datatype Maybe['a] = None of I | Some of 'a
 
 ### Structural Primitives
 
-All structural primitives compile to **pure wire permutations** (no gates).
+Tensor structurals compile to **pure wire permutations** (0 gates).
+Sum structurals (twist+) may emit X gates on tag bits.
+Distributivity compiles to pure permutations (0 gates).
 
 #### Tensor Isomorphisms
 
@@ -482,22 +484,25 @@ let () =
 
 ## Key Properties
 
-### Structural Operations are Free
+### Structural Operations are Cheap
 
-With one-hot leaf-tag encoding, **all structural operations compile to pure wire permutations**:
-- `twist+`, `assoc+L`, `assoc+R` - no gates
-- `distL`, `distR` - no gates
-- `twist⊗`, `assoc⊗L`, `assoc⊗R` - no gates
+Tensor structurals and distributivity compile to pure wire permutations (0 gates):
+- `twist⊗`, `assoc⊗L`, `assoc⊗R` — 0 gates
+- `distL`, `distR` — 0 gates
 
-This means structural rewiring has zero quantum cost.
+Sum structurals may emit X gates on tag bits:
+- `twist+` — emits X gates on tag bits (tag flip)
+- `assoc+L`, `assoc+R` — identity under flat encoding (0 gates)
+
+Structural rewiring has zero or near-zero quantum cost.
 
 ### Involution Certification
 
 When using `exp_i[θ,P]`, the compiler:
-1. Compiles P to a wire permutation π
-2. Verifies π² = identity (involutive check)
-3. Decomposes π into disjoint swaps
-4. Emits certified `ExpSwap` gates
+1. Compiles body P to a unitary matrix U
+2. Verifies U² ≈ I (involutive check)
+3. Computes `cos(θ)·I + i·sin(θ)·U` via direct unitary synthesis
+4. Emits the result as a `UnitaryNqBox` (supports up to 3 qubits)
 
 If P is not involutive, compilation fails with an error.
 
@@ -515,6 +520,7 @@ See `python/demos/README.md` and `ocaml/demos/README.md` for full details.
 
 | Demo | File | What it Shows |
 |------|------|---------------|
+| **QSwitch (pipeline)** | `quantum_switch_demo.py` | Full Surface→Elaboration→Circuit pipeline |
 | QSwitch (basic) | `qswitch_demo.py` | Higher-order quantum switch combinator |
 | QSwitch (term) | `qswitch_term_demo.py` | QSwitch as Case term with DistR |
 | QSwitch (abstract) | `qswitch_abstract_demo.py` | Abstract QSwitch type and wire layout |
@@ -522,6 +528,9 @@ See `python/demos/README.md` and `ocaml/demos/README.md` for full details.
 | **QSwitch (instantiation)** | `qswitch_instantiation_demo.py` | QSwitch[H,H] vs QSwitch[H,S], simplification analysis |
 | **QSwitch (curried)** | `qswitch_curried_theory_demo.py` | THEORY: Curried λb.λf.λg.λx type derivation |
 | **Zn Controlled Phase** | `zn_controlled_phase_demo.py` | Z2, Z4, Z5 controlled phase rotation via Ctrl combinator |
+| **Z8 Coherent Action** | `z8_coherent_action_demo.py` | NPlusMap with Z4, Z5, Z8 cyclic groups |
+| Algorithmic Snippets | `algorithmic_snippets_demo.py` | Bell, GHZ, Deutsch, short-circuit, Grover snippets |
+| Short-Circuit | `short_circuit_demo.py` | Short-circuit conjunction with witness routing |
 | ExpInvolution | `exp_twist_demo.py` | Composition law: exp(θ);exp(θ) = exp(2θ) |
 | Pauli Conjugation | `pauli_conjugation_demo.py` | exp(π/4,X);Z;exp(-π/4,X) = Y on qubit as I+I |
 

@@ -81,7 +81,7 @@ Anti-control pattern: X[tag] ; Controlled ; X[tag]
   - Controlled gates fire on |1⟩
   - Flips tag back
 
-Run `dune exec demos/qswitch_demo.exe` in ocaml/ for full elaboration trace.
+Run `dune exec demos/abstract_qswitch_oterm_e2e.exe` in ocaml/ for full E2E pipeline.
 """)
 
     # =========================================================================

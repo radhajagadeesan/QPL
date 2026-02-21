@@ -23,12 +23,15 @@ let banner title =
   Printf.printf "  %s\n" title;
   print_endline (String.make 74 '=')
 
+let had_failure = ref false
+
 let compile_and_report name term =
   Printf.printf "\n%s:\n" name;
   match Bridge.compile_show term with
   | Bridge.CompileOk _ -> ()
   | Bridge.CompileError err ->
-      Printf.printf "  FAILED: %s\n" err
+      Printf.printf "  FAILED: %s\n" err;
+      had_failure := true
 
 (* ========================================================================= *)
 (* 1. Deutsch-Jozsa: Oracle as a plain function parameter                    *)
@@ -312,4 +315,5 @@ KEY INSIGHTS:
   - The oracle ; (FT tensor id) pattern is shared across algorithms
 ";
 
-  banner "DEMO COMPLETE"
+  banner "DEMO COMPLETE";
+  if !had_failure then exit 1

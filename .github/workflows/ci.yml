@@ -64,3 +64,4 @@ jobs:
           opam exec -- dune exec demos/abstract_qswitch_oterm_e2e.exe
           opam exec -- dune exec demos/ctrl_lambda_e2e.exe
           opam exec -- dune exec demos/verify_nested_ctrl_e2e.exe
+          opam exec -- dune exec demos/datatype_demo.exe

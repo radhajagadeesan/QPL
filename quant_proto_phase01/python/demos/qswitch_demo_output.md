@@ -2,7 +2,7 @@
 
 Run with: `PYTHONPATH=python/src python python/demos/qswitch_demo.py`
 
-For full elaboration pipeline, run: `cd ocaml && dune exec demos/qswitch_demo.exe`
+For full E2E pipeline, run: `cd ocaml && dune exec demos/abstract_qswitch_oterm_e2e.exe`
 
 ---
 

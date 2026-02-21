@@ -19,6 +19,8 @@
 open Qpl_surface
 open Linear
 
+let had_failure = ref false
+
 let banner title =
   print_endline "";
   print_endline (String.make 74 '=');
@@ -146,10 +148,11 @@ let () =
     Left  (tag=0): id_{I*Q}    -- identity, do nothing
     Right (tag=1): id_I * f    -- apply f to payload
 
-  Circuit width: width(Q->Q) + width(Bool*Q) = 2 + 2 = 4 qubits
+  Curried type: (Q->Q) -> ((Bool*Q) -> (Bool*Q))
+  Circuit width: width(Q->Q) + width(Arrow(Bool*Q, Bool*Q)) = 2 + 4 = 6 qubits
     Wires [0,1]: f boundary (input A, output A)
-    Wire  [2]:   Bool tag
-    Wire  [3]:   Q payload
+    Wires [2,3]: inner arrow input (Bool*Q)
+    Wires [4,5]: inner arrow output (Bool*Q)
 ";
 
   Printf.printf "Compiling abstract ctrl lambda:\n\n";
@@ -158,7 +161,8 @@ let () =
    | Bridge.CompileOk (perm, size) ->
        Printf.printf "\n  ctrl (abstract): %d qubits, %d gates\n" perm.n size
    | Bridge.CompileError err ->
-       Printf.printf "\n  FAILED: %s\n" err);
+       Printf.printf "\n  FAILED: %s\n" err;
+       had_failure := true);
 
   (* ======================================================================= *)
   banner "PART 2: ctrl(X) = CX";
@@ -173,14 +177,15 @@ let () =
   Printf.printf "ctrl(X):\n";
   (match Bridge.compile_show (emit ctrl_x) with
    | Bridge.CompileOk _ -> ()
-   | Bridge.CompileError err -> Printf.printf "  FAILED: %s\n" err);
+   | Bridge.CompileError err -> Printf.printf "  FAILED: %s\n" err; had_failure := true);
 
   (match Bridge.eq_circ (emit ctrl_x) (emit gate_cx) with
    | Bridge.EqCircOk (equal, fidelity) ->
        Printf.printf "  Verify ctrl(X) = CX: %s (fidelity=%.6f)\n"
          (if equal then "EQUAL" else "NOT EQUAL") fidelity
    | Bridge.EqCircError err ->
-       Printf.printf "  eq_circ ERROR: %s\n" err);
+       Printf.printf "  eq_circ ERROR: %s\n" err;
+       had_failure := true);
 
   (* ======================================================================= *)
   banner "PART 3: ctrl(ctrl(X)) = CCX (Toffoli)";
@@ -194,7 +199,7 @@ let () =
   Printf.printf "ctrl^2(X):\n";
   (match Bridge.compile_show (emit ctrl2_x) with
    | Bridge.CompileOk _ -> ()
-   | Bridge.CompileError err -> Printf.printf "  FAILED: %s\n" err);
+   | Bridge.CompileError err -> Printf.printf "  FAILED: %s\n" err; had_failure := true);
 
   let ccx_ref = Bridge.TCCX (0, 1, 2) in
   (match Bridge.eq_circ (emit ctrl2_x) ccx_ref with
@@ -202,7 +207,8 @@ let () =
        Printf.printf "  Verify ctrl^2(X) = CCX: %s (fidelity=%.6f)\n"
          (if equal then "EQUAL" else "NOT EQUAL") fidelity
    | Bridge.EqCircError err ->
-       Printf.printf "  eq_circ ERROR: %s\n" err);
+       Printf.printf "  eq_circ ERROR: %s\n" err;
+       had_failure := true);
 
   (* ======================================================================= *)
   banner "PART 4: ctrl^3(X) = CCCX";
@@ -212,7 +218,7 @@ let () =
   Printf.printf "\nctrl^3(X):\n";
   (match Bridge.compile_show (emit ctrl3_x) with
    | Bridge.CompileOk _ -> ()
-   | Bridge.CompileError err -> Printf.printf "  FAILED: %s\n" err);
+   | Bridge.CompileError err -> Printf.printf "  FAILED: %s\n" err; had_failure := true);
 
   let cccx_ref = Bridge.TGate ("X", [3], [0; 1; 2]) in
   (match Bridge.eq_circ (emit ctrl3_x) cccx_ref with
@@ -220,7 +226,8 @@ let () =
        Printf.printf "  Verify ctrl^3(X) = CCCX: %s (fidelity=%.6f)\n"
          (if equal then "EQUAL" else "NOT EQUAL") fidelity
    | Bridge.EqCircError err ->
-       Printf.printf "  eq_circ ERROR: %s\n" err);
+       Printf.printf "  eq_circ ERROR: %s\n" err;
+       had_failure := true);
 
   (* ======================================================================= *)
   banner "PART 5: ctrl^4(X) = CCCCX";
@@ -230,7 +237,7 @@ let () =
   Printf.printf "\nctrl^4(X):\n";
   (match Bridge.compile_show (emit ctrl4_x) with
    | Bridge.CompileOk _ -> ()
-   | Bridge.CompileError err -> Printf.printf "  FAILED: %s\n" err);
+   | Bridge.CompileError err -> Printf.printf "  FAILED: %s\n" err; had_failure := true);
 
   let ccccx_ref = Bridge.TGate ("X", [4], [0; 1; 2; 3]) in
   (match Bridge.eq_circ (emit ctrl4_x) ccccx_ref with
@@ -238,7 +245,8 @@ let () =
        Printf.printf "  Verify ctrl^4(X) = CCCCX: %s (fidelity=%.6f)\n"
          (if equal then "EQUAL" else "NOT EQUAL") fidelity
    | Bridge.EqCircError err ->
-       Printf.printf "  eq_circ ERROR: %s\n" err);
+       Printf.printf "  eq_circ ERROR: %s\n" err;
+       had_failure := true);
 
   (* ======================================================================= *)
   banner "SUMMARY";
@@ -250,7 +258,7 @@ let () =
   +----------------+---------+----------------------------+
   | Term           | Qubits  | Verified against           |
   +----------------+---------+----------------------------+
-  | ctrl (abstract)| 4       | (lambda with f boundary)   |
+  | ctrl (abstract)| 6       | (curried lambda)           |
   | ctrl(X)        | 2       | CX                         |
   | ctrl^2(X)      | 3       | CCX (Toffoli)              |
   | ctrl^3(X)      | 4       | CCCX                       |
@@ -263,4 +271,5 @@ let () =
   each ctrl(−) adds one control qubit.
 ";
 
-  banner "DEMO COMPLETE"
+  banner "DEMO COMPLETE";
+  if !had_failure then exit 1

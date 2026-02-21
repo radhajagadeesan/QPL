@@ -104,6 +104,8 @@ Sum structurals compile to **symbolic tag permutations** (lowered to gates late)
 | `AssocPlusR(a, b, c)` | a + (b + c) → (a + b) + c |
 | `DistL(a, b, c)` | (a + b) ⊗ c → (a ⊗ c) + (b ⊗ c) |
 | `DistR(a, b, c)` | a ⊗ (b + c) → (a ⊗ b) + (a ⊗ c) |
+| `UndistL(a, b, c)` | (a ⊗ c) + (b ⊗ c) → (a + b) ⊗ c |
+| `UndistR(a, b, c)` | (a ⊗ b) + (a ⊗ c) → a ⊗ (b + c) |
 
 ### Control Flow
 
@@ -243,7 +245,7 @@ All gates take wire indices and an ambient type `ty_total`.
 | `Rx(theta, i, ty)` | X rotation by θ | |
 | `Ry(theta, i, ty)` | Y rotation by θ | |
 | `Rz(theta, i, ty)` | Z rotation by θ | |
-| `Phase(theta, i, ty)` | Global phase | |
+| `Phase(phi, i, ty)` | Global phase e^{iφ} | |
 
 **Two-qubit gates:**
 
@@ -415,6 +417,7 @@ A function `A ⊸ B` is physically `width(A) + width(B)` wires. Lambda exposes w
 | `Var(name, ty)` | `Var(name: str, ty: Ty)` | Variable reference — identity on wire range |
 | `Pair(fst, snd)` | `Pair(fst: Term, snd: Term)` | Tensor introduction — (t, u) : A ⊗ B |
 | `LetPair(x, y, ty_x, ty_y, pair, body)` | See below | Tensor elimination — let (x,y) = t in u |
+| `CaseExpr(scrut, x, y, ty_x, ty_y, left, right)` | See below | Case on sum — pattern matching with variable binding |
 
 **LetPair signature:**
 ```python
@@ -440,6 +443,21 @@ body = Pair(Seq(Var("x", Q()), H(0, Q())), Var("y", Q()))
 lp = LetPair("x", "y", Q(), Q(), pair_term, body)
 ```
 
+**CaseExpr signature:**
+```python
+CaseExpr(
+    scrut: Term,   # Scrutinee : A + B
+    x: str,        # Variable name for left payload (A)
+    y: str,        # Variable name for right payload (B)
+    ty_x: Ty,      # Type A (left payload)
+    ty_y: Ty,      # Type B (right payload)
+    left: Term,    # Left branch body (with x in scope)
+    right: Term    # Right branch body (with y in scope)
+) -> Term
+```
+
+**Compilation:** CaseExpr compiles the scrutinee, then executes both branches coherently via controlled gates (anti-control for left branch, control for right branch).
+
 ---
 
 ## Compilation (`python/src/compile/to_pytket.py`)
@@ -451,7 +469,13 @@ Standard compilation to pytket circuit.
 ```python
 from compile.to_pytket import compile, Compiled
 
-result: Compiled = compile(term, materialize=False, explain=False)
+result: Compiled = compile(term, materialize=False, explain=False, env=None)
+
+# Parameters:
+#   term: Term          — the term to compile
+#   materialize: bool   — emit SWAP gates for wire permutations (default False)
+#   explain: bool       — populate result.log with compilation trace (default False)
+#   env: Env            — optional dict[str, (int, int)] for open terms with free variables
 
 # Result fields:
 result.circuit   # pytket Circuit
@@ -563,4 +587,4 @@ result = compile(term)
 
 ## Test Coverage
 
-1207+ tests across all phases.
+~620+ tests across Python (pytest) and OCaml (dune test + newtests).

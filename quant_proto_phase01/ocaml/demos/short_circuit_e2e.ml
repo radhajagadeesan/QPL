@@ -268,12 +268,15 @@ let and_sc_quant_bridge : Bridge.term =
 (* Compilation and Reporting                                                 *)
 (* ========================================================================= *)
 
+let had_failure = ref false
+
 let compile_and_report name term =
   Printf.printf "\n%s:\n" name;
   match Bridge.compile_show term with
   | Bridge.CompileOk _ -> ()
   | Bridge.CompileError err ->
-      Printf.printf "  ✗ FAILED: %s\n" err
+      Printf.printf "  ✗ FAILED: %s\n" err;
+      had_failure := true
 
 
 (* ========================================================================= *)
@@ -575,4 +578,5 @@ coherent control. Phase marking encodes control-flow history
 in interference patterns.
 ";
 
-  banner "DEMO COMPLETE"
+  banner "DEMO COMPLETE";
+  if !had_failure then exit 1

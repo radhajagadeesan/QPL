@@ -92,19 +92,19 @@ PYTHONPATH=python/src python python/demos/qswitch_abstract_demo.py
 4. LetPair structure for destructuring
 5. Instantiation with H, S
 
-### QSwitch (OCaml HO) — `ocaml/demos/qswitch_ho_demo.ml`
+### QSwitch (OCaml oterm) — `ocaml/demos/abstract_qswitch_oterm_e2e.ml`
 
-OCaml surface language demo showing higher-order QSwitch:
+OCaml surface language demo showing higher-order QSwitch as a lambda term:
 
 **Run:**
 ```bash
-cd ocaml && dune exec demos/qswitch_ho_demo.exe
+cd ocaml && dune exec demos/abstract_qswitch_oterm_e2e.exe
 ```
 
 **What it shows:**
-1. QSwitch type: `(Q→Q) → (Q→Q) → ((I+I)⊗Q → (I+I)⊗Q)`
-2. Instantiation with H and S
-3. Elaboration to Core IR with controlled gates
+1. QSwitch type: `(Q→Q) ⊗ (Q→Q) ⊗ Bool ⊗ Q → Bool ⊗ Q`
+2. Full source language: Lam, LetPair, Var, App, PlusMap
+3. Instantiation with concrete gate pairs and unitary verification
 
 ### QSwitch (abstract circuit) — `qswitch_abstract_circuit_theory_demo.py` (THEORY ONLY)
 
@@ -260,8 +260,8 @@ PYTHONPATH=python/src python python/demos/exp_twist_demo.py
 | Term | Gates | Unitary |
 |------|-------|---------|
 | `TwistTen(Q,Q)` | 0 | SWAP (permutation only) |
-| `exp_i(π/4, twist)` | 3 | XXPhase, YYPhase, ZZPhase |
-| `exp_i(π/4, twist) ; exp_i(π/4, twist)` | 6 | = exp_i(π/2, twist) |
+| `exp_i(π/4, twist)` | 1 | UnitaryNqBox (direct unitary synthesis) |
+| `exp_i(π/4, twist) ; exp_i(π/4, twist)` | 2 | = exp_i(π/2, twist) |
 
 **Key result:** The composition of two exp_i(π/4) equals exp_i(π/2), verified by:
 1. Compiling each term to pytket circuit

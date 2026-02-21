@@ -20,10 +20,11 @@
     Left  (tag=0): id_{I*Q}    -- identity, do nothing
     Right (tag=1): id_I * f    -- apply f to payload
 
-  Circuit width: width(Q->Q) + width(Bool*Q) = 2 + 2 = 4 qubits
+  Curried type: (Q->Q) -> ((Bool*Q) -> (Bool*Q))
+  Circuit width: width(Q->Q) + width(Arrow(Bool*Q, Bool*Q)) = 2 + 4 = 6 qubits
     Wires [0,1]: f boundary (input A, output A)
-    Wire  [2]:   Bool tag
-    Wire  [3]:   Q payload
+    Wires [2,3]: inner arrow input (Bool*Q)
+    Wires [4,5]: inner arrow output (Bool*Q)
 
 Compiling abstract ctrl lambda:
 
@@ -39,7 +40,7 @@ Compiling abstract ctrl lambda:
 
   Instantiate f := X gate.
   ctrl(X) : Bool * Q -> Bool * Q
-  Expected: 1 gate (CX)
+  Expected: 1 pytket gate (CX)
 
 ctrl(X):
 2 qubits, 1 gates
@@ -52,7 +53,7 @@ ctrl(X):
 ==========================================================================
 
   ctrl^2(X) = ctrl_{Bool*Q}(ctrl_Q(X))
-  Expected: 1 gate (CCX)
+  Expected: 1 pytket gate (CCX box)
 
 ctrl^2(X):
 3 qubits, 1 gates
@@ -90,7 +91,7 @@ ctrl^4(X):
   +----------------+---------+----------------------------+
   | Term           | Qubits  | Verified against           |
   +----------------+---------+----------------------------+
-  | ctrl (abstract)| 4       | (lambda with f boundary)   |
+  | ctrl (abstract)| 6       | (curried lambda)           |
   | ctrl(X)        | 2       | CX                         |
   | ctrl^2(X)      | 3       | CCX (Toffoli)              |
   | ctrl^3(X)      | 4       | CCCX                       |

@@ -318,7 +318,7 @@ let call_bridge request_json =
   close_out oc;
 
   (* Run python with temp file I/O *)
-  let cmd = Printf.sprintf "PYTHONPATH=%s/src %s %s < %s > %s 2>&1"
+  let cmd = Printf.sprintf "PYTHONPATH=%s/python/src %s %s < %s > %s 2>&1"
     root python bridge_script tmp_in tmp_out in
   let _ = Sys.command cmd in
 

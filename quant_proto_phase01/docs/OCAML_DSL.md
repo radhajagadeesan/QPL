@@ -302,19 +302,25 @@ dune test
 ocaml/
 ├── lib/
 │   ├── ast.ml          # Surface language AST
+│   ├── bridge.ml       # Bridge to Python
+│   ├── datatype.ml     # Datatype definitions (Bool, W, etc.)
 │   ├── elaborate.ml    # Elaboration to Core IR
+│   ├── emit.ml         # Term emission helpers
 │   ├── linear.ml       # GADT-enforced Linear DSL
 │   ├── linear.mli      # Linear DSL interface
-│   ├── bridge.ml       # Bridge to Python
+│   ├── perm_gen.ml     # Permutation generation
+│   ├── qpl.ml          # QPL module (surface combinators)
 │   └── rep.ml          # Type representation
 ├── demos/              # All OCaml demos (full pipeline to circuits)
 │   ├── algorithms_e2e.ml
 │   ├── abstract_qswitch_oterm_e2e.ml
-│   ├── qswitch_instantiated_e2e.ml
-│   ├── zn_controlled_phase_e2e.ml
 │   ├── ctrl_lambda_e2e.ml
+│   ├── datatype_demo.ml
+│   ├── exp_twist_e2e.ml
+│   ├── qswitch_instantiated_e2e.ml
+│   ├── short_circuit_e2e.ml
 │   ├── verify_nested_ctrl_e2e.ml
-│   └── datatype_demo.ml
+│   └── zn_controlled_phase_e2e.ml
 └── test/
 ```
 
