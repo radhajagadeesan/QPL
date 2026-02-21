@@ -166,7 +166,7 @@ let () =
   print_endline "
   Instantiate f := X gate.
   ctrl(X) : Bool * Q -> Bool * Q
-  Expected: 1 gate (CX)
+  Expected: 1 pytket gate (CX)
 ";
 
   let ctrl_x = ctrl q gate_x in
@@ -187,7 +187,7 @@ let () =
 
   print_endline "
   ctrl^2(X) = ctrl_{Bool*Q}(ctrl_Q(X))
-  Expected: 1 gate (CCX)
+  Expected: 1 pytket gate (CCX box)
 ";
 
   let ctrl2_x = ctrl bq ctrl_x in

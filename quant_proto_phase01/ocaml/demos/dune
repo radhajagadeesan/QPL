@@ -3,10 +3,6 @@
  (libraries qpl_surface str))
 
 (executable
- (name abstract_qswitch_e2e)
- (libraries qpl_surface str))
-
-(executable
  (name qswitch_instantiated_e2e)
  (libraries qpl_surface str))
 
@@ -17,10 +13,6 @@
 (executable
  (name short_circuit_e2e)
  (libraries qpl_surface str))
-
-(executable
- (name linear_demo)
- (libraries qpl_surface))
 
 (executable
  (name datatype_demo)
@@ -36,4 +28,8 @@
 
 (executable
  (name ctrl_lambda_e2e)
+ (libraries qpl_surface str))
+
+(executable
+ (name verify_nested_ctrl_e2e)
  (libraries qpl_surface str))

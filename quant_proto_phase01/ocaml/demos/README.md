@@ -16,14 +16,13 @@ dune build demos/
 
 # Run individual demos
 dune exec demos/algorithms_e2e.exe
-dune exec demos/abstract_qswitch_e2e.exe
-dune exec demos/abstract_qswitch_oterm_e2e.exe
 dune exec demos/qswitch_instantiated_e2e.exe
+dune exec demos/abstract_qswitch_oterm_e2e.exe
 dune exec demos/zn_controlled_phase_e2e.exe
 dune exec demos/short_circuit_e2e.exe
 dune exec demos/exp_twist_e2e.exe
 dune exec demos/ctrl_lambda_e2e.exe
-dune exec demos/linear_demo.exe
+dune exec demos/verify_nested_ctrl_e2e.exe
 dune exec demos/datatype_demo.exe
 ```
 
@@ -38,13 +37,6 @@ Parameterized quantum algorithms using OCaml functors:
 - **Bell and GHZ states**: Structural composition patterns
 
 Key pattern: `oracle ; (fourier_transform tensor id)`
-
-### abstract_qswitch_e2e.ml
-
-Abstract QSwitch pattern using structural isomorphisms:
-- `dist_l ; omap0 ; undist_l`
-- Parameterized over gate pairs (f, g)
-- Full Bridge -> Python compilation
 
 ### qswitch_instantiated_e2e.ml
 
@@ -87,8 +79,16 @@ Higher-order ctrl combinator as a curried lambda term:
 - `ctrl := λf. undist ∘ (id ⊕ (id_I ⊗ f)) ∘ dist`
 - Abstract lambda compilation (f as wire bundle)
 - Iterated: `ctrl(X)` = CX, `ctrl²(X)` = CCX, `ctrl³(X)` = CCCX, `ctrl⁴(X)` = CCCCX
-- Each level compiles to exactly 1 gate (no exponential blowup)
+- Gate counts are pytket box counts (nested QControlBox); primitive gate counts are higher
 - Unitary verification via `eq_circ`
+
+### verify_nested_ctrl_e2e.ml
+
+Mathematical ground-truth verification for nested controls:
+- Tests ctrl^k(G) for G in {H, S, Z, T} and k = 1..4 (16 tests)
+- Compares compiled unitary against mathematically constructed reference
+- Reference: I_{2^n} with bottom-right 2x2 block = G (independent of compiler)
+- Uses `verify_ctrl_unitary` bridge command for fidelity comparison
 
 ### abstract_qswitch_oterm_e2e.ml
 
@@ -96,13 +96,6 @@ Abstract QSwitch as an open term (full source language):
 - Builds QSwitch using `Lam`, `LetPair`, `Var`, `App`, `PlusMap`
 - Follows `full_source_language_compilation_spec.md` section 5
 - Instantiation with concrete gate pairs and unitary verification
-
-### linear_demo.ml
-
-Core Linear DSL features:
-- Closed terms, context splitting, variables, lambda
-- Meta-level combinators: iterate, fold, pow2, indexed_fold
-- E2E compilation of all examples
 
 ### datatype_demo.ml
 

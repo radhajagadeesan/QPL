@@ -557,6 +557,37 @@ def handle_eq_circ(request: dict) -> dict:
         }
 
 
+def handle_verify_ctrl_unitary(request: dict) -> dict:
+    """Verify a compiled term matches C^k(G) mathematically.
+
+    Input: term (JSON), gate_re/gate_im (2x2 real/imag parts), n_controls
+    Builds reference: I_{2^n} with bottom-right 2x2 = gate_re + i*gate_im
+    Compares compiled unitary against reference up to global phase.
+    """
+    import numpy as np
+
+    try:
+        term = parse_term(request["term"])
+        gate_re = np.array(request["gate_re"])
+        gate_im = np.array(request["gate_im"])
+        gate = gate_re + 1j * gate_im
+        n_controls = request["n_controls"]
+
+        result = compile(term, materialize=True)
+        U = result.circuit.get_unitary()
+
+        dim = 2 ** (n_controls + 1)
+        ref = np.eye(dim, dtype=complex)
+        ref[-2:, -2:] = gate
+
+        product = np.conj(U.T) @ ref
+        fidelity = abs(np.trace(product)) / dim
+        equal = bool(fidelity > 1.0 - 1e-8)
+        return {"success": True, "equal": equal, "fidelity": float(fidelity)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def handle_check_involution(request: dict) -> dict:
     """Handle an involution check request.
 
@@ -614,6 +645,8 @@ def main():
         response = handle_check_involution(request)
     elif req_type == "eq_circ":
         response = handle_eq_circ(request)
+    elif req_type == "verify_ctrl_unitary":
+        response = handle_verify_ctrl_unitary(request)
     else:
         response = {"success": False, "error": f"Unknown request type: {req_type}"}
 

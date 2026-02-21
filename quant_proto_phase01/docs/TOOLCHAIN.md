@@ -98,7 +98,7 @@ OCaml serializes the Core IR to JSON. Python's `bridge.py` deserializes it to `l
 cd ocaml && dune exec demos/qswitch_demo.exe
 
 # Run OCaml E2E demo (full pipeline to circuits)
-cd ocaml && dune exec demos/abstract_qswitch_e2e.exe
+cd ocaml && dune exec demos/abstract_qswitch_oterm_e2e.exe
 
 # Python reads JSON and compiles
 PYTHONPATH=python/src python -c "from bridge import load_term; ..."
@@ -240,7 +240,7 @@ dune exec demos/qswitch_demo.exe
 
 # OCaml E2E demos (full pipeline to circuits)
 cd ocaml
-dune exec demos/abstract_qswitch_e2e.exe
+dune exec demos/abstract_qswitch_oterm_e2e.exe
 dune exec demos/zn_controlled_phase_e2e.exe
 ```
 

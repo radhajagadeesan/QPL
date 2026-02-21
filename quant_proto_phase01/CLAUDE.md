@@ -116,7 +116,7 @@ cd ocaml && dune test
 
 # Run OCaml E2E demo (full pipeline to circuits)
 cd ocaml && dune exec demos/algorithms_e2e.exe
-cd ocaml && dune exec demos/abstract_qswitch_e2e.exe
+cd ocaml && dune exec demos/abstract_qswitch_oterm_e2e.exe
 cd ocaml && dune exec demos/short_circuit_e2e.exe
 ```
 

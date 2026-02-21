@@ -287,9 +287,8 @@ dune build
 
 # Run demos (full pipeline to circuits)
 dune exec demos/algorithms_e2e.exe
-dune exec demos/abstract_qswitch_e2e.exe
+dune exec demos/abstract_qswitch_oterm_e2e.exe
 dune exec demos/zn_controlled_phase_e2e.exe
-dune exec demos/linear_demo.exe
 
 # Run tests
 dune test
@@ -310,10 +309,11 @@ ocaml/
 │   └── rep.ml          # Type representation
 ├── demos/              # All OCaml demos (full pipeline to circuits)
 │   ├── algorithms_e2e.ml
-│   ├── abstract_qswitch_e2e.ml
+│   ├── abstract_qswitch_oterm_e2e.ml
 │   ├── qswitch_instantiated_e2e.ml
 │   ├── zn_controlled_phase_e2e.ml
-│   ├── linear_demo.ml
+│   ├── ctrl_lambda_e2e.ml
+│   ├── verify_nested_ctrl_e2e.ml
 │   └── datatype_demo.ml
 └── test/
 ```

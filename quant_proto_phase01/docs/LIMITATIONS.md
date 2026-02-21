@@ -72,7 +72,9 @@ Not a pytket limitation.
 
 The compiler previously used `DecomposeBoxes()` to blow up compound gates (QControlBox, UnitaryNqBox) into primitives before re-controlling each one. This caused exponential growth: at level k, the compound gate from level k-1 was decomposed into many primitives, each wrapped with a new control.
 
-**Fix:** Removed `DecomposeBoxes`. `QControlBox(op, n)` wraps ANY op — including other QControlBoxes — so nested control is expressed directly without decomposition. The optimised circuit now produces 1 gate at every level:
+**Fix:** Removed `DecomposeBoxes`. `QControlBox(op, n)` wraps ANY op — including other QControlBoxes — so nested control is expressed directly without decomposition.
+
+**Note on gate counts:** The gate counts reported by `circuit.n_gates` are **pytket box counts** — each `QControlBox` counts as 1 regardless of how many primitive gates it decomposes into. The table below shows pytket box counts, not primitive gate counts:
 
 | k | ctrl^k(X) | ctrl^k(H) |
 |:---:|---:|---:|
@@ -81,7 +83,7 @@ The compiler previously used `DecomposeBoxes()` to blow up compound gates (QCont
 | 3 | 1 (CnX) | 1 (QControlBox) |
 | 4 | 1 (CnX) | 1 (QControlBox) |
 
-pytket handles nested QControlBoxes correctly when computing unitaries.
+`ctrl` controls the **wires** of A, not individual gates. For `ctrl(f)` where `f : A ⊸ A`, the tag qubit gates the entire A wire bundle. pytket handles nested QControlBoxes correctly when computing unitaries.
 
 ---
 
@@ -102,6 +104,6 @@ pytket handles nested QControlBoxes correctly when computing unitaries.
 - Nested sums up to 8 summands (balanced splits): PlusMap, PhasedPlusMap, PhasedControl, structural ops
 - Tensor types: unlimited nesting depth and width
 - Higher-order terms: Lam, Apply, Cup, Cap, Var, LetPair
-- All gates with arbitrary control nesting via `QControlBox` (O(1) gates per ctrl level)
+- All gates with arbitrary control nesting via `QControlBox` (O(1) pytket boxes per ctrl level; primitive gate count is higher)
 - Multi-controlled composites: `Ctrl(PlusMap(...))`, `Ctrl(ExpInvolution(...))`, etc.
 - Full OCaml → Python → circuit pipeline

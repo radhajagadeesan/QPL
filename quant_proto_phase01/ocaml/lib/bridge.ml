@@ -432,6 +432,45 @@ let eq_circ term1 term2 =
   | None ->
     EqCircError ("Invalid response: " ^ String.sub response 0 (min 300 (String.length response)))
 
+(** Verify compiled term matches C^k(G) against mathematical reference.
+
+    gate_re, gate_im: 2×2 real/imaginary parts of the gate matrix.
+    n_controls: number of control qubits (k).
+    Returns EqCircOk(equal, fidelity) or EqCircError(msg). *)
+let verify_ctrl_unitary term gate_re gate_im n_controls =
+  let json_row row =
+    Printf.sprintf "[%s]"
+      (String.concat ", " (List.map (Printf.sprintf "%.17g") row))
+  in
+  let json_matrix m =
+    Printf.sprintf "[%s]"
+      (String.concat ", " (List.map json_row m))
+  in
+  let term_json = term_to_json term in
+  let request = Printf.sprintf
+    {|{"type": "verify_ctrl_unitary", "term": %s, "gate_re": %s, "gate_im": %s, "n_controls": %d}|}
+    term_json (json_matrix gate_re) (json_matrix gate_im) n_controls
+  in
+
+  let response = call_bridge request in
+
+  match find_bool "success" response with
+  | Some true ->
+    (match find_bool "equal" response with
+     | Some eq ->
+       let fidelity = match find_float "fidelity" response with
+         | Some f -> f
+         | None -> 0.0
+       in
+       EqCircOk (eq, fidelity)
+     | None -> EqCircError "Failed to parse equality result")
+  | Some false ->
+    (match find_string "error" response with
+     | Some err -> EqCircError err
+     | None -> EqCircError ("Unknown error in: " ^ String.sub response 0 (min 300 (String.length response))))
+  | None ->
+    EqCircError ("Invalid response: " ^ String.sub response 0 (min 300 (String.length response)))
+
 (** Helper: create a TwistPlus term for a 2-constructor datatype swap *)
 let twist_plus_for_bool () =
   TTwistPlus (Rep.var 0, Rep.var 1)

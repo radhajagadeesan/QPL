@@ -57,10 +57,10 @@ jobs:
         run: |
           cd quant_proto_phase01/ocaml
           opam exec -- dune exec demos/algorithms_e2e.exe
-          opam exec -- dune exec demos/abstract_qswitch_e2e.exe
           opam exec -- dune exec demos/qswitch_instantiated_e2e.exe
           opam exec -- dune exec demos/short_circuit_e2e.exe
           opam exec -- dune exec demos/zn_controlled_phase_e2e.exe
           opam exec -- dune exec demos/exp_twist_e2e.exe
           opam exec -- dune exec demos/abstract_qswitch_oterm_e2e.exe
           opam exec -- dune exec demos/ctrl_lambda_e2e.exe
+          opam exec -- dune exec demos/verify_nested_ctrl_e2e.exe
