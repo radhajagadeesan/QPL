@@ -49,6 +49,34 @@ class TypeCheckError(TypeError):
 DomCod = Tuple[Ty, Ty]
 
 
+def _free_var_width(t: Term, bound: frozenset = frozenset()) -> int:
+    """Compute total wire width of free variables in t."""
+    if isinstance(t, Var):
+        return width(t.ty) if t.name not in bound else 0
+    if isinstance(t, LetPair):
+        return (_free_var_width(t.pair, bound)
+                + _free_var_width(t.body, bound | {t.x, t.y}))
+    if isinstance(t, Lam):
+        return _free_var_width(t.body, bound | {t.name})
+    if isinstance(t, Pair):
+        return _free_var_width(t.fst, bound) + _free_var_width(t.snd, bound)
+    if isinstance(t, Apply):
+        return _free_var_width(t.f, bound) + _free_var_width(t.arg, bound)
+    if isinstance(t, PlusMap):
+        return _free_var_width(t.left, bound) + _free_var_width(t.right, bound)
+    if isinstance(t, Seq):
+        return _free_var_width(t.f, bound) + _free_var_width(t.g, bound)
+    if isinstance(t, TenTerm):
+        return _free_var_width(t.f, bound) + _free_var_width(t.g, bound)
+    if isinstance(t, Case):
+        return _free_var_width(t.left, bound) + _free_var_width(t.right, bound)
+    if isinstance(t, CaseExpr):
+        return (_free_var_width(t.scrut, bound)
+                + _free_var_width(t.left, bound | {t.x})
+                + _free_var_width(t.right, bound | {t.y}))
+    return 0  # Structural isos, gates, Id, etc.
+
+
 def type_of(t: Term) -> DomCod:
     """Return (dom, cod) for term t; raise TypeCheckError if ill-typed."""
     if isinstance(t, Id):
@@ -296,18 +324,25 @@ def type_of(t: Term) -> DomCod:
         right_dom, right_cod = type_of(t.right)
 
         # Check that branch domains match declared types (by width)
+        # Allow wider domain if accounted for by free variables
         if width(left_dom) != width(t.ty_left):
-            raise TypeCheckError(
-                f"PlusMap left branch domain mismatch:\n"
-                f"  declared ty_left = {pretty(t.ty_left)} (width {width(t.ty_left)})\n"
-                f"  actual left dom  = {pretty(left_dom)} (width {width(left_dom)})"
-            )
+            fv_w = _free_var_width(t.left)
+            if width(left_dom) != width(t.ty_left) + fv_w:
+                raise TypeCheckError(
+                    f"PlusMap left branch domain mismatch:\n"
+                    f"  declared ty_left = {pretty(t.ty_left)} (width {width(t.ty_left)})\n"
+                    f"  actual left dom  = {pretty(left_dom)} (width {width(left_dom)})\n"
+                    f"  free var width   = {fv_w}"
+                )
         if width(right_dom) != width(t.ty_right):
-            raise TypeCheckError(
-                f"PlusMap right branch domain mismatch:\n"
-                f"  declared ty_right = {pretty(t.ty_right)} (width {width(t.ty_right)})\n"
-                f"  actual right dom  = {pretty(right_dom)} (width {width(right_dom)})"
-            )
+            fv_w = _free_var_width(t.right)
+            if width(right_dom) != width(t.ty_right) + fv_w:
+                raise TypeCheckError(
+                    f"PlusMap right branch domain mismatch:\n"
+                    f"  declared ty_right = {pretty(t.ty_right)} (width {width(t.ty_right)})\n"
+                    f"  actual right dom  = {pretty(right_dom)} (width {width(right_dom)})\n"
+                    f"  free var width    = {fv_w}"
+                )
 
         # Result type: (A + B) → (C + D), tag preserved
         dom = Plus(t.ty_left, t.ty_right)
@@ -438,24 +473,32 @@ def type_of(t: Term) -> DomCod:
         # The codomain is Arrow(dom, cod) exposing both A-slot and B-slot.
         body_dom, body_cod = type_of(t.body)
 
-        # body_dom should be (Γ ⊗ A), we extract Γ by removing A wires
-        # For now, we assume body_dom includes the x binding
-        # Lambda's domain is body_dom minus width(dom) wires
         wA = width(t.dom)
         body_width = width(body_dom)
 
-        if body_width < wA:
+        # Compute gamma (free context) from both body_dom and free variables.
+        # body_dom may not account for all free vars — e.g., PlusMap branches
+        # with free variables don't widen their type.  We take the max of
+        # (body_width - wA) and the explicit free-variable width.
+        fv_w = _free_var_width(t.body, frozenset({t.name}))
+
+        # Sanity check: body_dom width + hidden context should cover bound var
+        if body_width + fv_w < wA:
             raise TypeCheckError(
-                f"Lam body domain too small: body_dom width {body_width}, "
+                f"Lam body domain too small: body_dom width {body_width} + "
+                f"free var width {fv_w} = {body_width + fv_w}, "
                 f"but x:A has width {wA}"
             )
 
         # The lambda's codomain is Arrow(A, B) = A ⊸ B
         lam_cod = Arrow(t.dom, t.cod)
 
-        # The lambda's domain is the context Γ (body_dom minus the x:A part)
-        # For simplicity, we compute based on widths
-        gamma_width = body_width - wA
+        # The lambda's domain is the context Γ.
+        # Use max of body_dom inference and free-var computation:
+        # - (body_width - wA) captures free vars reflected in body_dom
+        # - fv_w captures ALL free vars including those hidden in PlusMap
+        gamma_from_dom = max(0, body_width - wA)
+        gamma_width = max(gamma_from_dom, fv_w)
         if gamma_width == 0:
             lam_dom = Unit()
         else:
@@ -539,11 +582,28 @@ def type_of(t: Term) -> DomCod:
         # Body type depends on the body term itself
         body_dom, body_cod = type_of(t.body)
 
-        # The full term's domain is the context that t.pair needs plus body's extra context
-        # For now we use width-based composition
-        # domain: what the pair term needs (pair_dom)
-        # codomain: what the body produces (body_cod)
-        return (pair_dom, body_cod)
+        # Typing rule: Γ1 ⊢ pair : A⊗B   Γ2, x:A, y:B ⊢ body : C
+        #   ⟹ Γ1⊗Γ2 ⊢ let (x,y) = pair in body : C
+        #
+        # body_dom = Γ2 ⊗ A ⊗ B, so Γ2 has width = body_dom - bound_width.
+        # LetPair dom = Γ1 ⊗ Γ2 = pair_dom ⊗ Γ2.
+        bound_width = width(t.ty_x) + width(t.ty_y)
+        free_context_width = max(0, width(body_dom) - bound_width)
+
+        if free_context_width == 0:
+            return (pair_dom, body_cod)
+        else:
+            # Body has free variables beyond the bound x, y.
+            # Build a domain type that includes the pair's context (Γ1)
+            # plus the body's free context (Γ2).
+            gamma2 = Q_ty()
+            for _ in range(free_context_width - 1):
+                gamma2 = Ten(gamma2, Q_ty())
+            if isinstance(pair_dom, Unit):
+                total_dom = gamma2
+            else:
+                total_dom = Ten(pair_dom, gamma2)
+            return (total_dom, body_cod)
 
     raise TypeCheckError(f"Unknown term node: {t!r}")
 

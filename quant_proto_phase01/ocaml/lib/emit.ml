@@ -16,6 +16,8 @@ let rec rep_to_python = function
     Printf.sprintf "Ten(%s, %s)" (rep_to_python a) (rep_to_python b)
   | Rep.Plus (a, b) ->
     Printf.sprintf "Plus(%s, %s)" (rep_to_python a) (rep_to_python b)
+  | Rep.Lolli (a, b) ->
+    Printf.sprintf "Arrow(%s, %s)" (rep_to_python a) (rep_to_python b)
 
 (** Emit Python code for a type with concrete Q() leaves.
     Used when we know all wires are qubits. *)
@@ -26,6 +28,8 @@ let rec rep_to_python_concrete = function
     Printf.sprintf "Ten(%s, %s)" (rep_to_python_concrete a) (rep_to_python_concrete b)
   | Rep.Plus (a, b) ->
     Printf.sprintf "Plus(%s, %s)" (rep_to_python_concrete a) (rep_to_python_concrete b)
+  | Rep.Lolli (a, b) ->
+    Printf.sprintf "Arrow(%s, %s)" (rep_to_python_concrete a) (rep_to_python_concrete b)
 
 (** Emit Python code for packing into a constructor.
     Takes datatype name and constructor index. *)

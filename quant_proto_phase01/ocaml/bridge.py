@@ -21,7 +21,7 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent / "python" / "src"
 sys.path.insert(0, str(src_path))
 
-from lang.types import Q, Ten, Plus, Unit, Ty, width
+from lang.types import Q, Ten, Plus, Unit, Arrow, Ty, width
 from lang.terms import (
     Term, Id, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
@@ -46,6 +46,8 @@ from lang.terms import (
     PhasedControl,
     # Case combinator
     Case,
+    # Full source language
+    Var, Pair, LetPair,
 )
 from core.perm import WirePerm, identity, compose
 from compile.to_pytket import compile
@@ -62,6 +64,8 @@ def parse_type(j: dict) -> Ty:
         return Ten(parse_type(j["left"]), parse_type(j["right"]))
     elif node == "Plus":
         return Plus(parse_type(j["left"]), parse_type(j["right"]))
+    elif node == "Arrow":
+        return Arrow(parse_type(j["dom"]), parse_type(j["cod"]))
     else:
         raise ValueError(f"Unknown type node: {node}")
 
@@ -263,7 +267,11 @@ def parse_term(j: dict, ty_total: Ty = None, min_qubits: int = 1) -> Term:
         return Id(parse_type(j["ty"]))
 
     elif node == "Seq":
-        return Seq(parse_term(j["f"], ty_total), parse_term(j["g"], ty_total))
+        # Each child of Seq gets its own ty_total inferred from local content,
+        # like TenTerm does. This prevents global ty_total from mistyping
+        # gates inside nested Lam/LetPair/etc.
+        return Seq(parse_term(j["f"], None, min_qubits=1),
+                    parse_term(j["g"], None, min_qubits=1))
 
     elif node == "TenTerm":
         # Each child of TenTerm uses its own local wire space,
@@ -373,11 +381,14 @@ def parse_term(j: dict, ty_total: Ty = None, min_qubits: int = 1) -> Term:
         return FunVar(j["name"], parse_type(j["dom"]), parse_type(j["cod"]))
 
     elif node == "Lam":
-        body = parse_term(j["body"], ty_total)
+        # Re-infer ty_total for body from local content
+        body = parse_term(j["body"], None, min_qubits=1)
         return Lam(j["name"], parse_type(j["dom"]), parse_type(j["cod"]), body)
 
     elif node == "Apply":
-        return Apply(parse_term(j["f"], ty_total), parse_term(j["arg"], ty_total))
+        # Re-infer ty_total for each child from local content
+        return Apply(parse_term(j["f"], None, min_qubits=1),
+                     parse_term(j["arg"], None, min_qubits=1))
 
     # Bifunctorial action on sums (⊕-Map)
     elif node == "PlusMap":
@@ -434,6 +445,23 @@ def parse_term(j: dict, ty_total: Ty = None, min_qubits: int = 1) -> Term:
         body = parse_term(j["body"], ty_total)
         return ExpInvolution(j["theta"], body, ty_total)
 
+    # Full source language: Var, Pair, LetPair
+    elif node == "Var":
+        return Var(j["name"], parse_type(j["ty"]))
+
+    elif node == "Pair":
+        # Re-infer ty_total for each child from local content
+        return Pair(parse_term(j["fst"], None, min_qubits=1),
+                    parse_term(j["snd"], None, min_qubits=1))
+
+    elif node == "LetPair":
+        ty_x = parse_type(j["ty_x"])
+        ty_y = parse_type(j["ty_y"])
+        # Re-infer ty_total for each child from local content
+        pair_term = parse_term(j["pair"], None, min_qubits=1)
+        body = parse_term(j["body"], None, min_qubits=1)
+        return LetPair(j["x"], j["y"], ty_x, ty_y, pair_term, body)
+
     else:
         raise ValueError(f"Unknown term node: {node}")
 
@@ -459,11 +487,24 @@ def handle_compile(request: dict) -> dict:
         term = parse_term(request["term"])
         result = compile(term, materialize=False)
 
-        return {
+        resp = {
             "success": True,
             "perm": perm_to_json(result.perm),
             "circuit_size": result.circuit.n_gates
         }
+
+        if request.get("show_gates"):
+            lines = []
+            lines.append(f"{result.circuit.n_qubits} qubits, {result.circuit.n_gates} gates")
+            for cmd in result.circuit.get_commands():
+                gate_name = cmd.op.type.name
+                qubits = [qb.index[0] for qb in cmd.qubits]
+                lines.append(f"  {gate_name} q{qubits}")
+            perm_list = list(result.perm.new_to_old)
+            lines.append(f"  perm: {perm_list}")
+            resp["circuit_text"] = "\n".join(lines)
+
+        return resp
     except Exception as e:
         return {
             "success": False,

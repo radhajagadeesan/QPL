@@ -49,7 +49,7 @@ from lang.types import width, Arrow, Unit
 Env = dict[str, tuple[int, int]]
 from typing_.check import type_of, assert_well_typed, TypeCheckError
 from core.perm import (
-    WirePerm, identity, compose,
+    WirePerm, identity, compose, inverse,
     twist_tensor_perm, assoc_tensor_L_perm, assoc_tensor_R_perm,
     twist_plus_perm, assoc_plus_L_perm, assoc_plus_R_perm,
     dist_L_perm, dist_R_perm, undist_L_perm, undist_R_perm,
@@ -244,10 +244,14 @@ def _internal_width(t: Term) -> int:
 
     if isinstance(t, Lam):
         # Lam needs width(A) + width(B) for the function layout [A_slot | B_slot]
+        # For open lambdas (body has free variables), the body needs
+        # ctx_w extra wires during execution for the context.
         wA = type_width(t.dom)
         wB = type_width(t.cod)
         body_internal = _internal_width(t.body)
-        return max(wA + wB, body_internal)
+        from typing_.check import _free_var_width
+        ctx_w = _free_var_width(t.body, frozenset({t.name}))
+        return max(wA + wB, ctx_w + body_internal)
 
     if isinstance(t, Apply):
         # Apply needs f's internal width (which includes [A_slot | B_slot])
@@ -288,6 +292,109 @@ def _internal_width(t: Term) -> int:
     # Default: use type widths
     dom, cod = type_of(t)
     return max(type_width(dom), type_width(cod))
+
+
+# ── Term-level normalization (mirrors OCaml elaboration) ─────────────
+#
+# The OCaml elaborator β-reduces Apply(Lam(x,A,e), v) and substitutes
+# LetTen bindings before sending to Python.  For terms built directly
+# via the Python API we do the same transformations here so that Case
+# branches never contain free variables.
+#
+#   LetPair(x, y, Pair(v1, v2), body) → body[v1/x, v2/y]
+#   Var(name) with name in subst_env    → subst_env[name]
+
+def _substitute(term: Term, name: str, replacement: Term) -> Term:
+    """Replace every Var(name, _) in *term* with *replacement*."""
+    if isinstance(term, Var):
+        return replacement if term.name == name else term
+    if isinstance(term, Id):
+        return term
+    if isinstance(term, Seq):
+        return Seq(_substitute(term.f, name, replacement),
+                   _substitute(term.g, name, replacement))
+    if isinstance(term, TenTerm):
+        return TenTerm(_substitute(term.f, name, replacement),
+                       _substitute(term.g, name, replacement))
+    if isinstance(term, Pair):
+        return Pair(_substitute(term.fst, name, replacement),
+                    _substitute(term.snd, name, replacement))
+    if isinstance(term, LetPair):
+        new_pair = _substitute(term.pair, name, replacement)
+        # Don't substitute into body if x or y shadows name
+        if term.x == name or term.y == name:
+            return LetPair(term.x, term.y, term.ty_x, term.ty_y,
+                           new_pair, term.body)
+        new_body = _substitute(term.body, name, replacement)
+        return LetPair(term.x, term.y, term.ty_x, term.ty_y,
+                       new_pair, new_body)
+    if isinstance(term, Lam):
+        # Don't substitute into body if the Lam binds the same name
+        if term.name == name:
+            return term
+        new_body = _substitute(term.body, name, replacement)
+        return Lam(term.name, term.dom, term.cod, new_body)
+    if isinstance(term, Apply):
+        return Apply(_substitute(term.f, name, replacement),
+                     _substitute(term.arg, name, replacement))
+    if isinstance(term, Case):
+        return Case(term.ty_left, term.ty_right,
+                    _substitute(term.left, name, replacement),
+                    _substitute(term.right, name, replacement))
+    if isinstance(term, CaseExpr):
+        new_scrut = _substitute(term.scrut, name, replacement)
+        new_left = term.left if term.x == name else _substitute(term.left, name, replacement)
+        new_right = term.right if term.y == name else _substitute(term.right, name, replacement)
+        return CaseExpr(new_scrut, term.x, term.y, term.ty_x, term.ty_y,
+                        new_left, new_right)
+    if isinstance(term, PlusMap):
+        return PlusMap(term.ty_left, term.ty_right,
+                       _substitute(term.left, name, replacement),
+                       _substitute(term.right, name, replacement))
+    # Structural isos, gates, etc. — no sub-terms containing Var
+    return term
+
+
+def _normalize(term: Term) -> Term:
+    """Normalize a term by substituting LetPair bindings.
+
+    Mirrors the OCaml elaborator's Let/LetTen elimination:
+      LetPair(x, y, Pair(v1, v2), body) → body[v1/x, v2/y]
+    Applied recursively until no more substitutions are possible.
+    """
+    if isinstance(term, LetPair):
+        # First normalize the pair
+        pair = _normalize(term.pair)
+        if isinstance(pair, Pair):
+            # Substitute v1 for x and v2 for y in body, then re-normalize
+            body = _substitute(term.body, term.x, pair.fst)
+            body = _substitute(body, term.y, pair.snd)
+            return _normalize(body)
+        # pair is not a Pair literal — keep the LetPair, normalize body
+        return LetPair(term.x, term.y, term.ty_x, term.ty_y,
+                       pair, _normalize(term.body))
+    if isinstance(term, Seq):
+        return Seq(_normalize(term.f), _normalize(term.g))
+    if isinstance(term, TenTerm):
+        return TenTerm(_normalize(term.f), _normalize(term.g))
+    if isinstance(term, Pair):
+        return Pair(_normalize(term.fst), _normalize(term.snd))
+    if isinstance(term, Lam):
+        return Lam(term.name, term.dom, term.cod, _normalize(term.body))
+    if isinstance(term, Apply):
+        return Apply(_normalize(term.f), _normalize(term.arg))
+    if isinstance(term, Case):
+        return Case(term.ty_left, term.ty_right,
+                    _normalize(term.left), _normalize(term.right))
+    if isinstance(term, CaseExpr):
+        return CaseExpr(_normalize(term.scrut), term.x, term.y,
+                        term.ty_x, term.ty_y,
+                        _normalize(term.left), _normalize(term.right))
+    if isinstance(term, PlusMap):
+        return PlusMap(term.ty_left, term.ty_right,
+                       _normalize(term.left), _normalize(term.right))
+    # Structural isos, gates, FunVar, Cup, Cap, etc. — leaves
+    return term
 
 
 def _emit_tag_perm_unitary(circ, p, tag_perm, k, offset, explain, log):
@@ -411,6 +518,48 @@ def _sub_wire_to_full(sub_wire, sub_tw, offset, k):
         return offset + k + (sub_wire - sub_tw)  # payload
 
 
+def _ordered_free_vars(t: Term, bound: frozenset = frozenset()) -> list:
+    """Free variables in left-to-right AST order, deduplicated.
+
+    Returns a list of (name, ty) pairs for each unique free variable.
+    """
+    if isinstance(t, Var):
+        return [(t.name, t.ty)] if t.name not in bound else []
+    if isinstance(t, LetPair):
+        pv = _ordered_free_vars(t.pair, bound)
+        bv = _ordered_free_vars(t.body, bound | {t.x, t.y})
+        seen = {name for name, _ in pv}
+        return pv + [(n, ty) for n, ty in bv if n not in seen]
+    if isinstance(t, Lam):
+        return _ordered_free_vars(t.body, bound | {t.name})
+    if isinstance(t, Pair):
+        lv = _ordered_free_vars(t.fst, bound)
+        rv = _ordered_free_vars(t.snd, bound)
+        seen = {name for name, _ in lv}
+        return lv + [(n, ty) for n, ty in rv if n not in seen]
+    if isinstance(t, Apply):
+        lv = _ordered_free_vars(t.f, bound)
+        rv = _ordered_free_vars(t.arg, bound)
+        seen = {name for name, _ in lv}
+        return lv + [(n, ty) for n, ty in rv if n not in seen]
+    if isinstance(t, Seq):
+        lv = _ordered_free_vars(t.f, bound)
+        rv = _ordered_free_vars(t.g, bound)
+        seen = {name for name, _ in lv}
+        return lv + [(n, ty) for n, ty in rv if n not in seen]
+    if isinstance(t, (PlusMap, Case)):
+        lv = _ordered_free_vars(t.left, bound)
+        rv = _ordered_free_vars(t.right, bound)
+        seen = {name for name, _ in lv}
+        return lv + [(n, ty) for n, ty in rv if n not in seen]
+    if isinstance(t, TenTerm):
+        lv = _ordered_free_vars(t.f, bound)
+        rv = _ordered_free_vars(t.g, bound)
+        seen = {name for name, _ in lv}
+        return lv + [(n, ty) for n, ty in rv if n not in seen]
+    return []  # Structural isos, gates, Id, etc.
+
+
 def compile(term: Term, *, materialize: bool = False, explain: bool = False, env: Env = None) -> Compiled:
     # Check for Feedback - not currently supported
     if _contains_feedback(term):
@@ -419,7 +568,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             "The Feedback constructor exists for future use but has no compilation path."
         )
 
+    # Normalize: substitute LetPair bindings, mirroring OCaml elaboration.
+    # This ensures Case branches contain no free variables before type-checking.
+    term = _normalize(term)
+
     assert_well_typed(term)
+
     dom, cod = type_of(term)
 
     # For terms with encode/decode, we always need 2 wires (Q=1, I+I=2).
@@ -591,6 +745,32 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             # Map global wire (offset + i) to global wire (offset + local_perm[i])
             global_perm[offset + i] = offset + local_perm.new_to_old[i]
         return WirePerm(n, global_perm)
+
+    def _var_route_perm(curr_positions: list, offset: int) -> WirePerm:
+        """Permutation that moves wires from curr_positions to [offset..offset+w).
+
+        curr_positions[i] is the current logical position of the variable's i-th wire.
+        After applying this perm, logical position offset+i holds wire curr_positions[i].
+        Remaining positions are filled in order (preserving relative order of other wires).
+
+        Used by Var to route a variable's wires to the expected offset.
+        """
+        w = len(curr_positions)
+        perm_list = [None] * n
+        used_src = set(curr_positions)
+        used_dst = set(range(offset, offset + w))
+
+        # Place variable wires
+        for i in range(w):
+            perm_list[offset + i] = curr_positions[i]
+
+        # Fill remaining: free dst positions get free src positions in order
+        free_src = [j for j in range(n) if j not in used_src]
+        free_dst = [j for j in range(n) if j not in used_dst]
+        for d, s in zip(free_dst, free_src):
+            perm_list[d] = s
+
+        return WirePerm(n, perm_list)
 
     def apply_tagged_perm(tagged: TaggedPerm, offset: int) -> None:
         """Apply a TaggedPerm: update global perm and emit X gates for tag flips.
@@ -1058,33 +1238,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             go(PlusMap(t.ty_left, t.ty_right, t.left, t.right), offset, env)
             return
 
-        # CaseExpr: pattern-matching case with variable binding
-        # Compile scrutinee, then dispatch branches using _emit_controlled_branch.
+        # CaseExpr: pure syntactic sugar — desugar to Seq(scrut, Case(...))
         if isinstance(t, CaseExpr):
-            go(t.scrut, offset, env)
-
-            tag_phys = p.apply_new_to_old(offset)
-            payload_base = offset + 1
-
-            left_env = {**env, t.x: (0, width(t.ty_x))}
-            left_w = width(type_of(t.left)[0])
-            left_cmds = _decompose_and_get_cmds(compile(t.left, materialize=True, env=left_env).circuit) if left_w > 0 else []
-
-            right_env = {**env, t.y: (0, width(t.ty_y))}
-            right_w = width(type_of(t.right)[0])
-            right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True, env=right_env).circuit) if right_w > 0 else []
-
-            wire_map = lambda w: p.apply_new_to_old(w + payload_base)
-            if left_cmds:
-                _emit_controlled_branch(tag_phys, left_cmds, wire_map, anti=True)
-            if right_cmds:
-                _emit_controlled_branch(tag_phys, right_cmds, wire_map)
-
+            desugared = Seq(t.scrut, Case(t.ty_x, t.ty_y, t.left, t.right))
+            go(desugared, offset, env)
             if explain:
-                log.append(f"CaseExpr: scrut compiled, {t.x} bound at [{payload_base},{payload_base+width(t.ty_x)}), "
-                           f"{t.y} bound at [{payload_base},{payload_base+width(t.ty_y)}), "
-                           f"{len(left_cmds)} left gates (anti-ctrl), "
-                           f"{len(right_cmds)} right gates (ctrl)")
+                log.append(f"CaseExpr: desugared to Seq(scrut, Case({t.ty_x}, {t.ty_y}, ...))")
             return
 
         # PlusMap (⊕-Map): f ⊕ g : (A + B) → (C + D)
@@ -1107,13 +1266,85 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             n_sum = n_left + n_right
             k = math.ceil(math.log2(n_sum)) if n_sum > 1 else 0
 
-            # Compile branches to sub-circuits
+            # Compute branch widths
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
-            left_cmds = _decompose_and_get_cmds(compile(t.left, materialize=True).circuit) if left_w > 0 else []
-
             right_dom, _ = type_of(t.right)
             right_w = width(right_dom)
+
+            # Check for open branches (free variables widen domain beyond declared type)
+            payload_left_w = width(t.ty_left)
+            payload_right_w = width(t.ty_right)
+            ctx_left_w = left_w - payload_left_w
+            ctx_right_w = right_w - payload_right_w
+
+            if ctx_left_w > 0 or ctx_right_w > 0:
+                # Open branches: compile with parent env for free variable routing
+                tag_phys = p.apply_new_to_old(offset)
+                payload_base = offset + max(k, 1)
+
+                for branch, pw, ctx_w, anti in [
+                    (t.left, payload_left_w, ctx_left_w, True),
+                    (t.right, payload_right_w, ctx_right_w, False),
+                ]:
+                    if pw + ctx_w == 0:
+                        continue
+
+                    if ctx_w > 0:
+                        # Open branch: compile with env for free variables
+                        fv = _ordered_free_vars(branch)
+                        sub_env = {}
+                        ctx_pos = pw
+                        for name, ty_fv in fv:
+                            w_fv = width(ty_fv)
+                            sub_env[name] = list(range(ctx_pos, ctx_pos + w_fv))
+                            ctx_pos += w_fv
+
+                        branch_result = compile(branch, materialize=True, env=sub_env)
+                        cmds = _decompose_and_get_cmds(branch_result.circuit)
+
+                        if not cmds:
+                            continue
+
+                        # Map free vars to parent physical positions
+                        ctx_parent_phys = []
+                        for name, ty_fv in fv:
+                            if name in env:
+                                ctx_parent_phys.extend(env[name])
+
+                        def make_open_wire_map(_pw=pw, _pb=payload_base,
+                                               _cpp=list(ctx_parent_phys)):
+                            def wm(w):
+                                if w < _pw:
+                                    return p.apply_new_to_old(w + _pb)
+                                else:
+                                    return _cpp[w - _pw]
+                            return wm
+
+                        _emit_controlled_branch(tag_phys, cmds,
+                                                make_open_wire_map(), anti=anti)
+                    else:
+                        # Closed branch: compile without env
+                        cmds = (_decompose_and_get_cmds(
+                            compile(branch, materialize=True).circuit)
+                            if pw > 0 else [])
+                        if not cmds:
+                            continue
+                        def make_closed_wire_map(_pb=payload_base):
+                            def wm(w):
+                                return p.apply_new_to_old(w + _pb)
+                            return wm
+                        _emit_controlled_branch(tag_phys, cmds,
+                                                make_closed_wire_map(), anti=anti)
+
+                if explain:
+                    log.append(f"PlusMap(k={k}, open branches): "
+                               f"ctx_left={ctx_left_w}, ctx_right={ctx_right_w} "
+                               f"at offset {offset}")
+                return
+
+            # Closed branches: compile as standalone sub-circuits
+            left_cmds = _decompose_and_get_cmds(compile(t.left, materialize=True).circuit) if left_w > 0 else []
             right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
 
             if k <= 1:
@@ -1533,7 +1764,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
         if isinstance(t, Lam):
             # Lambda: λx:A. body : Γ → (A ⊸ B)
-            # Per spec section 4.6: Boundary exposure
+            # Per spec §4.4: Boundary exposure
             #
             # body : (Γ ⊗ A) → B is compiled with x:A bound to extra input wires.
             # Lambda repackages: C_{λx.body} : ⟦Γ⟧ → ⟦A⟧||⟦B⟧
@@ -1541,55 +1772,51 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             # Output layout: [A_slot | B_slot] where:
             #   - A_slot (wires [offset..offset+wA)) = x (argument input)
             #   - B_slot (wires [offset+wA..offset+wA+wB)) = body output
-            #
-            # For body : A → B operating on the x wires:
-            #   - body transforms wires [offset..offset+wA) (the A_slot)
-            #   - After body, result is on [offset..offset+wB)
-            #   - We route result to B_slot via permutation swap
             wA = width(t.dom)
             wB = width(t.cod)
 
-            # Bind x to the A_slot wires
-            x_start = offset
-            new_env = {**env, t.name: (x_start, wA)}
+            # Check for open lambda: body has free variables from enclosing scope.
+            # If so, we must bind x AFTER the context wires to avoid overlap.
+            fv = _ordered_free_vars(t.body, frozenset({t.name}))
+            ctx_w = sum(width(ty) for _, ty in fv)
+
+            if ctx_w > 0:
+                # Open lambda: context wires Γ occupy [offset..offset+ctx_w)
+                # in the env. Bind x at [offset+ctx_w..offset+ctx_w+wA) to avoid
+                # overlapping with Γ wires.
+                x_phys = [p.new_to_old[offset + ctx_w + i] for i in range(wA)]
+                new_env = {**env, t.name: x_phys}
+
+                # Compile body: it accesses both Γ (via env) and x
+                go(t.body, offset, new_env)
+
+                # Route to [A_slot | B_slot] output layout.
+                # After body: result at logical [offset..offset+wB).
+                # Same rotation as closed case: shift body output to B_slot.
+                total_width = wA + wB
+                if total_width > 0 and wB > 0:
+                    local_perm = list(range(wB, total_width)) + list(range(wB))
+                    step = embed_local_perm(WirePerm(total_width, local_perm), offset)
+                    p = compose(step, p)
+                    if explain:
+                        log.append(f"Lam '{t.name}' (open): route to [A|B], wA={wA}, wB={wB}")
+
+                if explain:
+                    log.append(f"Lam '{t.name}' (open): x phys={x_phys}, ctx_w={ctx_w}, "
+                               f"B_slot at [{offset+wA}, {offset+wA+wB})")
+                return
+
+            # Closed lambda: x bound at [offset..offset+wA), no context overlap.
+            x_phys = [p.new_to_old[offset + i] for i in range(wA)]
+            new_env = {**env, t.name: x_phys}
 
             # Compile body with x bound
             go(t.body, offset, new_env)
 
             # Route body output to B_slot:
-            # Body output is on [offset..offset+wB), need it on [offset+wA..offset+wA+wB)
-            #
-            # The lambda output layout is [A_slot | B_slot]:
-            #   - A_slot [0..wA): exposed argument input interface
-            #   - B_slot [wA..wA+wB): body result
-            #
-            # After body compiles, result is on [0..wB). We need to shift it right by wA.
+            # After body: result at [offset..offset+wB). Rotate to [A_slot | B_slot].
             total_width = wA + wB
             if total_width > 0 and wB > 0:
-                # Build permutation: shift B wires right by wA positions
-                # new_to_old[i] = where wire i's content comes from
-                #
-                # For wires [0..wA): these become A_slot (identity, keep as-is)
-                # For wires [wA..wA+wB): these get content from [0..wB)
-                #   new wire (wA + j) gets old wire j, for j in 0..wB-1
-                #
-                # In new_to_old format:
-                #   perm[wA + j] = j  (B_slot gets body output)
-                #   perm[i] = wA + i for i in 0..wA-1 (A_slot gets what was after body output)
-                #
-                # But wait - after body, wires [0..wB) have result, [wB..wA+wB) are unchanged.
-                # We want: [0..wA) = A_slot (input interface), [wA..wA+wB) = body result
-                #
-                # For wA == wB: swap [0..wA) and [wA..2wA) -> works
-                # For wA != wB: need proper routing
-                #
-                # Correct routing:
-                #   - Body output [0..wB) → B_slot [wA..wA+wB)
-                #   - Original input interface was [0..wA), but body consumed it
-                #   - After routing, A_slot [0..wA) should be the "exposed" interface
-                #
-                # The permutation rotates: [0..wA+wB) → [wB, wB+1, ..., wA+wB-1, 0, 1, ..., wB-1]
-                # This puts body output (was at [0..wB)) at [wA..wA+wB)
                 local_perm = list(range(wB, total_width)) + list(range(wB))
                 step = embed_local_perm(WirePerm(total_width, local_perm), offset)
                 p = compose(step, p)
@@ -1597,12 +1824,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     log.append(f"Lam '{t.name}': route body output to B_slot, wA={wA}, wB={wB}")
 
             if explain:
-                log.append(f"Lam '{t.name}': x at [{x_start}, {x_start+wA}), B_slot at [{offset+wA}, {offset+wA+wB})")
+                log.append(f"Lam '{t.name}': x phys={x_phys} at offset {offset}, B_slot at [{offset+wA}, {offset+wA+wB})")
             return
 
         if isinstance(t, Apply):
             # Apply: f arg : B
-            # Per spec section 4.7: Boundary splicing
+            # Per spec §4.5: Boundary splicing
             #
             # f : ... → Arrow(A, B) produces [A_slot | B_slot] on output
             # arg : ... → A produces [A] on output
@@ -1624,12 +1851,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 # Closed lambda: compile as β-reduced (arg then body)
                 # arg fills wires [offset..offset+wA), body operates on them
                 go(t.arg, offset, env)
-                # Bind x to the argument wires and compile body
-                x_start = offset
-                new_env = {**env, t.f.name: (x_start, wA)}
+                # Bind x to the argument wires (physical positions for perm stability)
+                x_phys = [p.new_to_old[offset + i] for i in range(wA)]
+                new_env = {**env, t.f.name: x_phys}
                 go(t.f.body, offset, new_env)
                 if explain:
-                    log.append(f"Apply (closed lambda): β-reduced as arg;body, x at [{x_start}, {x_start+wA})")
+                    log.append(f"Apply (closed lambda): β-reduced as arg;body, x phys={x_phys}")
                 return
 
             # General case: full boundary splicing with function layout
@@ -1669,15 +1896,30 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
         # Full source language: Var, Pair, LetPair
         if isinstance(t, Var):
-            # Variable reference: identity on the variable's wire range.
-            # Look up variable in env to get its wire range.
+            # Var: §4.1 — identity on ⟦A⟧, no gates.
+            #
+            # env stores lists of PHYSICAL wire positions (stable across perm changes).
+            # Use inverse(p) to find each wire's CURRENT logical position,
+            # then route to [offset..offset+w) if needed.
             if t.name in env:
-                var_start, var_width = env[t.name]
-                if explain:
-                    log.append(f"Var '{t.name}': identity on wires [{var_start}, {var_start + var_width}) at offset {offset}")
+                phys_list = env[t.name]
+                var_width = len(phys_list)
+                if var_width > 0:
+                    inv_p = inverse(p)
+                    curr_positions = [inv_p.new_to_old[ph] for ph in phys_list]
+                    target = list(range(offset, offset + var_width))
+                    if curr_positions != target:
+                        step = _var_route_perm(curr_positions, offset)
+                        p = compose(step, p)
+                        if explain:
+                            log.append(f"Var '{t.name}': route {curr_positions} -> [{offset},{offset+var_width})")
+                    else:
+                        if explain:
+                            log.append(f"Var '{t.name}': identity at [{offset},{offset+var_width})")
+                else:
+                    if explain:
+                        log.append(f"Var '{t.name}': zero-width, identity")
             else:
-                # Variable not in env - this is an error in a proper implementation,
-                # but for now we just treat it as identity on ty wires at offset.
                 if explain:
                     log.append(f"Var '{t.name}' (unbound): identity on {width(t.ty)} wires at offset {offset}")
             return
@@ -1685,9 +1927,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
         if isinstance(t, Pair):
             # Tensor introduction: (fst, snd) : A ⊗ B
             # Compile fst and snd in parallel.
-            # fst at offset, snd at offset + width(fst).
-            fst_dom, _ = type_of(t.fst)
-            fst_w = width(fst_dom)
+            # Use CODOMAIN width for offset: fst's output occupies
+            # [offset..offset+w_cod_fst), snd starts after.
+            # This is critical for Lam/Apply terms where cod_w != dom_w.
+            _, fst_cod = type_of(t.fst)
+            fst_w = width(fst_cod)
             go(t.fst, offset, env)
             go(t.snd, offset + fst_w, env)
             if explain:
@@ -1695,25 +1939,25 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             return
 
         if isinstance(t, LetPair):
-            # Tensor elimination: let (x, y) = pair in body
-            # 1. Compile pair to get output wires ⟦A⟧||⟦B⟧
-            # 2. Extend env: x ↦ prefix (A wires), y ↦ suffix (B wires)
-            # 3. Compile body with extended env
+            # LetPair: §4.3 — compile pair, bind x/y to output subranges, compile body.
             #
-            # The pair's output becomes input to the body where x and y are bound.
+            # Always compile the pair (even if it's a Var — Var handles its own routing).
+            # Bind x and y using PHYSICAL wire positions so env entries remain stable
+            # across subsequent perm compositions.
             go(t.pair, offset, env)
 
-            # Extend environment for body
-            x_start = offset
+            # After pair: output is at logical [offset..offset+wX+wY).
+            # Store physical positions (full list) for perm-stable bindings.
             x_width = width(t.ty_x)
-            y_start = offset + x_width
             y_width = width(t.ty_y)
-            new_env = {**env, t.x: (x_start, x_width), t.y: (y_start, y_width)}
+            x_phys = [p.new_to_old[offset + i] for i in range(x_width)]
+            y_phys = [p.new_to_old[offset + x_width + i] for i in range(y_width)]
+            new_env = {**env, t.x: x_phys, t.y: y_phys}
 
             go(t.body, offset, new_env)
             if explain:
-                log.append(f"LetPair: {t.x} at [{x_start},{x_start+x_width}), "
-                          f"{t.y} at [{y_start},{y_start+y_width}), body at offset {offset}")
+                log.append(f"LetPair: {t.x} phys={x_phys}, "
+                          f"{t.y} phys={y_phys}, body at offset {offset}")
             return
 
         raise TypeError(f"Unknown term node: {t!r}")

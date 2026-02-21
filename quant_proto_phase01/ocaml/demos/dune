@@ -37,3 +37,15 @@
 (executable
  (name ctrl_from_dist_e2e)
  (libraries qpl_surface str))
+
+(executable
+ (name abstract_qswitch_oterm_e2e)
+ (libraries qpl_surface str))
+
+(executable
+ (name abstract_qswitch_lambda)
+ (libraries qpl_surface))
+
+(executable
+ (name ctrl_lambda_e2e)
+ (libraries qpl_surface str))

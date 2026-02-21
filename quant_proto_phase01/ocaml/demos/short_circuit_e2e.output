@@ -1,0 +1,542 @@
+
+==========================================================================
+  SHORT-CIRCUIT CONJUNCTION E2E DEMO
+==========================================================================
+
+Implementing short-circuit conjunction with witness routing
+
+
+==========================================================================
+  PART 1: Type Structure
+==========================================================================
+
+Types:
+  Bool := I + I                    (2-element sum)
+  W    := I + Bool = I + (I + I)   (3-element witness type)
+
+  W encodes control flow history:
+    inl(unit)  = short-circuit occurred (b1 was false)
+    inr(b)  = evaluation path (b1 was true, b is b2's value)
+
+Circuit widths (from permutation sizes):
+  Bool = I + I          → 1 qubit  (tag for 2 variants)
+  W = I + Bool          → 2 qubits (tag for 3 variants)
+  Bool ⊗ W             → 3 qubits
+  (Bool ⊗ Bool) ⊗ W    → 4 qubits
+
+==========================================================================
+  PART 2: toggle_W = id_I ⊕ twist_{I,I}
+==========================================================================
+
+toggle_W : W → W
+
+Applies identity to I branch (short-circuit stays unchanged),
+swaps Bool values in Bool branch (flips evaluation result).
+
+Built as: omap0 one bool_ty (id one) (twist_plus one one)
+
+
+toggle_W:
+2 qubits, 3 gates
+  Unitary2qBox q[0, 1]
+  CX q[0, 1]
+  Unitary2qBox q[0, 1]
+  perm: [0, 1]
+
+Bridge JSON:
+  {"node": "PlusMap", "ty_left": {"node": "Unit"}, "ty_right": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "left": {"node": "Id", "ty": {"node": "Unit"}}, "right": {"node": "TwistPlus", "a": {"node": "Unit"}, "b": {"node": "Unit"}}}
+
+==========================================================================
+  PART 3: ctrl_W(M_0, M_1) - Coherent Control
+==========================================================================
+
+ctrl_W(M_0, M_1) : Bool ⊗ W → Bool ⊗ W
+
+Same pattern as QSwitch:
+  dist_l ; omap0(id_I ⊗ M_0, id_I ⊗ M_1) ; undist_l
+
+When ctrl=0 (inl): applies M_0 to W
+When ctrl=1 (inr): applies M_1 to W
+
+
+ctrl_W(toggle_W, id_W):
+3 qubits, 33 gates
+  X q[0]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CSdg q[0, 1]
+  CSdg q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  QControlBox q[0, 1, 2]
+  CZ q[0, 1]
+  CZ q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CS q[0, 1]
+  CS q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CCX q[0, 1, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CSdg q[0, 1]
+  CSdg q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  QControlBox q[0, 1, 2]
+  CZ q[0, 1]
+  CZ q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CS q[0, 1]
+  CS q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  X q[0]
+  perm: [0, 1, 2]
+
+ctrl_W(id_W, id_W) [should be identity]:
+3 qubits, 0 gates
+  perm: [0, 1, 2]
+
+ctrl_W(toggle_W, toggle_W):
+3 qubits, 64 gates
+  X q[0]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CSdg q[0, 1]
+  CSdg q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  QControlBox q[0, 1, 2]
+  CZ q[0, 1]
+  CZ q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CS q[0, 1]
+  CS q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CCX q[0, 1, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CSdg q[0, 1]
+  CSdg q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  QControlBox q[0, 1, 2]
+  CZ q[0, 1]
+  CZ q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CS q[0, 1]
+  CS q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  X q[0]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CSdg q[0, 1]
+  CSdg q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  QControlBox q[0, 1, 2]
+  CZ q[0, 1]
+  CZ q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CS q[0, 1]
+  CS q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CCX q[0, 1, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CSdg q[0, 1]
+  CSdg q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  QControlBox q[0, 1, 2]
+  CZ q[0, 1]
+  CZ q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  CS q[0, 1]
+  CS q[0, 2]
+  QControlBox q[0, 1]
+  QControlBox q[0, 2]
+  perm: [0, 1, 2]
+
+==========================================================================
+  PART 4: and_sc - Full Short-Circuit Conjunction
+==========================================================================
+
+and_sc : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
+
+Full operation:
+  1. Route wires: (b1 ⊗ b2) ⊗ w  →  (b1 ⊗ w) ⊗ b2
+  2. Apply: ctrl_W(toggle_W, id_W) ⊗ id_Bool
+  3. Route back: (b1' ⊗ w') ⊗ b2  →  (b1' ⊗ b2) ⊗ w'
+
+Routing uses structural isomorphisms:
+  assoc_tensor_r ; (id ⊗ twist_tensor) ; assoc_tensor_l
+
+
+and_sc:
+4 qubits, 33 gates
+  X q[0]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CSdg q[0, 2]
+  CSdg q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  QControlBox q[0, 2, 3]
+  CZ q[0, 2]
+  CZ q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CS q[0, 2]
+  CS q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CCX q[0, 2, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CSdg q[0, 2]
+  CSdg q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  QControlBox q[0, 2, 3]
+  CZ q[0, 2]
+  CZ q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CS q[0, 2]
+  CS q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  X q[0]
+  perm: [0, 1, 2, 3]
+
+==========================================================================
+  PART 5: Verifying Components
+==========================================================================
+
+Individual structural isomorphisms:
+
+
+assoc_tensor_r Bool Bool W:
+4 qubits, 0 gates
+  perm: [0, 1, 2, 3]
+
+twist_tensor Bool W:
+3 qubits, 0 gates
+  perm: [1, 2, 0]
+
+assoc_tensor_l Bool W Bool:
+4 qubits, 0 gates
+  perm: [0, 1, 2, 3]
+
+==========================================================================
+  PART 6: Composition
+==========================================================================
+
+Short-circuit conjunction composes:
+  and_sc ; and_sc = double application
+
+
+and_sc ; and_sc:
+4 qubits, 66 gates
+  X q[0]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CSdg q[0, 2]
+  CSdg q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  QControlBox q[0, 2, 3]
+  CZ q[0, 2]
+  CZ q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CS q[0, 2]
+  CS q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CCX q[0, 2, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CSdg q[0, 2]
+  CSdg q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  QControlBox q[0, 2, 3]
+  CZ q[0, 2]
+  CZ q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CS q[0, 2]
+  CS q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  X q[0]
+  X q[0]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CSdg q[0, 2]
+  CSdg q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  QControlBox q[0, 2, 3]
+  CZ q[0, 2]
+  CZ q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CS q[0, 2]
+  CS q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CCX q[0, 2, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CSdg q[0, 2]
+  CSdg q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  QControlBox q[0, 2, 3]
+  CZ q[0, 2]
+  CZ q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CS q[0, 2]
+  CS q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  X q[0]
+  perm: [0, 1, 2, 3]
+
+==========================================================================
+  PART 7: Quantum Extension (Phase Marking)
+==========================================================================
+
+Quantum phase marking creates interference between paths:
+
+  phase_W : W → W
+    Applies -1 phase to inl branch (short-circuit occurred)
+    Identity phase to inr branch (evaluation path)
+
+  Spec notation: omap_{-1}(id_I, id_Bool) - phase-weighted bifunctor
+
+  Source-level expression:
+    phase_w = omap0 one bool_ty (phase (-1) one) (id bool_ty)
+
+  Note: phase on Unit type (0 qubits) currently emits identity since
+  global phase is unobservable in isolation. Proper support requires
+  propagating phase through PlusMap as controlled-phase on tag qubits.
+
+  Working implementation for W with 2 tag qubits:
+    Tag 00 = inl(unit) <- short-circuit path
+    Tag 01 = inr(inl(unit))
+    Tag 10 = inr(inr(unit))
+
+  Circuit: X[0]; X[1]; CZ[0,1]; X[1]; X[0]
+    - X gates map |00⟩ → |11⟩
+    - CZ applies -1 to |11⟩
+    - X gates map back
+    - Net effect: -1 phase on |00⟩ only
+
+
+--- Source-level phase_W (using phased_omap0) ---
+
+phase_w = phased_omap0 neg_one one bool_ty (id one) (id bool_ty)
+  Bridge: {"node": "PhasedPlusMap", "theta": -3.141593, "ty_left": {"node": "Unit"}, "ty_right": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "left": {"node": "Id", "ty": {"node": "Unit"}}, "right": {"node": "Id", "ty": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}}}
+2 qubits, 7 gates
+  Unitary2qBox q[0, 1]
+  Unitary2qBox q[0, 1]
+  X q[0]
+  X q[1]
+  CU1 q[0, 1]
+  X q[0]
+  X q[1]
+  perm: [0, 1]
+
+--- Bridge-level phase_W (for comparison) ---
+
+phase_w_bridge = X[0]; X[1]; CZ[0,1]; X[1]; X[0]
+  Bridge: {"node": "Seq", "f": {"node": "X", "i": 0}, "g": {"node": "Seq", "f": {"node": "X", "i": 1}, "g": {"node": "Seq", "f": {"node": "CZ", "i": 0, "j": 1}, "g": {"node": "Seq", "f": {"node": "X", "i": 1}, "g": {"node": "X", "i": 0}}}}}
+Compile error: Seq type mismatch (width):\n  cod(f) = (Q \u2297 Q) (width 2)\n  dom(g) = Q (width 1)
+  ✗ FAILED: Seq type mismatch (width):\n  cod(f) = (Q \u2297 Q) (width 2)\n  dom(g) = Q (width 1)
+
+kick : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
+  Source-level: kick = par0 (id bb_ty) phase_w
+  Applies phase_W to witness wire, preserves booleans
+
+
+--- Source-level kick ---
+
+kick = par0 (id bb_ty) phase_w
+4 qubits, 7 gates
+  Unitary2qBox q[2, 3]
+  Unitary2qBox q[2, 3]
+  X q[2]
+  X q[3]
+  CU1 q[2, 3]
+  X q[2]
+  X q[3]
+  perm: [0, 1, 2, 3]
+
+--- Bridge-level kick (for comparison) ---
+
+kick_bridge = X[2]; X[3]; CZ[2,3]; X[3]; X[2]
+Compile error: Seq type mismatch (width):\n  cod(f) = (Q \u2297 (Q \u2297 (Q \u2297 Q))) (width 4)\n  dom(g) = (Q \u2297 (Q \u2297 Q)) (width 3)
+  ✗ FAILED: Seq type mismatch (width):\n  cod(f) = (Q \u2297 (Q \u2297 (Q \u2297 Q))) (width 4)\n  dom(g) = (Q \u2297 (Q \u2297 Q)) (width 3)
+
+and_sc_quant : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
+  Source-level: and_sc_quant = seq0 and_sc kick
+  Structural routing followed by phase marking
+
+
+--- Source-level and_sc_quant ---
+
+and_sc_quant = seq0 and_sc kick
+4 qubits, 40 gates
+  X q[0]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CSdg q[0, 2]
+  CSdg q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  QControlBox q[0, 2, 3]
+  CZ q[0, 2]
+  CZ q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CS q[0, 2]
+  CS q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CCX q[0, 2, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CSdg q[0, 2]
+  CSdg q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  QControlBox q[0, 2, 3]
+  CZ q[0, 2]
+  CZ q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  CS q[0, 2]
+  CS q[0, 3]
+  QControlBox q[0, 2]
+  QControlBox q[0, 3]
+  X q[0]
+  Unitary2qBox q[2, 3]
+  Unitary2qBox q[2, 3]
+  X q[2]
+  X q[3]
+  CU1 q[2, 3]
+  X q[2]
+  X q[3]
+  perm: [0, 1, 2, 3]
+
+--- Bridge-level and_sc_quant (for comparison) ---
+
+Compile error: Seq type mismatch (width):\n  cod(f) = (Q \u2297 (Q \u2297 (Q \u2297 Q))) (width 4)\n  dom(g) = (Q \u2297 (Q \u2297 Q)) (width 3)
+  ✗ FAILED: Seq type mismatch (width):\n  cod(f) = (Q \u2297 (Q \u2297 (Q \u2297 Q))) (width 4)\n  dom(g) = (Q \u2297 (Q \u2297 Q)) (width 3)
+
+QUANTUM SEMANTICS
+-----------------
+When run on superposition input |+⟩ ⊗ |b2⟩ ⊗ |w⟩:
+
+  |0⟩|b2⟩|w⟩  →  |0⟩|b2⟩|toggle(w)⟩  →  -|0⟩|b2⟩|toggle(w)⟩  (phase -1)
+  |1⟩|b2⟩|w⟩  →  |1⟩|b2⟩|w⟩          →   |1⟩|b2⟩|w⟩          (phase +1)
+
+The -1 phase on the short-circuit path creates interference,
+encoding control-flow history in the quantum state.
+
+
+==========================================================================
+  PART 8: N-ary Phased Control (phased_control)
+==========================================================================
+
+The phased_control combinator generalizes phased_omap0 to n-ary datatypes:
+
+  phased_control : D → Complex.t array → A ty → (A → A) array → D ⊗ A → D ⊗ A
+
+For datatype D with arity k and phases [z₀; ...; z_{k-1}]:
+  - Applies phase zᵢ when control is in branch i
+  - Uses efficient log₂(k) tag encoding
+
+Example: W = I + Bool is a 3-element type (W_datatype with arity 3)
+  Tag 00 = inl(·)        short-circuit path
+  Tag 01 = inr(inl(·))   evaluation with false
+  Tag 10 = inr(inr(·))   evaluation with true
+
+Phases [-1, +1, +i] would apply:
+  - θ₀ = π   on tag 00  (branch 0)
+  - θ₁ = 0   on tag 01  (branch 1, trivial)
+  - θ₂ = π/2 on tag 10  (branch 2)
+
+
+--- phased_control on W (3 branches, 2 tag qubits) ---
+
+phases = [-1, +1, +i] = [e^{iπ}, e^{0}, e^{iπ/2}]
+phase_w_nary = phased_control w_datatype phases one [id; id; id]
+
+2 qubits, 8 gates
+  X q[0]
+  X q[1]
+  CU1 q[0, 1]
+  X q[0]
+  X q[1]
+  X q[0]
+  CU1 q[0, 1]
+  X q[0]
+  perm: [0, 1]
+
+  Expected gate pattern:
+    Branch 0 (tag=00, phase=π): X[0]; X[1]; CU1(1.0); X[1]; X[0]
+    Branch 1 (tag=01, phase=0): skipped (trivial phase +1)
+    Branch 2 (tag=10, phase=π/2): X[0]; CU1(0.5); X[0]
+
+==========================================================================
+  SUMMARY
+==========================================================================
+
+Demonstrated short-circuit conjunction in Linear DSL:
+
+1. TYPE STRUCTURE
+   Bool = I + I (2-element, 1 qubit)
+   W = I + Bool (3-element witness, 2 qubits)
+
+2. STRUCTURAL OPERATIONS
+   toggle_W = id_I ⊕ twist_Bool : W → W         (1 gate)
+   ctrl_W(M_0, M_1) : Bool ⊗ W → Bool ⊗ W      (coherent control)
+   and_sc : (Bool ⊗ Bool) ⊗ W → ...            (3 gates)
+
+3. QUANTUM PHASE MARKING
+   phase_W : W → W                              (5 gates)
+     X[0]; X[1]; CZ[0,1]; X[1]; X[0]
+     Applies -1 phase to inl branch (tag 00)
+
+   kick : (Bool ⊗ Bool) ⊗ W → ...              (5 gates)
+     Applies phase_W to witness wires
+
+4. QUANTUM SHORT-CIRCUIT CONJUNCTION
+   and_sc_quant = and_sc ; kick                 (8 gates total)
+     Structural routing + phase marking
+     Creates interference between execution paths
+
+Key insight: Classical short-circuit logic lifts to quantum
+coherent control. Phase marking encodes control-flow history
+in interference patterns.
+
+
+==========================================================================
+  DEMO COMPLETE
+==========================================================================

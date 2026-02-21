@@ -34,7 +34,7 @@ let rec resolve_op_ty ~self_rep = function
   | TyQ -> Rep.var 0
   | TyTensor (a, b) -> Rep.Tensor (resolve_op_ty ~self_rep a, resolve_op_ty ~self_rep b)
   | TyPlus (a, b) -> Rep.Plus (resolve_op_ty ~self_rep a, resolve_op_ty ~self_rep b)
-  | TyLolli (a, b) -> Rep.Tensor (resolve_op_ty ~self_rep a, resolve_op_ty ~self_rep b)
+  | TyLolli (a, b) -> Rep.Lolli (resolve_op_ty ~self_rep a, resolve_op_ty ~self_rep b)
 
 (* ========== Types ========== *)
 
@@ -44,7 +44,9 @@ let q = Rep.var 0
 let one = Rep.Unit
 let ( ** ) a b = Rep.Tensor (a, b)
 let ( ++ ) a b = Rep.Plus (a, b)
-let ( -@ ) a b = Rep.Tensor (a, b)  (* Int construction: A ⊸ B ≅ A ⊗ B *)
+let ( -@ ) a b = Rep.Lolli (a, b)  (* Linear implication A ⊸ B *)
+
+let ty_to_rep (ty : 'a ty) : Rep.t = ty
 
 (** Generate I^{⊕k} = I ⊕ (I ⊕ (... ⊕ I)) with k copies of I.
     - i_sum 1 = I
@@ -347,6 +349,157 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
 let emit (p : (unit, 'a) prog) : Bridge.term = emit_any p
 
 let emit_typed p _ty = emit p
+
+(* ========== Context Split Witnesses ========== *)
+
+(** Context split witness: split(g1, g2, g) proves g partitions into g1 and g2.
+    Each element of g is assigned to either g1 (SLeft) or g2 (SRight). *)
+type (_, _, _) split =
+  | SNil   : (unit, unit, unit) split
+  | SLeft  : ('g1, 'g2, 'g) split -> ('a * 'g1, 'g2, 'a * 'g) split
+  | SRight : ('g1, 'g2, 'g) split -> ('g1, 'a * 'g2, 'a * 'g) split
+
+(* ========== Open Terms (Full Source Language) ========== *)
+
+(** Open terms: GADT tracking both context ('g) and output type ('a).
+    Supports the full source language including nested LetPair
+    and variable references that the context-tracking [prog] cannot express.
+
+    Context 'g is a type-level nested tuple (same as in [prog]):
+    - [unit] = empty context
+    - ['a * 'g] = context with variable of type A followed by rest
+
+    Binary constructors carry split witnesses to partition the context.
+    Linearity is enforced at OCaml compile time via the context type parameter.
+*)
+type (_, _) oterm =
+  (* Variables *)
+  | OHere  : string * 'a ty -> ('a * unit, 'a) oterm
+  | OShift : 'b ty * ('g, 'a) oterm -> ('b * 'g, 'a) oterm
+
+  (* Tensor *)
+  | OPair : ('g1, 'a) oterm * ('g2, 'b) oterm * ('g1, 'g2, 'g) split
+          -> ('g, [`Tensor of 'a * 'b]) oterm
+  | OLetPair : string * string * 'a ty * 'b ty
+             * ('g1, [`Tensor of 'a * 'b]) oterm
+             * ('a * ('b * 'g2), 'c) oterm
+             * ('g1, 'g2, 'g) split
+            -> ('g, 'c) oterm
+
+  (* Linear implication *)
+  | OLam : string * 'a ty * 'b ty
+         * ('a * 'g, 'b) oterm
+        -> ('g, [`Lolli of 'a * 'b]) oterm
+  | OApp : ('g1, [`Lolli of 'a * 'b]) oterm * ('g2, 'a) oterm
+         * ('g1, 'g2, 'g) split
+        -> ('g, 'b) oterm
+
+  (* ⊕-Map: branches are bare morphism terms *)
+  | OPlusMap : 'a ty * 'b ty
+             * ('g1, 'c) oterm * ('g2, 'd) oterm
+             * ('g1, 'g2, 'g) split
+            -> ('g, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) oterm
+
+  (* Sequential composition of morphisms *)
+  | OSeq : ('g1, [`Lolli of 'a * 'b]) oterm
+         * ('g2, [`Lolli of 'b * 'c]) oterm
+         * ('g1, 'g2, 'g) split
+        -> ('g, [`Lolli of 'a * 'c]) oterm
+
+  (* Closed terms *)
+  | OId    : 'a ty -> (unit, 'a) oterm
+  | OEmbed : (unit, 'a) prog -> (unit, 'a) oterm
+
+(** Smart constructors for open terms — general (explicit split) *)
+let ovar name ty = OHere (name, ty)
+let oshift ty inner = OShift (ty, inner)
+let opair e1 e2 sp = OPair (e1, e2, sp)
+let oletpair x y ty_x ty_y pair body sp = OLetPair (x, y, ty_x, ty_y, pair, body, sp)
+let olam name dom cod body = OLam (name, dom, cod, body)
+let oapp f arg sp = OApp (f, arg, sp)
+let oplusmap ty_l ty_r f g sp = OPlusMap (ty_l, ty_r, f, g, sp)
+let oid ty = OId ty
+let oembed p = OEmbed p
+let oseq f g sp = OSeq (f, g, sp)
+
+(** Closed convenience constructors (both subterms closed, split = SNil) *)
+let opair0 e1 e2 = OPair (e1, e2, SNil)
+let oapp0 f arg = OApp (f, arg, SNil)
+let oplusmap0 ty_l ty_r f g = OPlusMap (ty_l, ty_r, f, g, SNil)
+let oseq0 f g = OSeq (f, g, SNil)
+let oletpair0 x y ty_x ty_y pair body = OLetPair (x, y, ty_x, ty_y, pair, body, SNil)
+
+(** Compute the Rep.t representation of an oterm's context.
+    For a term of type [('g, 'a) oterm], returns the Rep.t of 'g. *)
+let rec context_rep : type g a. (g, a) oterm -> Rep.t = function
+  | OHere (_, ty) -> Rep.Tensor (ty, Rep.Unit)
+  | OShift (b_ty, inner) -> Rep.Tensor (b_ty, context_rep inner)
+  | OPair (l, r, sp) -> split_rep (context_rep l) (context_rep r) sp
+  | OLetPair (_, _, _, _, pair, body, sp) ->
+      split_rep (context_rep pair) (strip_pair_bound (context_rep body)) sp
+  | OLam (_, _, _, body) -> strip_front (context_rep body)
+  | OApp (f, arg, sp) -> split_rep (context_rep f) (context_rep arg) sp
+  | OPlusMap (_, _, f, g, sp) -> split_rep (context_rep f) (context_rep g) sp
+  | OSeq (f, g, sp) -> split_rep (context_rep f) (context_rep g) sp
+  | OId _ -> Rep.Unit
+  | OEmbed _ -> Rep.Unit
+
+(** Reconstruct context rep from subcontext reps and a split witness *)
+and split_rep : type g1 g2 g. Rep.t -> Rep.t -> (g1, g2, g) split -> Rep.t =
+  fun r1 r2 -> function
+    | SNil -> Rep.Unit
+    | SLeft s ->
+        let (a, rest_r1) = match r1 with
+          | Rep.Tensor (a, rest) -> (a, rest)
+          | _ -> failwith "split_rep: expected Tensor for SLeft"
+        in
+        Rep.Tensor (a, split_rep rest_r1 r2 s)
+    | SRight s ->
+        let (a, rest_r2) = match r2 with
+          | Rep.Tensor (a, rest) -> (a, rest)
+          | _ -> failwith "split_rep: expected Tensor for SRight"
+        in
+        Rep.Tensor (a, split_rep r1 rest_r2 s)
+
+(** Strip the first tensor component (lambda-bound variable) from a context rep *)
+and strip_front = function
+  | Rep.Tensor (_, rest) -> rest
+  | Rep.Unit -> Rep.Unit
+  | _ -> Rep.Unit
+
+(** Strip the first two tensor components (LetPair-bound variables) from a context rep *)
+and strip_pair_bound = function
+  | Rep.Tensor (_, Rep.Tensor (_, rest)) -> rest
+  | _ -> Rep.Unit
+
+(** Emit an open term to Bridge.term *)
+let rec emit_oterm : type g a. (g, a) oterm -> Bridge.term = function
+  | OHere (name, ty) -> Bridge.TVar (name, ty)
+  | OShift (_, inner) -> emit_oterm inner
+  | OPair (e1, e2, _) -> Bridge.TPair (emit_oterm e1, emit_oterm e2)
+  | OLetPair (x, y, ty_x, ty_y, pair, body, _) ->
+      Bridge.TLetPair (x, y, ty_x, ty_y, emit_oterm pair, emit_oterm body)
+  | OLam (name, dom, cod, body) ->
+      Bridge.TLam (name, dom, cod, emit_oterm body)
+  | OApp (f, arg, _) ->
+      (* Function variables and lambdas use boundary splicing (TApply).
+         Structural morphisms (embed, plusmap, seq, id) use composition (TSeq). *)
+      let rec is_apply_target : type g a. (g, a) oterm -> bool = function
+        | OHere _ -> true
+        | OShift (_, inner) -> is_apply_target inner
+        | OLam _ -> true
+        | OApp _ -> true
+        | _ -> false
+      in
+      if is_apply_target f then
+        Bridge.TApply (emit_oterm f, emit_oterm arg)
+      else
+        Bridge.TSeq (emit_oterm arg, emit_oterm f)
+  | OPlusMap (ty_l, ty_r, f, g, _) ->
+      Bridge.TPlusMap (ty_l, ty_r, emit_oterm f, emit_oterm g)
+  | OSeq (f, g, _) -> Bridge.TSeq (emit_oterm f, emit_oterm g)
+  | OId ty -> Bridge.TId ty
+  | OEmbed p -> emit p
 
 (* ========== Datatype Declarations ========== *)
 

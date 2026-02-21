@@ -1,0 +1,81 @@
+
+==========================================================================
+  ABSTRACT QSWITCH (Full Source Language - oterm)
+==========================================================================
+
+Full pipeline: OCaml oterm -> Bridge -> Python compile -> Circuit
+
+
+==========================================================================
+  Part 1: Abstract QSwitch Term
+==========================================================================
+Type: (Q⊸Q) ⊗ ((Q⊸Q) ⊗ (Bool ⊗ Q))  ⊸  Bool ⊗ Q
+
+Bridge JSON (abbreviated):
+  {"node": "Lam", "name": "input", "dom": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, ...
+
+
+==========================================================================
+  Part 2: Compile Abstract Lambda
+==========================================================================
+8 qubits, 6 gates
+  X q[4]
+  QControlBox q[4, 0, 1]
+  QControlBox q[4, 2, 3]
+  X q[4]
+  QControlBox q[4, 0, 3]
+  QControlBox q[4, 1, 2]
+  perm: [1, 2, 3, 5, 6, 7, 4, 0]
+Compilation SUCCESS!
+
+==========================================================================
+  Part 3: Comparison with Meta-level QSwitch
+==========================================================================
+The existing meta-level qswitch[H,S] compiles to 6 gates.
+The abstract lambda should compile to a larger circuit
+(it includes the function application overhead).
+
+Meta-level QSwitch[H,S]:
+2 qubits, 6 gates
+  X q[0]
+  CS q[0, 1]
+  CH q[0, 1]
+  X q[0]
+  CH q[0, 1]
+  CS q[0, 1]
+  perm: [0, 1]
+
+==========================================================================
+  Part 4: Wire-Level Apply (Boundary Splicing)
+==========================================================================
+Applying abstract QSwitch to H, S via boundary splicing.
+NOT beta-reduction — using general Apply path.
+
+Type analysis:
+  QSwitch type: input_ty[w=5] ⊸ bq_ty[w=1]
+  Arrow width: 6 (= 5 + 1)
+  Expected circuit width: 6 qubits
+
+Applied term JSON:
+{"node": "Apply", "f": {"node": "Seq", "f": {"node": "Lam", "name": "input", "dom": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "right": {"node": "Q"}}}}, "cod": {"node": "Ten", "left": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "right": {"node": "Q"}}, "body": {"node": "LetPair", "x": "f", "y": "rest", "ty_x": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "ty_y": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "right": {"node": "Q"}}}, "pair": {"node": "Var", "name": "input", "ty": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "right": {"node": "Q"}}}}}, "body": {"node": "LetPair", "x": "g", "y": "rest2", "ty_x": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "ty_y": {"node": "Ten", "left": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "right": {"node": "Q"}}, "pair": {"node": "Var", "name": "rest", "ty": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "right": {"node": "Q"}}}}, "body": {"node": "LetPair", "x": "b", "y": "x", "ty_x": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "ty_y": {"node": "Q"}, "pair": {"node": "Var", "name": "rest2", "ty": {"node": "Ten", "left": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "right": {"node": "Q"}}}, "body": {"node": "Seq", "f": {"node": "Pair", "fst": {"node": "Var", "name": "b", "ty": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}}, "snd": {"node": "Pair", "fst": {"node": "Var", "name": "f", "ty": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}}, "snd": {"node": "Pair", "fst": {"node": "Var", "name": "g", "ty": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}}, "snd": {"node": "Var", "name": "x", "ty": {"node": "Q"}}}}}, "g": {"node": "Seq", "f": {"node": "DistL", "a": {"node": "Unit"}, "b": {"node": "Unit"}, "c": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}}}, "g": {"node": "Seq", "f": {"node": "PlusMap", "ty_left": {"node": "Ten", "left": {"node": "Unit"}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}}}, "ty_right": {"node": "Ten", "left": {"node": "Unit"}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}}}, "left": {"node": "LetPair", "x": "tag", "y": "payload", "ty_x": {"node": "Unit"}, "ty_y": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}}, "pair": {"node": "Id", "ty": {"node": "Ten", "left": {"node": "Unit"}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}}}}, "body": {"node": "LetPair", "x": "f", "y": "gx", "ty_x": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "ty_y": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}, "pair": {"node": "Var", "name": "payload", "ty": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}}}, "body": {"node": "LetPair", "x": "g", "y": "x", "ty_x": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "ty_y": {"node": "Q"}, "pair": {"node": "Var", "name": "gx", "ty": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}}, "body": {"node": "Pair", "fst": {"node": "Var", "name": "tag", "ty": {"node": "Unit"}}, "snd": {"node": "Apply", "f": {"node": "Var", "name": "f", "ty": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}}, "arg": {"node": "Apply", "f": {"node": "Var", "name": "g", "ty": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}}, "arg": {"node": "Var", "name": "x", "ty": {"node": "Q"}}}}}}}}, "right": {"node": "LetPair", "x": "tag", "y": "payload", "ty_x": {"node": "Unit"}, "ty_y": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}}, "pair": {"node": "Id", "ty": {"node": "Ten", "left": {"node": "Unit"}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}}}}, "body": {"node": "LetPair", "x": "f", "y": "gx", "ty_x": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "ty_y": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}, "pair": {"node": "Var", "name": "payload", "ty": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}}}, "body": {"node": "LetPair", "x": "g", "y": "x", "ty_x": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "ty_y": {"node": "Q"}, "pair": {"node": "Var", "name": "gx", "ty": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Q"}}}, "body": {"node": "Pair", "fst": {"node": "Var", "name": "tag", "ty": {"node": "Unit"}}, "snd": {"node": "Apply", "f": {"node": "Var", "name": "g", "ty": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}}, "arg": {"node": "Apply", "f": {"node": "Var", "name": "f", "ty": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}}, "arg": {"node": "Var", "name": "x", "ty": {"node": "Q"}}}}}}}}}, "g": {"node": "UndistL", "a": {"node": "Unit"}, "b": {"node": "Unit"}, "c": {"node": "Q"}}}}}}}}}, "g": {"node": "Id", "ty": {"node": "Arrow", "dom": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "right": {"node": "Q"}}}}, "cod": {"node": "Ten", "left": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "right": {"node": "Q"}}}}}, "arg": {"node": "Pair", "fst": {"node": "Lam", "name": "hx", "dom": {"node": "Q"}, "cod": {"node": "Q"}, "body": {"node": "Seq", "f": {"node": "Var", "name": "hx", "ty": {"node": "Q"}}, "g": {"node": "H", "i": 0}}}, "snd": {"node": "Pair", "fst": {"node": "Lam", "name": "sy", "dom": {"node": "Q"}, "cod": {"node": "Q"}, "body": {"node": "Seq", "f": {"node": "Var", "name": "sy", "ty": {"node": "Q"}}, "g": {"node": "S", "i": 0}}}, "snd": {"node": "Id", "ty": {"node": "Ten", "left": {"node": "Plus", "left": {"node": "Unit"}, "right": {"node": "Unit"}}, "right": {"node": "Q"}}}}}}
+
+8 qubits, 8 gates
+  H q[0]
+  S q[2]
+  X q[4]
+  QControlBox q[4, 1, 0]
+  QControlBox q[4, 3, 2]
+  X q[4]
+  QControlBox q[4, 1, 2]
+  QControlBox q[4, 0, 3]
+  perm: [4, 1, 0, 3, 2, 5, 6, 7]
+Wire-level Apply compilation SUCCESS!
+
+==========================================================================
+  Summary
+==========================================================================
+
+  Tests: 3/3 passed
+
+  ALL TESTS PASSED
+

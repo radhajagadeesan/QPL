@@ -270,11 +270,8 @@ let and_sc_quant_bridge : Bridge.term =
 
 let compile_and_report name term =
   Printf.printf "\n%s:\n" name;
-  match Bridge.compile term with
-  | Bridge.CompileOk (perm, size) ->
-      Printf.printf "  ✓ Gates: %d\n" size;
-      Printf.printf "    Perm:  [%s]\n"
-        (String.concat ", " (List.map string_of_int perm.new_to_old))
+  match Bridge.compile_show term with
+  | Bridge.CompileOk _ -> ()
   | Bridge.CompileError err ->
       Printf.printf "  ✗ FAILED: %s\n" err
 
@@ -428,22 +425,16 @@ Quantum phase marking creates interference between paths:
   print_endline "\n--- Source-level phase_W (using phased_omap0) ---\n";
   Printf.printf "phase_w = phased_omap0 neg_one one bool_ty (id one) (id bool_ty)\n";
   Printf.printf "  Bridge: %s\n" (Bridge.term_to_json (emit phase_w));
-  (match Bridge.compile (emit phase_w) with
-   | Bridge.CompileOk (perm, size) ->
-       Printf.printf "  ✓ Gates: %d\n" size;
-       Printf.printf "    Perm:  [%s]\n"
-         (String.concat ", " (List.map string_of_int perm.new_to_old))
+  (match Bridge.compile_show (emit phase_w) with
+   | Bridge.CompileOk _ -> ()
    | Bridge.CompileError err ->
        Printf.printf "  ✗ FAILED: %s\n" err);
 
   print_endline "\n--- Bridge-level phase_W (for comparison) ---\n";
   Printf.printf "phase_w_bridge = X[0]; X[1]; CZ[0,1]; X[1]; X[0]\n";
   Printf.printf "  Bridge: %s\n" (Bridge.term_to_json phase_w_bridge);
-  (match Bridge.compile phase_w_bridge with
-   | Bridge.CompileOk (perm, size) ->
-       Printf.printf "  ✓ Gates: %d\n" size;
-       Printf.printf "    Perm:  [%s]\n"
-         (String.concat ", " (List.map string_of_int perm.new_to_old))
+  (match Bridge.compile_show phase_w_bridge with
+   | Bridge.CompileOk _ -> ()
    | Bridge.CompileError err ->
        Printf.printf "  ✗ FAILED: %s\n" err);
 
@@ -455,21 +446,15 @@ kick : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
 
   print_endline "\n--- Source-level kick ---\n";
   Printf.printf "kick = par0 (id bb_ty) phase_w\n";
-  (match Bridge.compile (emit kick) with
-   | Bridge.CompileOk (perm, size) ->
-       Printf.printf "  ✓ Gates: %d\n" size;
-       Printf.printf "    Perm:  [%s]\n"
-         (String.concat ", " (List.map string_of_int perm.new_to_old))
+  (match Bridge.compile_show (emit kick) with
+   | Bridge.CompileOk _ -> ()
    | Bridge.CompileError err ->
        Printf.printf "  ✗ FAILED: %s\n" err);
 
   print_endline "\n--- Bridge-level kick (for comparison) ---\n";
   Printf.printf "kick_bridge = X[2]; X[3]; CZ[2,3]; X[3]; X[2]\n";
-  (match Bridge.compile kick_bridge with
-   | Bridge.CompileOk (perm, size) ->
-       Printf.printf "  ✓ Gates: %d\n" size;
-       Printf.printf "    Perm:  [%s]\n"
-         (String.concat ", " (List.map string_of_int perm.new_to_old))
+  (match Bridge.compile_show kick_bridge with
+   | Bridge.CompileOk _ -> ()
    | Bridge.CompileError err ->
        Printf.printf "  ✗ FAILED: %s\n" err);
 
@@ -481,20 +466,14 @@ and_sc_quant : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
 
   print_endline "\n--- Source-level and_sc_quant ---\n";
   Printf.printf "and_sc_quant = seq0 and_sc kick\n";
-  (match Bridge.compile (emit and_sc_quant) with
-   | Bridge.CompileOk (perm, size) ->
-       Printf.printf "  ✓ Gates: %d (3 from and_sc + gates from kick)\n" size;
-       Printf.printf "    Perm:  [%s]\n"
-         (String.concat ", " (List.map string_of_int perm.new_to_old))
+  (match Bridge.compile_show (emit and_sc_quant) with
+   | Bridge.CompileOk _ -> ()
    | Bridge.CompileError err ->
        Printf.printf "  ✗ FAILED: %s\n" err);
 
   print_endline "\n--- Bridge-level and_sc_quant (for comparison) ---\n";
-  (match Bridge.compile and_sc_quant_bridge with
-   | Bridge.CompileOk (perm, size) ->
-       Printf.printf "  ✓ Gates: %d\n" size;
-       Printf.printf "    Perm:  [%s]\n"
-         (String.concat ", " (List.map string_of_int perm.new_to_old))
+  (match Bridge.compile_show and_sc_quant_bridge with
+   | Bridge.CompileOk _ -> ()
    | Bridge.CompileError err ->
        Printf.printf "  ✗ FAILED: %s\n" err);
 
@@ -554,11 +533,8 @@ Phases [-1, +1, +i] would apply:
   print_endline "\n--- phased_control on W (3 branches, 2 tag qubits) ---\n";
   Printf.printf "phases = [-1, +1, +i] = [e^{iπ}, e^{0}, e^{iπ/2}]\n";
   Printf.printf "phase_w_nary = phased_control w_datatype phases one [id; id; id]\n\n";
-  (match Bridge.compile (emit phase_w_nary) with
-   | Bridge.CompileOk (perm, size) ->
-       Printf.printf "  ✓ Gates: %d\n" size;
-       Printf.printf "    Perm:  [%s]\n"
-         (String.concat ", " (List.map string_of_int perm.new_to_old));
+  (match Bridge.compile_show (emit phase_w_nary) with
+   | Bridge.CompileOk _ ->
        print_endline "\n  Expected gate pattern:";
        print_endline "    Branch 0 (tag=00, phase=π): X[0]; X[1]; CU1(1.0); X[1]; X[0]";
        print_endline "    Branch 1 (tag=01, phase=0): skipped (trivial phase +1)";

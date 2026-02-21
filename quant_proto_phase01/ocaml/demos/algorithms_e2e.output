@@ -1,0 +1,161 @@
+
+==========================================================================
+  PARAMETERIZED ALGORITHM DEMOS (Linear GADT)
+==========================================================================
+
+Full pipeline: OCaml Linear DSL -> Bridge -> Python compile -> Circuit
+
+
+==========================================================================
+  PART 1: Deutsch-Jozsa (parameterized on oracle)
+==========================================================================
+
+deutsch_core : (Q tensor Q -> Q tensor Q) -> (Q tensor Q -> Q tensor Q)
+  = fun uf -> (H tensor id) ; uf ; (H tensor id)
+
+Instantiations:
+  Constant oracle: uf = id          -> measures |0> (deterministic)
+  Balanced oracle: uf = CX          -> measures |1> (deterministic)
+
+
+DJ constant (oracle = id):
+2 qubits, 2 gates
+  H q[0]
+  H q[0]
+  perm: [0, 1]
+
+DJ balanced (oracle = CX):
+2 qubits, 3 gates
+  H q[0]
+  CX q[0, 1]
+  H q[0]
+  perm: [0, 1]
+
+==========================================================================
+  PART 2: HSP Standard Form (functor)
+==========================================================================
+
+module type HSP_PARAMS = sig
+  type g; type x
+  val g_ty : g ty; val x_ty : x ty
+  val uf    : G tensor X -> G tensor X
+  val qft_g : G -> G
+end
+
+HSP_Core(P).circuit = P.uf ; (P.qft_g tensor id_X)
+
+Instantiations:
+  G=Q, X=Q, Uf=CX, QFT=H     (= Deutsch-Jozsa as HSP)
+  G=QQ, X=QQ, Uf=CX||id, QFT=H||H  (2-qubit HSP)
+
+
+HSP (G=Q, X=Q) = DJ:
+2 qubits, 2 gates
+  CX q[0, 1]
+  H q[0]
+  perm: [0, 1]
+
+HSP (G=Q^2, X=Q^2):
+4 qubits, 3 gates
+  CX q[0, 1]
+  H q[0]
+  H q[1]
+  perm: [0, 1, 2, 3]
+
+==========================================================================
+  PART 3: Simon's Algorithm (functor)
+==========================================================================
+
+module type SIMON_PARAMS = sig
+  type z; type y
+  val z_ty : z ty; val y_ty : y ty
+  val uf    : Z tensor Y -> Z tensor Y
+  val qft_z : Z -> Z
+end
+
+Simon_Core(S).circuit = S.uf ; (S.qft_z tensor id_Y)
+
+Instantiations:
+  Z=Q, Y=Q, Uf=CX, QFT=H       (1-qubit Simon)
+  Z=QQ, Y=QQ, Uf=CX||id, QFT=H||H  (2-qubit Simon)
+
+
+Simon (Z=Q, Y=Q):
+2 qubits, 2 gates
+  CX q[0, 1]
+  H q[0]
+  perm: [0, 1]
+
+Simon (Z=Q^2, Y=Q^2):
+4 qubits, 3 gates
+  CX q[0, 1]
+  H q[0]
+  H q[1]
+  perm: [0, 1, 2, 3]
+
+==========================================================================
+  PART 4: Bell and GHZ States
+==========================================================================
+
+Bell state: (H tensor id) ; CX : Q tensor Q -> Q tensor Q
+GHZ state:  (H tensor id^2) ; (CX tensor id) ; route ; (CX tensor id) ; unroute
+
+
+Bell state:
+2 qubits, 2 gates
+  H q[0]
+  CX q[0, 1]
+  perm: [0, 1]
+
+GHZ state (3 qubits):
+3 qubits, 3 gates
+  H q[0]
+  CX q[0, 1]
+  CX q[0, 2]
+  perm: [0, 1, 2]
+
+==========================================================================
+  PART 5: Structural Verification
+==========================================================================
+
+Verifying all algorithms share the pattern: oracle ; (FT tensor id)
+
+DJ constant JSON: {"node": "Seq", "f": {"node": "TenTerm", "f": {"node": "H", "i": 0}, "g": {"node": "Id", "ty": {"node": "Q"}}}, "g": {"node": "Seq", "f": {"node": "Id", "ty": {"node": "Ten", "left": {"node": "Q"}, "right": {"node": "Q"}}}, "g": {"node": "TenTerm", "f": {"node": "H", "i": 0}, "g": {"node": "Id", "ty": {"node": "Q"}}}}}
+DJ balanced JSON: {"node": "Seq", "f": {"node": "TenTerm", "f": {"node": "H", "i": 0}, "g": {"node": "Id", "ty": {"node": "Q"}}}, "g": {"node": "Seq", "f": {"node": "CX", "i": 0, "j": 1}, "g": {"node": "TenTerm", "f": {"node": "H", "i": 0}, "g": {"node": "Id", "ty": {"node": "Q"}}}}}
+HSP (1q) JSON:    {"node": "Seq", "f": {"node": "CX", "i": 0, "j": 1}, "g": {"node": "TenTerm", "f": {"node": "H", "i": 0}, "g": {"node": "Id", "ty": {"node": "Q"}}}}
+
+Note: DJ_as_HSP.circuit and Simon_1q.circuit have identical structure
+because CX ; (H tensor id) is the shared unitary core.
+
+==========================================================================
+  SUMMARY
+==========================================================================
+
+Demonstrated parameterized quantum algorithms in Linear GADT:
+
+1. DEUTSCH-JOZSA (plain function)
+   deutsch_core : oracle -> circuit
+   Oracle is any Q tensor Q -> Q tensor Q morphism
+
+2. HSP STANDARD FORM (OCaml functor)
+   HSP_Core(P).circuit = P.uf ; (P.qft_g tensor id)
+   Parameterized on abstract types G, X with type witnesses
+
+3. SIMON'S ALGORITHM (OCaml functor)
+   Simon_Core(S).circuit = S.uf ; (S.qft_z tensor id)
+   Same pattern, specialized naming for Simon's context
+
+4. BELL AND GHZ STATES
+   Bell = (H tensor id) ; CX
+   GHZ = Bell pattern extended to 3 qubits with wire routing
+
+KEY INSIGHTS:
+  - OCaml's type system verifies linearity at compile time
+  - Functors enable parameterization over abstract quantum types
+  - All circuits compile through the full pipeline to pytket
+  - The oracle ; (FT tensor id) pattern is shared across algorithms
+
+
+==========================================================================
+  DEMO COMPLETE
+==========================================================================

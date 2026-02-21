@@ -109,10 +109,13 @@ let test_bool_swap_example () =
   print_endline ""
 
 (* Test: Bell state via OCaml bridge *)
+(* Bell = (H ⊗ Id(Q)) ; CX *)
 let test_bell_state () =
-  print_endline "=== Testing Bell state (H[0] ; CX[0,1]) via OCaml bridge ===";
+  print_endline "=== Testing Bell state ((H⊗Id) ; CX) via OCaml bridge ===";
 
-  let bell = Bridge.TSeq (Bridge.TH 0, Bridge.TCX (0, 1)) in
+  let q = Rep.Var 0 in
+  let h_tensor_id = Bridge.TTenTerm (Bridge.TH 0, Bridge.TId q) in
+  let bell = Bridge.TSeq (h_tensor_id, Bridge.TCX (0, 1)) in
 
   match Bridge.compile bell with
   | Bridge.CompileOk (perm, size) ->
@@ -127,13 +130,26 @@ let test_bell_state () =
     assert false
 
 (* Test: GHZ state via OCaml bridge *)
+(* GHZ = (H ⊗ Id(Q) ⊗ Id(Q)) ; (CX ⊗ Id(Q)) ; CX[0,2] *)
+(* Simpler: (H⊗Id⊗Id) ; (CX⊗Id) ; (CX on q0,q2 via TenTerm) *)
 let test_ghz_state () =
-  print_endline "=== Testing GHZ state (H[0] ; CX[0,1] ; CX[0,2]) via OCaml bridge ===";
+  print_endline "=== Testing GHZ state via OCaml bridge ===";
 
-  let ghz = Bridge.TSeq (
-    Bridge.TH 0,
-    Bridge.TSeq (Bridge.TCX (0, 1), Bridge.TCX (0, 2))
-  ) in
+  let q = Rep.Var 0 in
+  let qq = Rep.Tensor (q, q) in
+  (* Step 1: H ⊗ Id(Q⊗Q) — H on first qubit, identity on other two *)
+  let step1 = Bridge.TTenTerm (Bridge.TH 0, Bridge.TId qq) in
+  (* Step 2: CX(0,1) ⊗ Id(Q) — CX on first two, identity on third *)
+  let step2 = Bridge.TTenTerm (Bridge.TCX (0, 1), Bridge.TId q) in
+  (* Step 3: Id(Q) ⊗ CX(0,1) mapped as CX on q0,q2 requires permutation.
+     Instead: swap q1,q2 then CX(0,1) then swap back.
+     Or simpler: use TenTerm(Id(Q), CX) which puts CX on q1,q2,
+     then twist to get CX on q0,q2. But that gives the wrong entanglement.
+
+     Actually for GHZ: H[0]; CX[0,1]; CX[1,2] also works:
+     |000⟩ → H|0⟩⊗|00⟩ → CX gives |00⟩+|11⟩ on q01 → CX[1,2] gives |000⟩+|111⟩ *)
+  let step3 = Bridge.TTenTerm (Bridge.TId q, Bridge.TCX (0, 1)) in
+  let ghz = Bridge.TSeq (step1, Bridge.TSeq (step2, step3)) in
 
   match Bridge.compile ghz with
   | Bridge.CompileOk (perm, size) ->
@@ -245,15 +261,19 @@ let test_qswitch_circuit () =
   (* The quantum switch for gates H and S on a 2-qubit system:
      - Wire 0 is the control (tag qubit)
      - Wire 1 is the target
-     The decomposition is: X[0] ; CS[0,1] ; X[0] ; H[1] ; CS[0,1] *)
+     The decomposition is: X[0]⊗Id ; CS[0,1] ; X[0]⊗Id ; Id⊗H[0] ; CS[0,1]
+     Single-qubit gates must be tensored with Id to match 2-qubit width. *)
+  let q = Rep.Var 0 in
+  let x_on_0 = Bridge.TTenTerm (Bridge.TX 0, Bridge.TId q) in
+  let h_on_1 = Bridge.TTenTerm (Bridge.TId q, Bridge.TH 0) in
   let qswitch = Bridge.TSeq (
-    Bridge.TX 0,
+    x_on_0,
     Bridge.TSeq (
       Bridge.TCS (0, 1),
       Bridge.TSeq (
-        Bridge.TX 0,
+        x_on_0,
         Bridge.TSeq (
-          Bridge.TH 1,
+          h_on_1,
           Bridge.TCS (0, 1)
         )
       )

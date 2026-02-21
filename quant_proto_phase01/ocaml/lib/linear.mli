@@ -39,6 +39,9 @@ val ( ++ ) : 'a ty -> 'b ty -> [`Plus of 'a * 'b] ty
 (** Linear arrow A ⊸ B *)
 val ( -@ ) : 'a ty -> 'b ty -> [`Lolli of 'a * 'b] ty
 
+(** Extract the underlying Rep.t from a type witness *)
+val ty_to_rep : 'a ty -> Rep.t
+
 (** {1 Programs}
 
     [('g, 'a) prog] represents an object-language term of type ['a]
@@ -280,6 +283,101 @@ val emit : (unit, 'a) prog -> Bridge.term
 
 (** Emit with type witness for debugging. *)
 val emit_typed : (unit, 'a) prog -> 'a ty -> Bridge.term
+
+(** {1 Context Split Witnesses}
+
+    Split witnesses prove that a context 'g can be partitioned into
+    'g1 and 'g2, with each element assigned to one side.
+*)
+
+type (_, _, _) split =
+  | SNil   : (unit, unit, unit) split
+  | SLeft  : ('g1, 'g2, 'g) split -> ('a * 'g1, 'g2, 'a * 'g) split
+  | SRight : ('g1, 'g2, 'g) split -> ('g1, 'a * 'g2, 'a * 'g) split
+
+(** {1 Open Terms (Full Source Language)}
+
+    Open terms track both context ('g) and output type ('a) via GADTs.
+    This enables the full source language (nested LetPair, variable references)
+    with compile-time linearity enforcement through context splitting.
+
+    Binary constructors carry split witnesses to partition the context.
+    Closed [prog] values can be embedded via [oembed].
+*)
+
+type (_, _) oterm
+
+(** {2 General constructors (explicit split witness)} *)
+
+(** Variable reference at position 0 in a singleton context *)
+val ovar : string -> 'a ty -> ('a * unit, 'a) oterm
+
+(** Context weakening: add an unused variable to the front *)
+val oshift : 'b ty -> ('g, 'a) oterm -> ('b * 'g, 'a) oterm
+
+(** Tensor introduction (pairing) *)
+val opair : ('g1, 'a) oterm -> ('g2, 'b) oterm -> ('g1, 'g2, 'g) split
+         -> ('g, [`Tensor of 'a * 'b]) oterm
+
+(** Tensor elimination (destructuring) *)
+val oletpair : string -> string -> 'a ty -> 'b ty
+            -> ('g1, [`Tensor of 'a * 'b]) oterm
+            -> ('a * ('b * 'g2), 'c) oterm
+            -> ('g1, 'g2, 'g) split
+            -> ('g, 'c) oterm
+
+(** Lambda abstraction *)
+val olam : string -> 'a ty -> 'b ty -> ('a * 'g, 'b) oterm
+        -> ('g, [`Lolli of 'a * 'b]) oterm
+
+(** Application *)
+val oapp : ('g1, [`Lolli of 'a * 'b]) oterm -> ('g2, 'a) oterm
+        -> ('g1, 'g2, 'g) split -> ('g, 'b) oterm
+
+(** ⊕-Map: bifunctorial action on sums.
+    Branches are bare morphism terms, not function values.
+    The branch oterm types 'c and 'd become the output summand types. *)
+val oplusmap : 'a ty -> 'b ty
+            -> ('g1, 'c) oterm -> ('g2, 'd) oterm
+            -> ('g1, 'g2, 'g) split
+            -> ('g, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) oterm
+
+(** Identity morphism *)
+val oid : 'a ty -> (unit, 'a) oterm
+
+(** Embed a closed prog into an open term *)
+val oembed : (unit, 'a) prog -> (unit, 'a) oterm
+
+(** Sequential composition of morphisms *)
+val oseq : ('g1, [`Lolli of 'a * 'b]) oterm
+        -> ('g2, [`Lolli of 'b * 'c]) oterm
+        -> ('g1, 'g2, 'g) split
+        -> ('g, [`Lolli of 'a * 'c]) oterm
+
+(** {2 Closed convenience constructors (both sides unit, split = SNil)} *)
+
+val opair0 : (unit, 'a) oterm -> (unit, 'b) oterm
+          -> (unit, [`Tensor of 'a * 'b]) oterm
+val oletpair0 : string -> string -> 'a ty -> 'b ty
+             -> (unit, [`Tensor of 'a * 'b]) oterm
+             -> ('a * ('b * unit), 'c) oterm
+             -> (unit, 'c) oterm
+val oapp0 : (unit, [`Lolli of 'a * 'b]) oterm -> (unit, 'a) oterm
+         -> (unit, 'b) oterm
+val oplusmap0 : 'a ty -> 'b ty
+             -> (unit, 'c) oterm -> (unit, 'd) oterm
+             -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) oterm
+val oseq0 : (unit, [`Lolli of 'a * 'b]) oterm
+          -> (unit, [`Lolli of 'b * 'c]) oterm
+          -> (unit, [`Lolli of 'a * 'c]) oterm
+
+(** {2 Context representation} *)
+
+(** Compute the Rep.t representation of an oterm's context 'g *)
+val context_rep : ('g, 'a) oterm -> Rep.t
+
+(** Emit an open term to Bridge.term for compilation *)
+val emit_oterm : ('g, 'a) oterm -> Bridge.term
 
 (** {1 Datatype Declarations}
 

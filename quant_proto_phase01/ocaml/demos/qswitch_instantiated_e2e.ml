@@ -70,11 +70,8 @@ let qswitch
 (** Compile a QSwitch term and report results *)
 let compile_and_report name term =
   Printf.printf "\n%s:\n" name;
-  match Bridge.compile term with
-  | Bridge.CompileOk (perm, size) ->
-      Printf.printf "  ✓ Gates: %d\n" size;
-      Printf.printf "    Perm:  [%s]\n"
-        (String.concat ", " (List.map string_of_int perm.new_to_old))
+  match Bridge.compile_show term with
+  | Bridge.CompileOk _ -> ()
   | Bridge.CompileError err ->
       Printf.printf "  ✗ FAILED: %s\n" err
 

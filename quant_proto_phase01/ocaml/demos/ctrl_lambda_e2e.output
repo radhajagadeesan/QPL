@@ -1,0 +1,108 @@
+
+==========================================================================
+  HIGHER-ORDER ctrl COMBINATOR
+==========================================================================
+
+  ctrl := \lambda f.  undist \circ (id \oplus (id_I \otimes f)) \circ dist
+       : (A \multimap A) \multimap (Bool \otimes A \multimap Bool \otimes A)
+
+  Pipeline: OCaml oterm -> Bridge -> Python -> pytket
+
+==========================================================================
+  PART 1: Abstract ctrl (lambda term)
+==========================================================================
+
+  ctrl_Q = \lambda f:(Q->Q). \lambda ba:(Bool*Q).
+    let (b, a) = ba in
+    (undist_l ; (id_{I*Q} + (id_I * f)) ; dist_l) (b, a)
+
+  PlusMap branches:
+    Left  (tag=0): id_{I*Q}    -- identity, do nothing
+    Right (tag=1): id_I * f    -- apply f to payload
+
+  Circuit width: width(Q->Q) + width(Bool*Q) = 2 + 2 = 4 qubits
+    Wires [0,1]: f boundary (input A, output A)
+    Wire  [2]:   Bool tag
+    Wire  [3]:   Q payload
+
+Compiling abstract ctrl lambda:
+
+6 qubits, 1 gates
+  QControlBox q[2, 3, 1]
+  perm: [4, 5, 0, 1, 2, 3]
+
+  ctrl (abstract): 6 qubits, 1 gates
+
+==========================================================================
+  PART 2: ctrl(X) = CX
+==========================================================================
+
+  Instantiate f := X gate.
+  ctrl(X) : Bool * Q -> Bool * Q
+  Expected: 1 gate (CX)
+
+ctrl(X):
+2 qubits, 1 gates
+  CX q[0, 1]
+  perm: [0, 1]
+  Verify ctrl(X) = CX: EQUAL (fidelity=1.000000)
+
+==========================================================================
+  PART 3: ctrl(ctrl(X)) = CCX (Toffoli)
+==========================================================================
+
+  ctrl^2(X) = ctrl_{Bool*Q}(ctrl_Q(X))
+  Expected: 1 gate (CCX)
+
+ctrl^2(X):
+3 qubits, 1 gates
+  CCX q[0, 1, 2]
+  perm: [0, 1, 2]
+  Verify ctrl^2(X) = CCX: EQUAL (fidelity=1.000000)
+
+==========================================================================
+  PART 4: ctrl^3(X) = CCCX
+==========================================================================
+
+ctrl^3(X):
+4 qubits, 1 gates
+  QControlBox q[0, 1, 2, 3]
+  perm: [0, 1, 2, 3]
+  Verify ctrl^3(X) = CCCX: EQUAL (fidelity=1.000000)
+
+==========================================================================
+  PART 5: ctrl^4(X) = CCCCX
+==========================================================================
+
+ctrl^4(X):
+5 qubits, 1 gates
+  CnX q[0, 1, 2, 3, 4]
+  perm: [0, 1, 2, 3, 4]
+  Verify ctrl^4(X) = CCCCX: EQUAL (fidelity=1.000000)
+
+==========================================================================
+  SUMMARY
+==========================================================================
+
+  ctrl := \lambda f. undist \circ (id \oplus (id_I \otimes f)) \circ dist
+       : (A \multimap A) \multimap (Bool \otimes A \multimap Bool \otimes A)
+
+  +----------------+---------+----------------------------+
+  | Term           | Qubits  | Verified against           |
+  +----------------+---------+----------------------------+
+  | ctrl (abstract)| 4       | (lambda with f boundary)   |
+  | ctrl(X)        | 2       | CX                         |
+  | ctrl^2(X)      | 3       | CCX (Toffoli)              |
+  | ctrl^3(X)      | 4       | CCCX                       |
+  | ctrl^4(X)      | 5       | CCCCX                      |
+  +----------------+---------+----------------------------+
+
+  Key insight: ctrl is a HIGHER-ORDER combinator.
+  The abstract lambda has f as a wire bundle (boundary exposure).
+  Iterated application builds multi-controlled gates:
+  each ctrl(−) adds one control qubit.
+
+
+==========================================================================
+  DEMO COMPLETE
+==========================================================================

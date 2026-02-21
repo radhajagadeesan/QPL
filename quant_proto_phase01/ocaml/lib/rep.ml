@@ -15,12 +15,14 @@ type t =
   | Unit
   | Tensor of t * t
   | Plus of t * t
+  | Lolli of t * t   (* linear implication A ⊸ B *)
 
 (** Smart constructors *)
 let var i = Var i
 let unit = Unit
 let tensor a b = Tensor (a, b)
 let plus a b = Plus (a, b)
+let lolli a b = Lolli (a, b)
 
 (** Infix operators for readability *)
 let ( *@ ) = tensor
@@ -32,12 +34,13 @@ let rec wire_count = function
   | Unit -> 0
   | Tensor (a, b) -> (wire_count a) + (wire_count b)
   | Plus (a, b) -> (wire_count a) + (wire_count b)
+  | Lolli (a, b) -> (wire_count a) + (wire_count b)
 
 (** Collect all variable indices used *)
 let rec vars = function
   | Var i -> [i]
   | Unit -> []
-  | Tensor (a, b) | Plus (a, b) -> vars a @ vars b
+  | Tensor (a, b) | Plus (a, b) | Lolli (a, b) -> vars a @ vars b
 
 (** Substitute variables according to a mapping *)
 let rec subst mapping = function
@@ -45,6 +48,7 @@ let rec subst mapping = function
   | Unit -> Unit
   | Tensor (a, b) -> Tensor (subst mapping a, subst mapping b)
   | Plus (a, b) -> Plus (subst mapping a, subst mapping b)
+  | Lolli (a, b) -> Lolli (subst mapping a, subst mapping b)
 
 (** Pretty-print a representation *)
 let rec to_string = function
@@ -52,6 +56,7 @@ let rec to_string = function
   | Unit -> "I"
   | Tensor (a, b) -> Printf.sprintf "(%s ⊗ %s)" (to_string a) (to_string b)
   | Plus (a, b) -> Printf.sprintf "(%s + %s)" (to_string a) (to_string b)
+  | Lolli (a, b) -> Printf.sprintf "(%s ⊸ %s)" (to_string a) (to_string b)
 
 (** Compute the canonical wire indices for each position in a rep.
     Returns a list of (path, wire_index) pairs where path encodes L/R choices. *)
@@ -68,6 +73,10 @@ let rec wire_positions ?(prefix=[]) ?(offset=0) = function
     let pos_a, next = wire_positions ~prefix:(L :: prefix) ~offset a in
     let pos_b, final = wire_positions ~prefix:(R :: prefix) ~offset:next b in
     pos_a @ pos_b, final
+  | Lolli (a, b) ->
+    let pos_a, next = wire_positions ~prefix:(L :: prefix) ~offset a in
+    let pos_b, final = wire_positions ~prefix:(R :: prefix) ~offset:next b in
+    pos_a @ pos_b, final
 
 (** Equality check *)
 let rec equal a b = match a, b with
@@ -75,4 +84,5 @@ let rec equal a b = match a, b with
   | Unit, Unit -> true
   | Tensor (a1, a2), Tensor (b1, b2) -> equal a1 b1 && equal a2 b2
   | Plus (a1, a2), Plus (b1, b2) -> equal a1 b1 && equal a2 b2
+  | Lolli (a1, a2), Lolli (b1, b2) -> equal a1 b1 && equal a2 b2
   | _ -> false

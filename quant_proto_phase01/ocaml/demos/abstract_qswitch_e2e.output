@@ -1,0 +1,176 @@
+
+==========================================================================
+  ABSTRACT QSWITCH E2E DEMO (Linear DSL)
+==========================================================================
+
+Full pipeline: OCaml Linear DSL -> Bridge -> Python compile -> Circuit
+
+
+==========================================================================
+  PART 1: QSwitch Type Structure
+==========================================================================
+
+QSwitch[f, g] : Bool ⊗ Q → Bool ⊗ Q
+
+where Bool = I + I (the 2-element sum type)
+
+Structure:
+  dist_l    : (I+I) ⊗ Q → (I⊗Q) + (I⊗Q)    [distribute]
+  omap0     : Apply f⊕g bifunctorially       [branch operations]
+  undist_l  : (I⊗Q) + (I⊗Q) → (I+I) ⊗ Q    [undistribute]
+
+This is PURELY LINEAR DSL - no Bridge term hacking!
+
+
+==========================================================================
+  PART 2: QSwitch[H, S] - Full Linear DSL Construction
+==========================================================================
+
+QSwitch[H, S] semantics:
+  |0⟩ ⊗ |ψ⟩ → |0⟩ ⊗ H(S(|ψ⟩))   (apply S then H)
+  |1⟩ ⊗ |ψ⟩ → |1⟩ ⊗ S(H(|ψ⟩))   (apply H then S)
+
+Emitting to Bridge term...
+
+Bridge JSON:
+{"node": "Seq", "f": {"node": "DistL", "a": {"node": "Unit"}, "b": {"node": "Unit"}, "c": {"node": "Q"}}, "g": {"node": "Seq", "f": {"node": "PlusMap", "ty_left": {"node": "Ten", "left": {"node": "Unit"}, "right": {"node": "Q"}}, "ty_right": {"node": "Ten", "left": {"node": "Unit"}, "right": {"node": "Q"}}, "left": {"node": "TenTerm", "f": {"node": "Id", "ty": {"node": "Unit"}}, "g": {"node": "Seq", "f": {"node": "S", "i": 0}, "g": {"node": "H", "i": 0}}}, "right": {"node": "TenTerm", "f": {"node": "Id", "ty": {"node": "Unit"}}, "g": {"node": "Seq", "f": {"node": "H", "i": 0}, "g": {"node": "S", "i": 0}}}}, "g": {"node": "UndistL", "a": {"node": "Unit"}, "b": {"node": "Unit"}, "c": {"node": "Q"}}}}
+
+Compiling via Python backend...
+
+2 qubits, 6 gates
+  X q[0]
+  CS q[0, 1]
+  CH q[0, 1]
+  X q[0]
+  CH q[0, 1]
+  CS q[0, 1]
+  perm: [0, 1]
+
+✓ Compilation SUCCESS!
+
+==========================================================================
+  PART 3: Other QSwitch Instantiations
+==========================================================================
+
+QSwitch[H, X]:
+2 qubits, 6 gates
+  X q[0]
+  CX q[0, 1]
+  CH q[0, 1]
+  X q[0]
+  CH q[0, 1]
+  CX q[0, 1]
+  perm: [0, 1]
+
+QSwitch[S, Y]:
+2 qubits, 6 gates
+  X q[0]
+  CY q[0, 1]
+  CS q[0, 1]
+  X q[0]
+  CS q[0, 1]
+  CY q[0, 1]
+  perm: [0, 1]
+
+QSwitch[X, Z]:
+2 qubits, 6 gates
+  X q[0]
+  CZ q[0, 1]
+  CX q[0, 1]
+  X q[0]
+  CX q[0, 1]
+  CZ q[0, 1]
+  perm: [0, 1]
+
+Self-inverse case (f = g):
+
+QSwitch[H, H]:
+2 qubits, 6 gates
+  X q[0]
+  CH q[0, 1]
+  CH q[0, 1]
+  X q[0]
+  CH q[0, 1]
+  CH q[0, 1]
+  perm: [0, 1]
+
+QSwitch[S, S]:
+2 qubits, 6 gates
+  X q[0]
+  CS q[0, 1]
+  CS q[0, 1]
+  X q[0]
+  CS q[0, 1]
+  CS q[0, 1]
+  perm: [0, 1]
+
+==========================================================================
+  PART 4: Linear DSL Components
+==========================================================================
+
+Showing that each component is a proper Linear DSL term:
+
+dist_l one one q:
+  {"node": "DistL", "a": {"node": "Unit"}, "b": {"node": "Unit"}, "c": {"node": "Q"}}
+
+undist_l one one q:
+  {"node": "UndistL", "a": {"node": "Unit"}, "b": {"node": "Unit"}, "c": {"node": "Q"}}
+
+par0 (id one) gate_h:
+  {"node": "TenTerm", "f": {"node": "Id", "ty": {"node": "Unit"}}, "g": {"node": "H", "i": 0}}
+
+omap0 iq iq (id_I⊗H) (id_I⊗S):
+  {"node": "PlusMap", "ty_left": {"node": "Ten", "left": {"node": "Unit"}, "right": {"node": "Q"}}, "ty_right": {"node": "Ten", "left": {"node": "Unit"}, "right": {"node": "Q"}}, "left": {"node": "TenTerm", "f": {"node": "Id", "ty": {"node": "Unit"}}, "g": {"node": "H", "i": 0}}, "right": {"node": "TenTerm", "f": {"node": "Id", "ty": {"node": "Unit"}}, "g": {"node": "S", "i": 0}}}
+
+
+==========================================================================
+  PART 5: Composing QSwitch Operations
+==========================================================================
+
+QSwitch composes because it's a proper morphism Bool⊗Q → Bool⊗Q:
+
+QSwitch[H,S] ; QSwitch[X,Z]:
+2 qubits, 12 gates
+  X q[0]
+  CS q[0, 1]
+  CH q[0, 1]
+  X q[0]
+  CH q[0, 1]
+  CS q[0, 1]
+  X q[0]
+  CZ q[0, 1]
+  CX q[0, 1]
+  X q[0]
+  CX q[0, 1]
+  CZ q[0, 1]
+  perm: [0, 1]
+
+==========================================================================
+  SUMMARY
+==========================================================================
+
+This demo shows PROPER Linear DSL usage for QSwitch:
+
+1. TYPE-SAFE CONSTRUCTION
+   - qswitch : (Q→Q) → (Q→Q) → (Bool⊗Q → Bool⊗Q)
+   - GADT-enforced linearity
+
+2. STRUCTURAL ISOMORPHISMS
+   - dist_l  : (A+B) ⊗ C → (A⊗C) + (B⊗C)
+   - undist_l: (A⊗C) + (B⊗C) → (A+B) ⊗ C
+   - Proper inverses!
+
+3. BIFUNCTORIAL ACTION
+   - omap0 : (A→C) → (B→D) → ((A+B) → (C+D))
+   - Applies different operations per branch
+
+4. COMPOSITIONALITY
+   - QSwitch[f,g] ; QSwitch[h,k] composes naturally
+   - Types ensure correctness
+
+NO Bridge term hacking - this is the REAL Linear DSL!
+
+
+==========================================================================
+  DEMO COMPLETE
+==========================================================================

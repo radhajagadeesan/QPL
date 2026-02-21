@@ -1,0 +1,68 @@
+
+==========================================================================
+  exp(i*theta*Twist) E2E Demo
+==========================================================================
+
+Full pipeline: OCaml Linear DSL -> Bridge -> Python compile -> Circuit
+Mirrors the Python exp_twist_demo.py verification.
+
+==========================================================================
+  Part 1: TwistTen(Q,Q) Compilation (sanity check)
+==========================================================================
+
+TwistTen(Q,Q):
+2 qubits, 0 gates
+  perm: [1, 0]
+
+eq_circ(twist, twist) [sanity]:
+  EQUAL (fidelity=1.000000)
+
+==========================================================================
+  Part 2: exp_i(pi/4, TwistTen(Q,Q))
+==========================================================================
+
+exp_i(pi/4, twist):
+2 qubits, 1 gates
+  Unitary2qBox q[0, 1]
+  perm: [0, 1]
+
+==========================================================================
+  Part 3: exp_i(pi/4, twist) ; exp_i(pi/4, twist) Composition
+==========================================================================
+
+exp(pi/4);exp(pi/4) composed:
+2 qubits, 2 gates
+  Unitary2qBox q[0, 1]
+  Unitary2qBox q[0, 1]
+  perm: [0, 1]
+
+==========================================================================
+  Part 4: Composition Law
+==========================================================================
+  Verify: exp(pi/4);exp(pi/4) = exp(pi/2)
+
+exp_i(pi/2, twist) [direct]:
+2 qubits, 1 gates
+  Unitary2qBox q[0, 1]
+  perm: [0, 1]
+
+eq_circ(exp(pi/4);exp(pi/4), exp(pi/2)) [composition law]:
+  EQUAL (fidelity=1.000000)
+
+==========================================================================
+  Part 5: exp_i(pi/4, TwistPlus(I, I))
+==========================================================================
+
+exp_i(pi/4, twist_plus I I):
+1 qubits, 1 gates
+  Unitary1qBox q[0]
+  perm: [0]
+
+==========================================================================
+  Summary
+==========================================================================
+
+  Tests: 7/7 passed
+
+  ALL TESTS PASSED
+

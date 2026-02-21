@@ -53,6 +53,16 @@
 - When something breaks, show the real error - don't hide failures
 - The user wants truth, not results that "look right" or "make them happy"
 
+## Document What You Do (IMPORTANT)
+
+**Before making changes, document what you are about to do and why. After making changes, document what you actually did.**
+
+- When modifying code, state which spec/doc section justifies the change
+- If a spec exists (e.g. `RadhaMSG/full_source_language_compilation_spec.md`), follow it — do not invent ad-hoc fixes
+- Never claim work was done in a previous session without verifying it by reading the actual code
+- When debugging, re-read the relevant spec first before patching code
+- If you changed something and it didn't work, revert — don't layer more ad-hoc fixes on top
+
 ## Development Workflow
 
 - Always run `PYTHONPATH=python/src pytest python/tests` after code changes

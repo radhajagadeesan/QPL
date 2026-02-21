@@ -62,6 +62,9 @@ let rec type_to_json = function
   | Rep.Plus (a, b) ->
     Printf.sprintf {|{"node": "Plus", "left": %s, "right": %s}|}
       (type_to_json a) (type_to_json b)
+  | Rep.Lolli (a, b) ->
+    Printf.sprintf {|{"node": "Arrow", "dom": %s, "cod": %s}|}
+      (type_to_json a) (type_to_json b)
 
 (** Term representation for JSON serialization *)
 type term =
@@ -122,7 +125,11 @@ type term =
   (* N-ary bifunctorial action on sums *)
   | TNPlusMap of Rep.t array * term array  (* summand_types, branches *)
   (* Pattern-matching case on sums *)
-  | TCase of Rep.t * Rep.t * term * term * term  (* case scrut of Left => left | Right => right *)
+  | TCase of Rep.t * Rep.t * term * term * term
+  (* Full source language: variables, pairs, let-pair *)
+  | TVar of string * Rep.t               (* variable reference *)
+  | TPair of term * term                  (* tensor introduction *)
+  | TLetPair of string * string * Rep.t * Rep.t * term * term  (* let (x,y) = t in u *)  (* case scrut of Left => left | Right => right *)
 
 (** Convert a term to JSON *)
 let rec term_to_json = function
@@ -238,25 +245,23 @@ let rec term_to_json = function
   | TCase (ty_left, ty_right, scrut, left, right) ->
     Printf.sprintf {|{"node": "CaseExpr", "ty_left": %s, "ty_right": %s, "scrut": %s, "left": %s, "right": %s}|}
       (type_to_json ty_left) (type_to_json ty_right) (term_to_json scrut) (term_to_json left) (term_to_json right)
+  (* Full source language *)
+  | TVar (name, ty) ->
+    Printf.sprintf {|{"node": "Var", "name": "%s", "ty": %s}|} name (type_to_json ty)
+  | TPair (fst, snd) ->
+    Printf.sprintf {|{"node": "Pair", "fst": %s, "snd": %s}|}
+      (term_to_json fst) (term_to_json snd)
+  | TLetPair (x, y, ty_x, ty_y, pair, body) ->
+    Printf.sprintf {|{"node": "LetPair", "x": "%s", "y": "%s", "ty_x": %s, "ty_y": %s, "pair": %s, "body": %s}|}
+      x y (type_to_json ty_x) (type_to_json ty_y) (term_to_json pair) (term_to_json body)
 
 (** Simple JSON parsing helpers *)
 let find_string key json =
-  let pattern = Printf.sprintf {|"%s": "|} key in
   try
-    let start = String.index json '"' in
-    let json_from_key = String.sub json (String.index json (String.get pattern 0)) (String.length json - String.index json (String.get pattern 0)) in
-    let _ = (start, json_from_key) in
-    (* Simplified: look for "key": "value" or "key": value *)
     let re = Str.regexp (Printf.sprintf {|"%s": *"\([^"]*\)"|} key) in
-    if Str.string_match re json 0 then
-      Some (Str.matched_group 1 json)
-    else
-      let re2 = Str.regexp (Printf.sprintf {|"%s": *\([^,}]*\)|} key) in
-      if Str.string_match re2 json 0 then
-        Some (String.trim (Str.matched_group 1 json))
-      else
-        None
-  with _ -> None
+    let _ = Str.search_forward re json 0 in
+    Some (Str.matched_group 1 json)
+  with Not_found -> None
 
 let find_bool key json =
   let re = Str.regexp (Printf.sprintf {|"%s": *\(true\|false\)|} key) in
@@ -346,6 +351,35 @@ let compile term =
      | Some err -> CompileError err
      | None -> CompileError ("Unknown error in: " ^ String.sub response 0 (min 300 (String.length response))))
   | None ->
+    CompileError ("Invalid response: " ^ String.sub response 0 (min 300 (String.length response)))
+
+(** Compile a term, print the circuit gates, and return the result *)
+let compile_show term =
+  let term_json = term_to_json term in
+  let request = Printf.sprintf {|{"type": "compile", "term": %s, "show_gates": true}|} term_json in
+
+  let response = call_bridge request in
+
+  match find_bool "success" response with
+  | Some true ->
+    (match find_string "circuit_text" response with
+     | Some text ->
+       let text = Str.global_replace (Str.regexp_string "\\n") "\n" text in
+       Printf.printf "%s\n" text
+     | None -> ());
+    (match parse_perm response, find_int "circuit_size" response with
+     | Some perm, Some size -> CompileOk (perm, size)
+     | _ -> CompileError "Failed to parse response")
+  | Some false ->
+    (match find_string "error" response with
+     | Some err ->
+       Printf.printf "Compile error: %s\n" err;
+       CompileError err
+     | None ->
+       Printf.printf "Unknown error\n";
+       CompileError "Unknown error")
+  | None ->
+    Printf.printf "Invalid response\n";
     CompileError ("Invalid response: " ^ String.sub response 0 (min 300 (String.length response)))
 
 (** Check if a term compiles to an involutive permutation *)

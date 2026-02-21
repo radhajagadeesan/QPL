@@ -21,3 +21,7 @@
 (test
  (name test_newtests)
  (libraries qpl_surface))
+
+(test
+ (name test_combinators)
+ (libraries qpl_surface))

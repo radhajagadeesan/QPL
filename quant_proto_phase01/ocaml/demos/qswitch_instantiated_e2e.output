@@ -1,0 +1,228 @@
+
+==========================================================================
+  INSTANTIATED QSWITCH E2E DEMO (Linear DSL)
+==========================================================================
+
+Demonstrating compositional use of abstract QSwitch
+
+All QSwitch instances use proper Linear DSL:
+  dist_l ; omap0 left_branch right_branch ; undist_l
+
+
+==========================================================================
+  PART 1: Basic QSwitch Instantiations
+==========================================================================
+
+QSwitch[H, S]:
+  ctrl=0 → H(S(x)) = S ; H
+  ctrl=1 → S(H(x)) = H ; S
+
+QSwitch[H, S]:
+2 qubits, 6 gates
+  X q[0]
+  CS q[0, 1]
+  CH q[0, 1]
+  X q[0]
+  CH q[0, 1]
+  CS q[0, 1]
+  perm: [0, 1]
+
+QSwitch[X, Z] (Pauli gates):
+  ctrl=0 → X(Z(x)) = Z ; X
+  ctrl=1 → Z(X(x)) = X ; Z
+
+QSwitch[X, Z]:
+2 qubits, 6 gates
+  X q[0]
+  CZ q[0, 1]
+  CX q[0, 1]
+  X q[0]
+  CX q[0, 1]
+  CZ q[0, 1]
+  perm: [0, 1]
+
+QSwitch[H, Y]:
+  ctrl=0 → H(Y(x)) = Y ; H
+  ctrl=1 → Y(H(x)) = H ; Y
+
+QSwitch[H, Y]:
+2 qubits, 6 gates
+  X q[0]
+  CY q[0, 1]
+  CH q[0, 1]
+  X q[0]
+  CH q[0, 1]
+  CY q[0, 1]
+  perm: [0, 1]
+
+==========================================================================
+  PART 2: Composed QSwitch Applications
+==========================================================================
+
+Composing multiple QSwitch applications demonstrates:
+  - The same control qubit sequences multiple operations
+  - Each QSwitch contributes gates coherently
+  - Types ensure composition is valid
+
+QSwitch[H,S] ; QSwitch[X,Z]:
+  Type: (Bool ⊗ Q) → (Bool ⊗ Q) → (Bool ⊗ Q)
+
+Composed:
+2 qubits, 12 gates
+  X q[0]
+  CS q[0, 1]
+  CH q[0, 1]
+  X q[0]
+  CH q[0, 1]
+  CS q[0, 1]
+  X q[0]
+  CZ q[0, 1]
+  CX q[0, 1]
+  X q[0]
+  CX q[0, 1]
+  CZ q[0, 1]
+  perm: [0, 1]
+
+QSwitch[H,S] ; QSwitch[X,Z] ; QSwitch[H,Y]:
+
+Triple composed:
+2 qubits, 18 gates
+  X q[0]
+  CS q[0, 1]
+  CH q[0, 1]
+  X q[0]
+  CH q[0, 1]
+  CS q[0, 1]
+  X q[0]
+  CZ q[0, 1]
+  CX q[0, 1]
+  X q[0]
+  CX q[0, 1]
+  CZ q[0, 1]
+  X q[0]
+  CY q[0, 1]
+  CH q[0, 1]
+  X q[0]
+  CH q[0, 1]
+  CY q[0, 1]
+  perm: [0, 1]
+
+==========================================================================
+  PART 3: Self-Inverse QSwitch (f = g)
+==========================================================================
+
+When f = g, QSwitch[f, f] applies f;f in both branches:
+  - Both orderings are the same!
+  - This is a uniform operation regardless of control state
+
+For involutive f (f;f = id), this becomes identity on Q!
+
+
+QSwitch[H, H]:
+2 qubits, 6 gates
+  X q[0]
+  CH q[0, 1]
+  CH q[0, 1]
+  X q[0]
+  CH q[0, 1]
+  CH q[0, 1]
+  perm: [0, 1]
+
+QSwitch[S, S]:
+2 qubits, 6 gates
+  X q[0]
+  CS q[0, 1]
+  CS q[0, 1]
+  X q[0]
+  CS q[0, 1]
+  CS q[0, 1]
+  perm: [0, 1]
+
+QSwitch[X, X]:
+2 qubits, 6 gates
+  X q[0]
+  CX q[0, 1]
+  CX q[0, 1]
+  X q[0]
+  CX q[0, 1]
+  CX q[0, 1]
+  perm: [0, 1]
+
+==========================================================================
+  PART 4: QSwitch with Parameterized Rotations
+==========================================================================
+
+QSwitch can be parameterized with any Q → Q morphism.
+Using Rz rotations:
+
+
+QSwitch[Rz(π/4), Rz(π/8)]:
+2 qubits, 6 gates
+  X q[0]
+  CRz q[0, 1]
+  CRz q[0, 1]
+  X q[0]
+  CRz q[0, 1]
+  CRz q[0, 1]
+  perm: [0, 1]
+
+QSwitch[Rz(π/4), Rz(-π/4)]:
+2 qubits, 6 gates
+  X q[0]
+  CRz q[0, 1]
+  CRz q[0, 1]
+  X q[0]
+  CRz q[0, 1]
+  CRz q[0, 1]
+  perm: [0, 1]
+
+==========================================================================
+  PART 5: Verify Structural Isomorphisms
+==========================================================================
+
+Verifying that dist_l and undist_l are proper inverses:
+
+dist_l one one q:
+  {"node": "DistL", "a": {"node": "Unit"}, "b": {"node": "Unit"}, "c": {"node": "Q"}}
+
+undist_l one one q:
+  {"node": "UndistL", "a": {"node": "Unit"}, "b": {"node": "Unit"}, "c": {"node": "Q"}}
+
+dist_l ; undist_l (should be identity):
+
+Roundtrip:
+2 qubits, 0 gates
+  perm: [0, 1]
+
+==========================================================================
+  SUMMARY
+==========================================================================
+
+Demonstrated compositional use of abstract QSwitch:
+
+1. BASIC INSTANTIATION
+   qswitch gate_h gate_s - creates QSwitch for any gate pair
+
+2. SEQUENTIAL COMPOSITION
+   seq0 qswitch1 qswitch2 - chains multiple QSwitch ops
+   Types ensure composition is valid
+
+3. PARAMETERIZED CONSTRUCTION
+   qswitch (gate_rz theta) (gate_rz phi) - factory function
+
+4. SELF-INVERSE CASE
+   qswitch gate_h gate_h - when both gates are the same
+
+5. STRUCTURAL ISOMORPHISMS
+   dist_l ; undist_l = id  (verified by compilation)
+
+Key insight: QSwitch is a FIRST-CLASS COMBINATOR in the Linear DSL
+  - Defined using proper structural isomorphisms
+  - GADT-enforced linearity
+  - Composes naturally with type safety
+  - No Bridge term hacking!
+
+
+==========================================================================
+  DEMO COMPLETE
+==========================================================================

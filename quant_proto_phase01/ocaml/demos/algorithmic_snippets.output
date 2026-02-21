@@ -1,0 +1,50 @@
+=== Algorithmic Snippets (Linear GADT) ===
+
+All examples verified by OCaml's type system (linearity)
+and compiled E2E via Bridge -> Python -> pytket.
+
+
+Bell state: (H || id) ; CX:
+2 qubits, 2 gates
+  H q[0]
+  CX q[0, 1]
+  perm: [0, 1]
+
+GHZ state (3 qubits):
+3 qubits, 3 gates
+  H q[0]
+  CX q[0, 1]
+  CX q[0, 2]
+  perm: [0, 1, 2]
+
+DJ constant (oracle = id):
+2 qubits, 2 gates
+  H q[0]
+  H q[0]
+  perm: [0, 1]
+
+DJ balanced (oracle = CX):
+2 qubits, 3 gates
+  H q[0]
+  CX q[0, 1]
+  H q[0]
+  perm: [0, 1]
+
+HSP (G=Q, X=Q) = DJ:
+2 qubits, 2 gates
+  CX q[0, 1]
+  H q[0]
+  perm: [0, 1]
+
+Simon (Z=Q, Y=Q):
+2 qubits, 2 gates
+  CX q[0, 1]
+  H q[0]
+  perm: [0, 1]
+
+Swap Bool (twist_plus):
+1 qubits, 1 gates
+  X q[0]
+  perm: [0]
+
+=== End of Snippets ===

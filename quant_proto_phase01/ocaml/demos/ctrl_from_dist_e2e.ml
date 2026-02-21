@@ -78,10 +78,8 @@ type row = {
 }
 
 let compile_term term =
-  match Bridge.compile term with
-  | Bridge.CompileOk (perm, size) ->
-      Printf.printf "  ✓ %d gates   perm=[%s]\n" size
-        (String.concat ", " (List.map string_of_int perm.new_to_old));
+  match Bridge.compile_show term with
+  | Bridge.CompileOk (_, size) ->
       Some size
   | Bridge.CompileError err ->
       Printf.printf "  ✗ FAILED: %s\n" err;
@@ -198,6 +196,16 @@ let () =
   let ctrl_x = ctrl q gate_x in
   let opt2 = compile_term (emit (ctrl bq ctrl_x)) in
 
+  (* Verify: ctrl²(X) = CCX *)
+  print_endline "\n  Verification: ctrl²(X) = CCX ?";
+  let ccx_ref = Bridge.TCCX (0, 1, 2) in
+  (match Bridge.eq_circ (emit (ctrl bq ctrl_x)) ccx_ref with
+   | Bridge.EqCircOk (equal, fidelity) ->
+       Printf.printf "    eq_circ: %s (fidelity=%.6f)\n"
+         (if equal then "EQUAL" else "NOT EQUAL") fidelity
+   | Bridge.EqCircError err ->
+       Printf.printf "    eq_circ ERROR: %s\n" err);
+
   rows := { name = "ctrl²(X)"; qubits = 3;
             abstract = "dist ; (id ⊕ (id⊗ctrl(X))) ; undist";
             naive = naive2; optimised = opt2 } :: !rows;
@@ -222,6 +230,16 @@ let () =
   let ctrl2_x = ctrl bq ctrl_x in
   let opt3 = compile_term (emit (ctrl bbq ctrl2_x)) in
 
+  (* Verify: ctrl³(X) = CCCX *)
+  print_endline "\n  Verification: ctrl³(X) = CCCX ?";
+  let cccx_ref = Bridge.TGate ("X", [3], [0; 1; 2]) in
+  (match Bridge.eq_circ (emit (ctrl bbq ctrl2_x)) cccx_ref with
+   | Bridge.EqCircOk (equal, fidelity) ->
+       Printf.printf "    eq_circ: %s (fidelity=%.6f)\n"
+         (if equal then "EQUAL" else "NOT EQUAL") fidelity
+   | Bridge.EqCircError err ->
+       Printf.printf "    eq_circ ERROR: %s\n" err);
+
   rows := { name = "ctrl³(X)"; qubits = 4;
             abstract = "dist ; (id ⊕ (id⊗ctrl²(X))) ; undist";
             naive = naive3; optimised = opt3 } :: !rows;
@@ -245,6 +263,16 @@ let () =
   print_endline "  Optimised:";
   let ctrl3_x = ctrl bbq ctrl2_x in
   let opt4 = compile_term (emit (ctrl bbbq ctrl3_x)) in
+
+  (* Verify: ctrl⁴(X) = CCCCX *)
+  print_endline "\n  Verification: ctrl⁴(X) = CCCCX ?";
+  let ccccx_ref = Bridge.TGate ("X", [4], [0; 1; 2; 3]) in
+  (match Bridge.eq_circ (emit (ctrl bbbq ctrl3_x)) ccccx_ref with
+   | Bridge.EqCircOk (equal, fidelity) ->
+       Printf.printf "    eq_circ: %s (fidelity=%.6f)\n"
+         (if equal then "EQUAL" else "NOT EQUAL") fidelity
+   | Bridge.EqCircError err ->
+       Printf.printf "    eq_circ ERROR: %s\n" err);
 
   rows := { name = "ctrl⁴(X)"; qubits = 5;
             abstract = "dist ; (id ⊕ (id⊗ctrl³(X))) ; undist";
@@ -274,7 +302,9 @@ let () =
   print_endline "  Opt:   compiler elides anti-control when branch body has 0 gates,";
   print_endline "         leaving only the controlled right-branch gate (CnX).\n";
 
-  print_endline "  Verification: ctrl(X) = CX  (eq_circ, fidelity 1.0)";
+  print_endline "  Verification (eq_circ against reference CnX, all fidelity 1.0):";
+  print_endline "    ctrl(X)  = CX     ctrl²(X) = CCX";
+  print_endline "    ctrl³(X) = CCCX   ctrl⁴(X) = CCCCX";
   print_endline "";
 
   banner "DEMO COMPLETE"

@@ -109,13 +109,10 @@ QSwitch[H, S] semantics:
   let bridge_term = emit qswitch_hs in
   Printf.printf "\nBridge JSON:\n%s\n\n" (Bridge.term_to_json bridge_term);
 
-  Printf.printf "Compiling via Python backend...\n";
-  (match Bridge.compile bridge_term with
-   | Bridge.CompileOk (perm, size) ->
-       Printf.printf "\n✓ Compilation SUCCESS!\n";
-       Printf.printf "  Circuit size: %d gates\n" size;
-       Printf.printf "  Wire permutation: [%s]\n"
-         (String.concat ", " (List.map string_of_int perm.new_to_old))
+  Printf.printf "Compiling via Python backend...\n\n";
+  (match Bridge.compile_show bridge_term with
+   | Bridge.CompileOk _ ->
+       Printf.printf "\n✓ Compilation SUCCESS!\n"
    | Bridge.CompileError err ->
        Printf.printf "\n✗ Compilation FAILED: %s\n" err);
 
@@ -128,11 +125,8 @@ QSwitch[H, S] semantics:
     let qs = qswitch f g in
     let term = emit qs in
     Printf.printf "\n%s:\n" name;
-    match Bridge.compile term with
-    | Bridge.CompileOk (perm, size) ->
-        Printf.printf "  ✓ Circuit size: %d gates\n" size;
-        Printf.printf "    Permutation: [%s]\n"
-          (String.concat ", " (List.map string_of_int perm.new_to_old))
+    match Bridge.compile_show term with
+    | Bridge.CompileOk _ -> ()
     | Bridge.CompileError err ->
         Printf.printf "  ✗ FAILED: %s\n" err
   in
@@ -175,9 +169,8 @@ QSwitch[H, S] semantics:
   let composed = seq0 qs1 qs2 in
 
   Printf.printf "QSwitch[H,S] ; QSwitch[X,Z]:\n";
-  (match Bridge.compile (emit composed) with
-   | Bridge.CompileOk (_, size) ->
-       Printf.printf "  ✓ Circuit size: %d gates\n" size
+  (match Bridge.compile_show (emit composed) with
+   | Bridge.CompileOk _ -> ()
    | Bridge.CompileError err ->
        Printf.printf "  ✗ FAILED: %s\n" err);
 

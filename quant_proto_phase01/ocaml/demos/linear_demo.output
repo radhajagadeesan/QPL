@@ -1,0 +1,73 @@
+=== Linear DSL Demo ===
+
+--- Emission to Bridge JSON ---
+
+Closed H gate:
+  {"node": "H", "i": 0}
+H ; H composition:
+  {"node": "Seq", "f": {"node": "H", "i": 0}, "g": {"node": "H", "i": 0}}
+Twist(Q,Q):
+  {"node": "TwistTen", "a": {"node": "Q"}, "b": {"node": "Q"}}
+Lambda (identity):
+  {"node": "Lam", "name": "x", "dom": {"node": "Q"}, "cod": {"node": "Q"}, "body": {"node": "Id", "ty": {"node": "Q"}}}
+H || S (parallel composition):
+  {"node": "TenTerm", "f": {"node": "H", "i": 0}, "g": {"node": "S", "i": 0}}
+iterate 3 q H (= H ; H ; H):
+  {"node": "Seq", "f": {"node": "H", "i": 0}, "g": {"node": "Seq", "f": {"node": "H", "i": 0}, "g": {"node": "H", "i": 0}}}
+iterate 0 q H (= id):
+  {"node": "Id", "ty": {"node": "Q"}}
+fold q [H; S; H]:
+  {"node": "Seq", "f": {"node": "Seq", "f": {"node": "H", "i": 0}, "g": {"node": "S", "i": 0}}, "g": {"node": "H", "i": 0}}
+pow2 3 q H (= H^8):
+  {"node": "Seq", "f": {"node": "Seq", "f": {"node": "Seq", "f": {"node": "H", "i": 0}, "g": {"node": "H", "i": 0}}, "g": {"node": "Seq", "f": {"node": "H", "i": 0}, "g": {"node": "H", "i": 0}}}, "g": {"node": "Seq", "f": {"node": "Seq", "f": {"node": "H", "i": 0}, "g": {"node": "H", "i": 0}}, "g": {"node": "Seq", "f": {"node": "H", "i": 0}, "g": {"node": "H", "i": 0}}}}
+
+--- E2E Compilation via Bridge ---
+
+H gate:
+1 qubits, 1 gates
+  H q[0]
+  perm: [0]
+
+H ; H:
+1 qubits, 2 gates
+  H q[0]
+  H q[0]
+  perm: [0]
+
+Twist(Q,Q):
+2 qubits, 0 gates
+  perm: [1, 0]
+
+H || S:
+2 qubits, 2 gates
+  H q[0]
+  S q[1]
+  perm: [0, 1]
+
+iterate 3 q H:
+1 qubits, 3 gates
+  H q[0]
+  H q[0]
+  H q[0]
+  perm: [0]
+
+fold q [H; S; H]:
+1 qubits, 3 gates
+  H q[0]
+  S q[0]
+  H q[0]
+  perm: [0]
+
+pow2 3 q H (= H^8):
+1 qubits, 8 gates
+  H q[0]
+  H q[0]
+  H q[0]
+  H q[0]
+  H q[0]
+  H q[0]
+  H q[0]
+  H q[0]
+  perm: [0]
+
+=== End Demo ===

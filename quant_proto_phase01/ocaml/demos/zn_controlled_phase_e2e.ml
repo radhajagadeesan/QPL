@@ -119,9 +119,8 @@ PHASE SELECTOR
   Printf.printf "  Term: CZ(tag, q0)\n";
   Printf.printf "  Bridge: %s\n" (Bridge.term_to_json z2_phase);
 
-  (match Bridge.compile z2_phase with
-   | Bridge.CompileOk (_, size) ->
-       Printf.printf "  Gates: %d\n" size
+  (match Bridge.compile_show z2_phase with
+   | Bridge.CompileOk _ -> ()
    | Bridge.CompileError err ->
        Printf.printf "  FAILED: %s\n" err);
 
@@ -169,9 +168,8 @@ CLEVER DECOMPOSITION
   Printf.printf "  Term: CS(t0, q0) ; CZ(t1, q0)\n";
   Printf.printf "  Bridge: %s\n" (Bridge.term_to_json z4_phase);
 
-  (match Bridge.compile z4_phase with
-   | Bridge.CompileOk (_, size) ->
-       Printf.printf "  Gates: %d\n" size
+  (match Bridge.compile_show z4_phase with
+   | Bridge.CompileOk _ -> ()
    | Bridge.CompileError err ->
        Printf.printf "  FAILED: %s\n" err);
 
@@ -232,9 +230,8 @@ BINARY DECOMPOSITION
   Printf.printf "  Angles: theta1=%.4f, theta2=%.4f, theta4=%.4f\n" theta1 theta2 theta4;
   Printf.printf "  Bridge: %s\n" (Bridge.term_to_json z5_phase);
 
-  (match Bridge.compile z5_phase with
-   | Bridge.CompileOk (_, size) ->
-       Printf.printf "  Gates: %d\n" size
+  (match Bridge.compile_show z5_phase with
+   | Bridge.CompileOk _ -> ()
    | Bridge.CompileError err ->
        Printf.printf "  FAILED: %s\n" err);
 
@@ -344,9 +341,8 @@ NPlusMap APPROACH
   Printf.printf "  Z8 NPlusMap term emitted\n";
   Printf.printf "  Bridge JSON: %s\n" (Bridge.term_to_json z8_term);
 
-  (match Bridge.compile z8_term with
-   | Bridge.CompileOk (perm, size) ->
-       Printf.printf "  Compiled: %d gates, perm.n=%d\n" size perm.n
+  (match Bridge.compile_show z8_term with
+   | Bridge.CompileOk _ -> ()
    | Bridge.CompileError err ->
        Printf.printf "  FAILED: %s\n" err;
        exit 1);

@@ -1,0 +1,86 @@
+=== Datatype Declaration Demo ===
+
+--- Bool datatype ---
+  Name: Bool
+  Arity: 2
+  Labels: [false; true]
+  Rep (I^{⊕2}): (I + I)
+
+--- G[8] datatype ---
+  Name: G
+  Arity: 8
+  Labels: [e; g1; g2; g3; g4; g5; g6; g7]
+  Rep (I^{⊕8}): (I + (I + (I + (I + (I + (I + (I + I)))))))
+
+--- Operations ---
+Bool.H:
+  {"node": "Gate", "name": "H", "targets": [0], "controls": []}
+Bool.X:
+  {"node": "Gate", "name": "X", "targets": [0], "controls": []}
+Bool.H ; Bool.X:
+  {"node": "Seq", "f": {"node": "Gate", "name": "H", "targets": [0], "controls": []}, "g": {"node": "Gate", "name": "X", "targets": [0], "controls": []}}
+
+G.mul:
+  {"node": "Gate", "name": "mul", "targets": [0], "controls": []}
+G.inv:
+  {"node": "Gate", "name": "inv", "targets": [0], "controls": []}
+
+--- Control combinator ---
+control Bool Q [H; X]:
+  {"node": "Gate", "name": "control_Bool_2", "targets": [0], "controls": []}
+
+--- I^{⊕k} generation ---
+  i_sum 1 = I
+  i_sum 2 = (I + I)
+  i_sum 3 = (I + (I + I))
+  i_sum 4 = (I + (I + (I + I)))
+
+--- Cyclic group Z_n example ---
+
+Z_4 datatype:
+  Name: Z4
+  Arity: 4
+  Labels: [0; 1; 2; 3]
+  Rep (I^{⊕4}): (I + (I + (I + I)))
+
+Phase rotations P_g = Rz(2πg/4):
+  P_0 = Rz(0.0000) = Rz(0π/2)
+  P_1 = Rz(1.5708) = Rz(1π/2)
+  P_2 = Rz(3.1416) = Rz(2π/2)
+  P_3 = Rz(4.7124) = Rz(3π/2)
+
+Coherent selector (NOT observational case):
+  λg. case g of 0 => P_0 | 1 => P_1 | 2 => P_2 | 3 => P_3
+
+Control combinator (A ⊗ Z_4 ⊸ A ⊗ Z_4):
+  {"node": "Gate", "name": "control_Z4_4", "targets": [0], "controls": []}
+
+Z_8 datatype:
+  Name: Z8
+  Arity: 8
+  Rep (I^{⊕8}): (I + (I + (I + (I + (I + (I + (I + I)))))))
+
+Phase rotations P_g = Rz(2πg/8):
+  P_0 = Rz(0.0000) = Rz(0π/4)
+  P_1 = Rz(0.7854) = Rz(1π/4)
+  P_2 = Rz(1.5708) = Rz(2π/4)
+  P_3 = Rz(2.3562) = Rz(3π/4)
+  P_4 = Rz(3.1416) = Rz(4π/4)
+  P_5 = Rz(3.9270) = Rz(5π/4)
+  P_6 = Rz(4.7124) = Rz(6π/4)
+  P_7 = Rz(5.4978) = Rz(7π/4)
+
+Control combinator (A ⊗ Z_8 ⊸ A ⊗ Z_8):
+  {"node": "Gate", "name": "control_Z8_8", "targets": [0], "controls": []}
+
+--- E2E Compilation via Bridge ---
+(Note: control combinator emits opaque Gate terms that require
+ datatype-aware compilation. Only primitive ops compile E2E.)
+
+Bool.H ; Bool.X:
+1 qubits, 2 gates
+  H q[0]
+  X q[0]
+  perm: [0]
+
+=== End Demo ===
