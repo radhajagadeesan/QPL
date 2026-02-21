@@ -62,6 +62,5 @@ jobs:
           opam exec -- dune exec demos/short_circuit_e2e.exe
           opam exec -- dune exec demos/zn_controlled_phase_e2e.exe
           opam exec -- dune exec demos/exp_twist_e2e.exe
-          opam exec -- dune exec demos/ctrl_from_dist_e2e.exe
           opam exec -- dune exec demos/abstract_qswitch_oterm_e2e.exe
           opam exec -- dune exec demos/ctrl_lambda_e2e.exe

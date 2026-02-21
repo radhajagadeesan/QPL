@@ -16,20 +16,20 @@ dune build demos/
 
 # Run individual demos
 dune exec demos/algorithms_e2e.exe
-dune exec demos/algorithmic_snippets.exe
 dune exec demos/abstract_qswitch_e2e.exe
+dune exec demos/abstract_qswitch_oterm_e2e.exe
 dune exec demos/qswitch_instantiated_e2e.exe
 dune exec demos/zn_controlled_phase_e2e.exe
 dune exec demos/short_circuit_e2e.exe
 dune exec demos/exp_twist_e2e.exe
-dune exec demos/ctrl_from_dist_e2e.exe
+dune exec demos/ctrl_lambda_e2e.exe
 dune exec demos/linear_demo.exe
 dune exec demos/datatype_demo.exe
 ```
 
 ## Demos
 
-### algorithms_e2e.ml (NEW)
+### algorithms_e2e.ml
 
 Parameterized quantum algorithms using OCaml functors:
 - **Deutsch-Jozsa**: Oracle as plain function parameter
@@ -38,12 +38,6 @@ Parameterized quantum algorithms using OCaml functors:
 - **Bell and GHZ states**: Structural composition patterns
 
 Key pattern: `oracle ; (fourier_transform tensor id)`
-
-### algorithmic_snippets.ml
-
-Concise algorithmic examples in Linear GADT (replaces Ast-based version):
-- Bell state, GHZ state, Deutsch-Jozsa, HSP, Simon, Bool swap
-- All verified at compile time and compiled E2E
 
 ### abstract_qswitch_e2e.ml
 
@@ -87,15 +81,21 @@ Exponential of involution (`exp_i`) E2E verification:
 
 Uses the `exp_i` Linear DSL combinator (wraps `ExpInvolution`).
 
-### ctrl_from_dist_e2e.ml
+### ctrl_lambda_e2e.ml
 
-Control from distributivity — the categorical construction:
-- `ctrl(f) = undist ∘ (id ⊕ (id_I ⊗ f)) ∘ dist`
+Higher-order ctrl combinator as a curried lambda term:
+- `ctrl := λf. undist ∘ (id ⊕ (id_I ⊗ f)) ∘ dist`
+- Abstract lambda compilation (f as wire bundle)
 - Iterated: `ctrl(X)` = CX, `ctrl²(X)` = CCX, `ctrl³(X)` = CCCX, `ctrl⁴(X)` = CCCCX
-- Each level compiles to exactly 1 gate (CnX)
-- Unitary verification: `ctrl(X) = CX` via `eq_circ`
+- Each level compiles to exactly 1 gate (no exponential blowup)
+- Unitary verification via `eq_circ`
 
-Demonstrates that coherent control emerges from structural isomorphisms alone.
+### abstract_qswitch_oterm_e2e.ml
+
+Abstract QSwitch as an open term (full source language):
+- Builds QSwitch using `Lam`, `LetPair`, `Var`, `App`, `PlusMap`
+- Follows `full_source_language_compilation_spec.md` section 5
+- Instantiation with concrete gate pairs and unitary verification
 
 ### linear_demo.ml
 

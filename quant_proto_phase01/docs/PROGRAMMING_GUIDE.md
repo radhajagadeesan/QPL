@@ -530,12 +530,13 @@ See `python/demos/README.md` and `ocaml/demos/README.md` for full details.
 | Demo | File | What it Shows |
 |------|------|---------------|
 | **Parameterized Algorithms** | `algorithms_e2e.ml` | Deutsch-Jozsa, HSP functor, Simon functor, Bell, GHZ |
-| Algorithmic Snippets | `algorithmic_snippets.ml` | Bell, GHZ, DJ, HSP, Simon in Linear GADT |
-| Abstract QSwitch | `abstract_qswitch_e2e.ml` | QSwitch pattern with anti-control compilation |
+| Abstract QSwitch (DSL) | `abstract_qswitch_e2e.ml` | QSwitch pattern with anti-control compilation |
+| Abstract QSwitch (oterm) | `abstract_qswitch_oterm_e2e.ml` | QSwitch as lambda term (full source language) |
 | Instantiated QSwitch | `qswitch_instantiated_e2e.ml` | Compositional use of QSwitch combinator |
 | Zn Controlled Phase | `zn_controlled_phase_e2e.ml` | Z2, Z4, Z5 with binary decomposition |
 | **Short-Circuit Conjunction** | `short_circuit_e2e.ml` | Witness routing, phased_omap0, phased_control |
 | **ExpInvolution** | `exp_twist_e2e.ml` | exp_i combinator, composition law, eq_circ verification |
+| **Higher-order ctrl** | `ctrl_lambda_e2e.ml` | ctrl as lambda, iterated ctrl^k(X) = 1 gate |
 | Linear DSL Demo | `linear_demo.ml` | Core DSL features + E2E compilation |
 | Datatype Demo | `datatype_demo.ml` | Datatypes, control, phase rotations + E2E |
 

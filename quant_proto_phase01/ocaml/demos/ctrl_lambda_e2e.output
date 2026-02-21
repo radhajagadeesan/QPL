@@ -66,7 +66,7 @@ ctrl^2(X):
 
 ctrl^3(X):
 4 qubits, 1 gates
-  QControlBox q[0, 1, 2, 3]
+  CnX q[0, 1, 2, 3]
   perm: [0, 1, 2, 3]
   Verify ctrl^3(X) = CCCX: EQUAL (fidelity=1.000000)
 

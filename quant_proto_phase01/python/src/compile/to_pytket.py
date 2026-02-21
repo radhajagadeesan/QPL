@@ -439,16 +439,13 @@ def _emit_tag_perm_unitary(circ, p, tag_perm, k, offset, explain, log):
         log.append(f"TagPerm {tag_perm} on {k} qubits, phys={tag_phys}")
 
 
-def _decompose_and_get_cmds(circuit):
-    """Decompose box types (Unitary2qBox etc.) to primitives, return commands.
+def _get_sub_cmds(circuit):
+    """Get commands from a materialized sub-circuit for controlled emission.
 
-    Inner PlusMap compilations with Strategy A emit Unitary2qBox for tag
-    permutations. When these sub-circuits are used as branches of an outer
-    Case/PlusMap, the outer needs to control each gate. Op.create() fails
-    on box types, so we decompose first.
+    QControlBox(op, n) wraps ANY op — including other QControlBoxes and
+    UnitaryNqBoxes — so no decomposition is needed. This avoids the
+    exponential gate blowup that DecomposeBoxes caused on iterated Ctrl.
     """
-    from pytket.passes import DecomposeBoxes
-    DecomposeBoxes().apply(circuit)
     return list(circuit.get_commands())
 
 
@@ -460,7 +457,7 @@ def _emit_nway_controlled(circ, tag_qubits, branch_idx, sub_cmds, wire_map_fn):
     2. Multi-controlled gates: All k tag qubits are now 1 for branch i
     3. X-unflip: Undo the X gates from step 1
     """
-    from pytket.circuit import QControlBox, Op
+    from pytket.circuit import QControlBox
     k = len(tag_qubits)
 
     # X-flip: make all tag bits 1 for this branch
@@ -474,12 +471,11 @@ def _emit_nway_controlled(circ, tag_qubits, branch_idx, sub_cmds, wire_map_fn):
         ctrl_op = _CTRL_GATE_MAP.get(cmd.op.type)
         if ctrl_op is not None and k == 1:
             circ.add_gate(ctrl_op, cmd.op.params, [tag_qubits[0]] + phys_qubits)
-        elif cmd.op.type == OpType.CnX:
-            # CnX is n-ary controlled X; prepend k more controls
+        elif cmd.op.type in (OpType.CnX, OpType.CCX):
+            # CnX/CCX: n-ary controlled X; prepend k more controls
             circ.add_gate(OpType.CnX, [], tag_qubits + phys_qubits)
         else:
-            base_op = Op.create(cmd.op.type, cmd.op.params)
-            qcb = QControlBox(base_op, k)
+            qcb = QControlBox(cmd.op, k)
             circ.add_qcontrolbox(qcb, tag_qubits + phys_qubits)
 
     # X-unflip
@@ -815,7 +811,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             wire_map_fn: Function mapping sub-circuit wire index to physical qubit
             anti: If True, wrap with X gates for anti-control
         """
-        from pytket.circuit import QControlBox, Op
+        from pytket.circuit import QControlBox
         if anti:
             circ.X(ctrl_q)
         for cmd in sub_cmds:
@@ -823,12 +819,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             ctrl_op = _CTRL_GATE_MAP.get(cmd.op.type)
             if ctrl_op is not None:
                 circ.add_gate(ctrl_op, cmd.op.params, [ctrl_q] + phys_qubits)
-            elif cmd.op.type == OpType.CnX:
-                # CnX is n-ary controlled X; just prepend one more control
+            elif cmd.op.type in (OpType.CnX, OpType.CCX):
+                # CnX/CCX: n-ary controlled X; just prepend one more control
                 circ.add_gate(OpType.CnX, [], [ctrl_q] + phys_qubits)
             else:
-                base_op = Op.create(cmd.op.type, cmd.op.params)
-                qcb = QControlBox(base_op, 1)
+                qcb = QControlBox(cmd.op, 1)
                 circ.add_qcontrolbox(qcb, [ctrl_q] + phys_qubits)
         if anti:
             circ.X(ctrl_q)
@@ -1106,11 +1101,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 if _prim_to_qcontrolbox(body, n_ctrls, ctrls, pay_off):
                     return
 
-                # General fallback: compile any body to a sub-circuit,
-                # decompose to primitives, and control each gate.
-                from pytket.circuit import QControlBox, Op
+                # General fallback: compile any body to a sub-circuit
+                # and control each gate (no decomposition needed).
+                from pytket.circuit import QControlBox
                 sub = compile(body, materialize=True)
-                sub_cmds = _decompose_and_get_cmds(sub.circuit)
+                sub_cmds = _get_sub_cmds(sub.circuit)
                 for cmd in sub_cmds:
                     phys_qubits = [p.apply_new_to_old(q.index[0] + pay_off)
                                    for q in cmd.qubits]
@@ -1119,13 +1114,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     if ctrl_op is not None:
                         circ.add_gate(ctrl_op, cmd.op.params,
                                       ctrl_phys + phys_qubits)
-                    elif cmd.op.type == OpType.CnX:
-                        # CnX is n-ary controlled X; prepend more controls
+                    elif cmd.op.type in (OpType.CnX, OpType.CCX):
+                        # CnX/CCX: n-ary controlled X; prepend more controls
                         circ.add_gate(OpType.CnX, [],
                                       ctrl_phys + phys_qubits)
                     else:
-                        base_op = Op.create(cmd.op.type, cmd.op.params)
-                        qcb = QControlBox(base_op, n_ctrls)
+                        qcb = QControlBox(cmd.op, n_ctrls)
                         circ.add_qcontrolbox(qcb, ctrl_phys + phys_qubits)
                 return
 
@@ -1301,7 +1295,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                             ctx_pos += w_fv
 
                         branch_result = compile(branch, materialize=True, env=sub_env)
-                        cmds = _decompose_and_get_cmds(branch_result.circuit)
+                        cmds = _get_sub_cmds(branch_result.circuit)
 
                         if not cmds:
                             continue
@@ -1325,7 +1319,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                                                 make_open_wire_map(), anti=anti)
                     else:
                         # Closed branch: compile without env
-                        cmds = (_decompose_and_get_cmds(
+                        cmds = (_get_sub_cmds(
                             compile(branch, materialize=True).circuit)
                             if pw > 0 else [])
                         if not cmds:
@@ -1344,8 +1338,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 return
 
             # Closed branches: compile as standalone sub-circuits
-            left_cmds = _decompose_and_get_cmds(compile(t.left, materialize=True).circuit) if left_w > 0 else []
-            right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
+            left_cmds = _get_sub_cmds(compile(t.left, materialize=True).circuit) if left_w > 0 else []
+            right_cmds = _get_sub_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
 
             if k <= 1:
                 # Simple binary case: 1 outer tag bit
@@ -1492,7 +1486,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
             for i, (st, br) in enumerate(zip(t.summand_types, t.branches)):
                 sub = compile(br, materialize=True)
-                sub_cmds = _decompose_and_get_cmds(sub.circuit)
+                sub_cmds = _get_sub_cmds(sub.circuit)
 
                 if not sub_cmds:
                     continue  # Id branch, nothing to emit
@@ -1524,11 +1518,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             # Compile branches to sub-circuits
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
-            left_cmds = _decompose_and_get_cmds(compile(t.left, materialize=True).circuit) if left_w > 0 else []
+            left_cmds = _get_sub_cmds(compile(t.left, materialize=True).circuit) if left_w > 0 else []
 
             right_dom, _ = type_of(t.right)
             right_w = width(right_dom)
-            right_cmds = _decompose_and_get_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
+            right_cmds = _get_sub_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
 
             if k <= 1:
                 tag_phys = p.apply_new_to_old(offset)

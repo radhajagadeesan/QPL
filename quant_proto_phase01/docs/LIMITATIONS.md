@@ -66,32 +66,22 @@ Not a pytket limitation.
 
 ---
 
-## 5. Iterated ctrl: Exponential Gate Blowup — compilation strategy
+## 5. ~~Iterated ctrl: Exponential Gate Blowup~~ — FIXED
 
-The `ctrl` combinator (and any iterated controlled construction) compiles by **materializing the sub-circuit at each level** and then wrapping every gate with one additional control qubit. This produces exponential gate growth:
+**Status: FIXED.** The exponential gate blowup from iterated `ctrl` has been eliminated.
 
-| k | ctrl^k(X) | ctrl^k(H) | ctrl^k(S) |
-|:---:|---:|---:|---:|
-| 1 | 1 | 9 | 5 |
-| 2 | 15 | 25 | 22 |
-| 3 | 31 | 133 | 106 |
-| 4 | 105 | 627 | 480 |
-| 5 | 298 | — | — |
+The compiler previously used `DecomposeBoxes()` to blow up compound gates (QControlBox, UnitaryNqBox) into primitives before re-controlling each one. This caused exponential growth: at level k, the compound gate from level k-1 was decomposed into many primitives, each wrapped with a new control.
 
-(Gate counts after `DecomposeBoxes` + `RebaseTket` to CX + single-qubit primitives.)
+**Fix:** Removed `DecomposeBoxes`. `QControlBox(op, n)` wraps ANY op — including other QControlBoxes — so nested control is expressed directly without decomposition. The optimised circuit now produces 1 gate at every level:
 
-**Root cause:** The compilation strategy is inductive — `ctrl^k(f)` compiles `ctrl^{k-1}(f)` into N primitive gates, then individually controls each one, producing ~3–5× N gates. After k levels this gives **O(c^k)** total gates (c ≈ 3–5 depending on gate type).
+| k | ctrl^k(X) | ctrl^k(H) |
+|:---:|---:|---:|
+| 1 | 1 (CX) | 1 (CH) |
+| 2 | 1 (CCX) | 1 (QControlBox) |
+| 3 | 1 (CnX) | 1 (QControlBox) |
+| 4 | 1 (CnX) | 1 (QControlBox) |
 
-**What the math says:** In the paper's semantics, each `ctrl` adds one control qubit — it is a structural operation (wiring). `ctrl^k(X)` is semantically a single C^kX gate, which has known efficient decompositions:
-
-- **O(k²)** primitive gates without ancillae
-- **O(k)** with one dirty ancilla (Barenco et al.)
-
-**What the compiler does instead:** It treats each `ctrl` application as "control every gate in the sub-circuit", never recognizing that the iterated structure is a single multi-controlled gate.
-
-**Possible fix:** Pattern-match on iterated `ctrl` applications (e.g., `ctrl(ctrl(...(ctrl(U))...))`) and emit a single `QControlBox` or `CnX` with the correct number of controls, then let pytket decompose optimally. This would reduce the growth from O(c^k) to O(k²) or O(k).
-
-Not a pytket limitation — this is a compiler optimization opportunity.
+pytket handles nested QControlBoxes correctly when computing unitaries.
 
 ---
 
@@ -104,7 +94,7 @@ Not a pytket limitation — this is a compiler optimization opportunity.
 | 2. ExpInvolution ≤ 3 qubits | pytket | pytket `UnitaryNqBox` |
 | 3. Feedback not compiled | language design | Future work |
 | 4. No Python linearity checking | language design | Use OCaml pipeline |
-| 5. Iterated ctrl exponential blowup | compilation strategy | Pattern-match iterated ctrl → single C^kU |
+| ~~5. Iterated ctrl exponential blowup~~ | ~~compilation strategy~~ | **FIXED** — removed DecomposeBoxes, nested QControlBox |
 
 **What works without limitation:**
 
@@ -112,6 +102,6 @@ Not a pytket limitation — this is a compiler optimization opportunity.
 - Nested sums up to 8 summands (balanced splits): PlusMap, PhasedPlusMap, PhasedControl, structural ops
 - Tensor types: unlimited nesting depth and width
 - Higher-order terms: Lam, Apply, Cup, Cap, Var, LetPair
-- All gates with arbitrary control nesting via `QControlBox` (correct but not gate-optimal for iterated ctrl, see §5)
+- All gates with arbitrary control nesting via `QControlBox` (O(1) gates per ctrl level)
 - Multi-controlled composites: `Ctrl(PlusMap(...))`, `Ctrl(ExpInvolution(...))`, etc.
 - Full OCaml → Python → circuit pipeline
