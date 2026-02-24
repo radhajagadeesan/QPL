@@ -66,6 +66,60 @@ class Compiled:
     log: Optional[List[str]] = None
 
 
+# --- Auto-flatten helpers for nested PlusMap → NPlusMap conversion ---
+
+def _try_flatten_plusmap(t):
+    """Try to flatten a nested PlusMap into an NPlusMap.
+
+    Returns an NPlusMap if the PlusMap tree can be recursively decomposed
+    into per-leaf branches, or None if any branch is opaque.
+    """
+    from lang.types import Plus, flatten_plus
+    if not isinstance(t, PlusMap):
+        return None
+    left_leaves = flatten_plus(t.ty_left) if isinstance(t.ty_left, Plus) else [t.ty_left]
+    right_leaves = flatten_plus(t.ty_right) if isinstance(t.ty_right, Plus) else [t.ty_right]
+    # Base case: genuinely binary, no flattening needed
+    if len(left_leaves) == 1 and len(right_leaves) == 1:
+        return None
+    # Recursive case: decompose branches
+    left_branches = _extract_branches(t.left, t.ty_left)
+    right_branches = _extract_branches(t.right, t.ty_right)
+    if left_branches is None or right_branches is None:
+        return None  # Can't decompose — caller raises error
+    all_types = tuple(left_leaves + right_leaves)
+    all_branches = tuple(left_branches + right_branches)
+    return NPlusMap(all_types, all_branches)
+
+
+def _extract_branches(term, ty):
+    """Extract per-leaf branches from a term operating on a Plus type.
+
+    Returns a list of per-leaf branch terms, or None if decomposition fails.
+    """
+    from lang.types import Plus, flatten_plus
+    leaves = flatten_plus(ty) if isinstance(ty, Plus) else [ty]
+    if len(leaves) == 1:
+        return [term]  # Leaf: term is already the branch
+    if isinstance(term, (PlusMap, Case)):
+        # PlusMap and Case have identical structure: ty_left, ty_right, left, right
+        left_br = _extract_branches(term.left, term.ty_left)
+        right_br = _extract_branches(term.right, term.ty_right)
+        if left_br is not None and right_br is not None:
+            return left_br + right_br
+    if isinstance(term, Seq):
+        # Seq(Id, g) → extract from g (Id is identity, doesn't change branches)
+        if isinstance(term.f, Id):
+            return _extract_branches(term.g, ty)
+        # Seq(f, Id) → extract from f
+        if isinstance(term.g, Id):
+            return _extract_branches(term.f, ty)
+    if isinstance(term, Id):
+        # Id on a Plus type: each leaf gets Id on its own type
+        return [Id(leaf) for leaf in leaves]
+    return None  # Cannot decompose opaque branch
+
+
 # Distributivity is now supported with tagged layout model - no longer need to block it
 
 
@@ -1243,16 +1297,23 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
         # PlusMap (⊕-Map): f ⊕ g : (A + B) → (C + D)
         # Bifunctorial action on sums. Same anti-control pattern as Case.
         #
-        # For nested sums (k > 1 tag bits), uses Strategy A from COH-PLUSMAP-02:
-        # Tag permutation sandwich — synthesize permutation P mapping left-set
-        # to MSB=0 half, emit P; PlusMap_bit on MSB; P⁻¹.
+        # For nested sums, auto-flatten to NPlusMap (preferred n-ary path).
+        # Falls back to Strategy A (tag perm sandwich) for opaque branches
+        # that can't be decomposed (e.g., from the elaborate pipeline).
         #
         # Wire layout: [tag₀ | tag₁ | ... | tag_{k-1} | payload]
-        # In pytket ILO convention: tag₀ is LSB, tag_{k-1} is MSB.
-        # After P: MSB=0 → left summands, MSB=1 → right summands.
         if isinstance(t, PlusMap):
             from lang.types import Plus, flatten_plus, tag_width as tw_fn, payload_width
             import math
+
+            # Auto-flatten nested PlusMap to NPlusMap when possible
+            if isinstance(t.ty_left, Plus) or isinstance(t.ty_right, Plus):
+                flat = _try_flatten_plusmap(t)
+                if flat is not None:
+                    # Delegate to NPlusMap compilation
+                    go(flat, offset, env)
+                    return
+                # Fall through to Strategy A for opaque branches
 
             # Compute structure of the sum type
             n_left = len(flatten_plus(t.ty_left)) if isinstance(t.ty_left, Plus) else 1
@@ -1358,10 +1419,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 return
 
             # k >= 2: Strategy A — tag permutation sandwich
+            # (fallback for opaque branches that can't be auto-flattened)
             half = 2 ** (k - 1)
 
             if n_left > half or n_right > half:
-                # Strategy B: full unitary synthesis for asymmetric splits.
+                # Strategy B: full unitary synthesis for asymmetric splits
                 import numpy as np
                 pw = payload_width(Plus(t.ty_left, t.ty_right))
                 w = k + pw
@@ -1508,13 +1570,16 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             from lang.types import Plus, flatten_plus, tag_width as tw_fn, payload_width
             import math
 
+            # Reject nested Plus — OCaml phased_omap0 now validates this
+            if isinstance(t.ty_left, Plus) or isinstance(t.ty_right, Plus):
+                raise TypeError(
+                    f"PhasedPlusMap with nested Plus is not supported. "
+                    f"Use phased_control for n-ary sums. "
+                    f"ty_left={t.ty_left}, ty_right={t.ty_right}")
+
             theta = t.theta
 
-            n_left = len(flatten_plus(t.ty_left)) if isinstance(t.ty_left, Plus) else 1
-            n_right = len(flatten_plus(t.ty_right)) if isinstance(t.ty_right, Plus) else 1
-            n_sum = n_left + n_right
-            k = math.ceil(math.log2(n_sum)) if n_sum > 1 else 0
-
+            # Genuinely binary: k=1
             # Compile branches to sub-circuits
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
@@ -1524,160 +1589,24 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             right_w = width(right_dom)
             right_cmds = _get_sub_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
 
-            if k <= 1:
-                tag_phys = p.apply_new_to_old(offset)
-                payload_base = offset + max(k, 1)
+            tag_phys = p.apply_new_to_old(offset)
+            payload_base = offset + 1
 
-                wire_map = lambda w: p.apply_new_to_old(w + payload_base)
-                if left_cmds:
-                    _emit_controlled_branch(tag_phys, left_cmds, wire_map, anti=True)
-                if right_cmds:
-                    _emit_controlled_branch(tag_phys, right_cmds, wire_map)
-
-                # Phase application: X; U1(θ/π); X for left branch (tag=0)
-                half_turns = theta / math.pi
-                circ.X(tag_phys)
-                circ.add_gate(OpType.U1, [half_turns], [tag_phys])
-                circ.X(tag_phys)
-
-                if explain:
-                    log.append(f"PhasedPlusMap(k=1, θ={theta:.4f}): {len(left_cmds)} left, "
-                               f"{len(right_cmds)} right at offset {offset}")
-                return
-
-            # k >= 2: Strategy A — tag permutation sandwich
-            half = 2 ** (k - 1)
-
-            if n_left > half or n_right > half:
-                # Strategy B: full unitary synthesis (same as PlusMap, plus phase)
-                import numpy as np
-                pw = payload_width(Plus(t.ty_left, t.ty_right))
-                w = k + pw
-                dim_pw = 2 ** pw
-
-                U_f = compile(t.left, materialize=True).circuit.get_unitary()
-                U_g = compile(t.right, materialize=True).circuit.get_unitary()
-                dim = 2 ** w
-
-                if n_left > half:
-                    U_full = U_f.copy()
-                    w_g = width(type_of(t.right)[0])
-                    for tr in range(n_right):
-                        tf = n_left + tr
-                        rs, re = tf * dim_pw, (tf + 1) * dim_pw
-                        U_full[rs:re, :] = 0
-                        U_full[:, rs:re] = 0
-                        if w_g == 0:
-                            U_full[rs:re, rs:re] = np.eye(dim_pw)
-                        else:
-                            g_rs = tr * dim_pw
-                            U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
-                else:
-                    U_full = np.eye(dim, dtype=complex)
-                    w_f = width(type_of(t.left)[0])
-                    for tl in range(n_left):
-                        rs, re = tl * dim_pw, (tl + 1) * dim_pw
-                        if w_f == 0:
-                            U_full[rs:re, rs:re] = np.eye(dim_pw)
-                        else:
-                            f_rs = tl * dim_pw
-                            U_full[rs:re, rs:re] = U_f[f_rs:f_rs+dim_pw, f_rs:f_rs+dim_pw]
-                    for tr in range(n_right):
-                        tf = n_left + tr
-                        rs, re = tf * dim_pw, (tf + 1) * dim_pw
-                        g_rs = tr * dim_pw
-                        U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
-
-                # Apply phase e^{iθ} to all left tag blocks
-                phase = np.exp(1j * theta)
-                for tl in range(n_left):
-                    rs, re = tl * dim_pw, (tl + 1) * dim_pw
-                    U_full[rs:re, :] *= phase
-
-                phys = [p.apply_new_to_old(offset + i) for i in range(w)]
-                if w == 2:
-                    from pytket.circuit import Unitary2qBox
-                    box = Unitary2qBox(U_full)
-                    circ.add_unitary2qbox(box, phys[0], phys[1])
-                elif w == 3:
-                    from pytket.circuit import Unitary3qBox
-                    box = Unitary3qBox(U_full)
-                    circ.add_unitary3qbox(box, phys[0], phys[1], phys[2])
-                else:
-                    raise NotImplementedError(
-                        f"PhasedPlusMap full unitary for width {w} > 3 not yet supported")
-
-                if explain:
-                    log.append(f"PhasedPlusMap(k={k}, θ={theta:.4f}, Strategy B): "
-                               f"n_left={n_left}, n_right={n_right}, w={w}")
-                return
-
-            dim = 2 ** k
-            P_list = [None] * dim
-            for i in range(n_left):
-                P_list[i] = i
-            for i in range(n_right):
-                P_list[n_left + i] = half + i
-            used_targets = set(v for v in P_list if v is not None)
-            free_targets = sorted(set(range(dim)) - used_targets)
-            j = 0
-            for i in range(dim):
-                if P_list[i] is None:
-                    P_list[i] = free_targets[j]
-                    j += 1
-            P_tup = tuple(P_list)
-            is_identity_P = (P_tup == tuple(range(dim)))
-
-            tw_left = tw_fn(t.ty_left) if isinstance(t.ty_left, Plus) else 0
-            tw_right = tw_fn(t.ty_right) if isinstance(t.ty_right, Plus) else 0
-
-            # Step 1: Emit P
-            if not is_identity_P:
-                _emit_tag_perm_unitary(circ, p, P_tup, k, offset, explain, log)
-
-            # Step 2: PlusMap_bit on MSB
-            msb_phys = p.apply_new_to_old(offset)
-
+            wire_map = lambda w: p.apply_new_to_old(w + payload_base)
             if left_cmds:
-                left_wm = lambda w, stw=tw_left: p.apply_new_to_old(
-                    _sub_wire_to_full(w, stw, offset, k))
-                _emit_controlled_branch(msb_phys, left_cmds, left_wm, anti=True)
+                _emit_controlled_branch(tag_phys, left_cmds, wire_map, anti=True)
             if right_cmds:
-                right_wm = lambda w, stw=tw_right: p.apply_new_to_old(
-                    _sub_wire_to_full(w, stw, offset, k))
-                _emit_controlled_branch(msb_phys, right_cmds, right_wm)
+                _emit_controlled_branch(tag_phys, right_cmds, wire_map)
 
-            # Step 3: Emit P⁻¹
-            if not is_identity_P:
-                P_inv = [0] * dim
-                for i in range(dim):
-                    P_inv[P_tup[i]] = i
-                _emit_tag_perm_unitary(circ, p, tuple(P_inv), k, offset, explain, log)
-
-            # Phase application on left branch (tag ∈ left_set)
-            sum_ty = Plus(t.ty_left, t.ty_right)
-            total_tag_bits = tw_fn(sum_ty)
+            # Phase application: X; U1(θ/π); X for left branch (tag=0)
             half_turns = theta / math.pi
-            tag_qubits = [p.apply_new_to_old(offset + i) for i in range(total_tag_bits)]
-
-            for tq in tag_qubits:
-                circ.X(tq)
-            if total_tag_bits == 1:
-                circ.add_gate(OpType.U1, [half_turns], [tag_qubits[0]])
-            elif total_tag_bits == 2:
-                circ.add_gate(OpType.CU1, [half_turns], [tag_qubits[0], tag_qubits[1]])
-            else:
-                # k >= 3: multi-controlled U1 via QControlBox
-                from pytket.circuit import QControlBox, Op
-                base_op = Op.create(OpType.U1, [half_turns])
-                qcb = QControlBox(base_op, total_tag_bits - 1)
-                circ.add_qcontrolbox(qcb, tag_qubits)
-            for tq in reversed(tag_qubits):
-                circ.X(tq)
+            circ.X(tag_phys)
+            circ.add_gate(OpType.U1, [half_turns], [tag_phys])
+            circ.X(tag_phys)
 
             if explain:
-                log.append(f"PhasedPlusMap(k={k}, θ={theta:.4f}, Strategy A): "
-                           f"n_left={n_left}, n_right={n_right} at offset {offset}")
+                log.append(f"PhasedPlusMap(k=1, θ={theta:.4f}): {len(left_cmds)} left, "
+                           f"{len(right_cmds)} right at offset {offset}")
             return
 
         # PhasedControl: phase-weighted n-ary control

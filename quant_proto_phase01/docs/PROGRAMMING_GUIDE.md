@@ -326,6 +326,15 @@ NPlusMap(summand_types=(A₁,...,Aₙ), branches=(f₁,...,fₙ))
 Nesting binary PlusMaps creates a binary tree that doesn't match the flat
 ⌈log₂(n)⌉ tag encoding. NPlusMap compiles directly against the flat layout.
 
+**Binary vs N-ary constraint:** The binary combinators `omap0`, `oplusmap0`,
+`case_hom`, and `case_hom0` require **genuinely binary** sums — neither summand
+may itself be a Plus type. If either summand is nested Plus (e.g., `(I⊕I) ⊕ Q`),
+these raise `Invalid_argument`. Use `omapn`/`control` for n-ary sums instead.
+
+The compiler auto-flattens nested PlusMap trees to NPlusMap when branches are
+decomposable (e.g., recursive PlusMap or Case trees). Opaque branches that cannot
+be decomposed fall through to Strategy A/B as a fallback.
+
 **Compilation pattern** for branch i with k = ⌈log₂(n)⌉ tag qubits (big-endian):
 1. X-flip: apply X to each tag qubit j where bit `(i >> (k-1-j)) & 1 == 0`
 2. Multi-controlled gates: all k tag qubits are now |1⟩ for branch i,

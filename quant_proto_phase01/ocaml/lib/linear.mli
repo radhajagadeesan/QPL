@@ -92,7 +92,10 @@ val app : ('g1, [`Lolli of 'a * 'b]) prog -> ('g2, 'a) prog -> ('g1 * 'g2, 'b) p
 
 (** Bifunctorial action on sums: [omap ty_left ty_right f g : Prog(Γ1 ⊎ Γ2, (A⊕B) ⊸ (C⊕D))]
     where [f : Prog(Γ1, A ⊸ C)] and [g : Prog(Γ2, B ⊸ D)].
-    Type witnesses are required for correct PlusMap emission. *)
+    Type witnesses are required for correct PlusMap emission.
+
+    @raise Invalid_argument if [ty_left] or [ty_right] is itself a Plus
+    (nested Plus). Use [omapn] for n-ary sums. *)
 val omap : 'a ty -> 'b ty
         -> ('g1, [`Lolli of 'a * 'c]) prog
         -> ('g2, [`Lolli of 'b * 'd]) prog
@@ -200,7 +203,10 @@ val par0 : (unit, [`Lolli of 'a * 'b]) prog
         -> (unit, [`Lolli of [`Tensor of 'a * 'c] * [`Tensor of 'b * 'd]]) prog
 
 (** Closed omap for sum types: [omap0 ty_left ty_right f g : Prog(∅, (A⊕B) ⊸ (C⊕D))]
-    Both f and g must be closed. Type witnesses needed for emission. *)
+    Both f and g must be closed. Type witnesses needed for emission.
+
+    @raise Invalid_argument if [ty_left] or [ty_right] is itself a Plus
+    (nested Plus). Use [omapn] for n-ary sums. *)
 val omap0 : 'a ty -> 'b ty
          -> (unit, [`Lolli of 'a * 'c]) prog
          -> (unit, [`Lolli of 'b * 'd]) prog
@@ -229,7 +235,8 @@ val omapn : _ ty array
     - Right branch (tag encodes inr): apply g (no phase)
 
     The phase z must be a unit complex number (|z| = 1).
-    Raises [Invalid_argument] if |z| ≠ 1.
+    Raises [Invalid_argument] if |z| ≠ 1 or if [ty_left]/[ty_right] is
+    itself a Plus (nested Plus — use [omapn] for n-ary sums).
 
     Example: Apply -1 phase to short-circuit branch of W = I + Bool:
     {[
@@ -408,7 +415,10 @@ val oapp : ('g1, [`Lolli of 'a * 'b]) oterm -> ('g2, 'a) oterm
 
 (** ⊕-Map: bifunctorial action on sums.
     Branches are bare morphism terms, not function values.
-    The branch oterm types 'c and 'd become the output summand types. *)
+    The branch oterm types 'c and 'd become the output summand types.
+
+    @raise Invalid_argument if [ty_left] or [ty_right] is itself a Plus
+    (nested Plus). Use [omapn] for n-ary sums. *)
 val oplusmap : 'a ty -> 'b ty
             -> ('g1, 'c) oterm -> ('g2, 'd) oterm
             -> ('g1, 'g2, 'g) split
@@ -436,6 +446,9 @@ val oletpair0 : string -> string -> 'a ty -> 'b ty
              -> (unit, 'c) oterm
 val oapp0 : (unit, [`Lolli of 'a * 'b]) oterm -> (unit, 'a) oterm
          -> (unit, 'b) oterm
+
+(** Closed ⊕-Map at oterm level.
+    @raise Invalid_argument if [ty_left] or [ty_right] is itself a Plus. *)
 val oplusmap0 : 'a ty -> 'b ty
              -> (unit, 'c) oterm -> (unit, 'd) oterm
              -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) oterm

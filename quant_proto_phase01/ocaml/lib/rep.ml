@@ -78,6 +78,18 @@ let rec wire_positions ?(prefix=[]) ?(offset=0) = function
     let pos_b, final = wire_positions ~prefix:(R :: prefix) ~offset:next b in
     pos_a @ pos_b, final
 
+(** Flatten a Plus tree into leaf summands (left-to-right).
+    Non-Plus types return a singleton list. *)
+let rec flatten_plus = function
+  | Plus (a, b) -> flatten_plus a @ flatten_plus b
+  | other -> [other]
+
+(** Count leaf summands in a Plus tree. *)
+let count_summands t = List.length (flatten_plus t)
+
+(** True if the top-level node is Plus. *)
+let is_plus = function Plus _ -> true | _ -> false
+
 (** Equality check *)
 let rec equal a b = match a, b with
   | Var i, Var j -> i = j

@@ -452,5 +452,38 @@ let () =
   check "ctrl_via_ocase(X)" (emit_oterm (ctrl_via_ocase gate_x));
   check "ctrl_via_ocase(H)" (emit_oterm (ctrl_via_ocase gate_h));
 
+  (* ================================================================ *)
+  (* Nested-Plus rejection tests                                       *)
+  (*                                                                   *)
+  (* omap0, omap, oplusmap0, oplusmap, phased_omap0 must reject        *)
+  (* arguments where ty_left or ty_right is itself a Plus.             *)
+  (* ================================================================ *)
+  print_endline "";
+  print_endline "Nested-Plus rejection tests:";
+  let test_raises name f =
+    (try f (); Printf.printf "  %-35s FAIL (no exception)\n" name
+     with Invalid_argument msg ->
+       Printf.printf "  %-35s OK   (Invalid_argument: %s)\n" name
+         (String.sub msg 0 (min 50 (String.length msg)))
+    | exn ->
+       Printf.printf "  %-35s FAIL (wrong exception: %s)\n" name
+         (Printexc.to_string exn))
+  in
+  test_raises "omap0: nested Plus on left" (fun () ->
+    ignore (omap0 (one ++ one) one (id (one ++ one)) (id one)));
+  test_raises "omap0: nested Plus on right" (fun () ->
+    ignore (omap0 one (one ++ one) (id one) (id (one ++ one))));
+  test_raises "oplusmap0: nested Plus on left" (fun () ->
+    ignore (oplusmap0 (one ++ one) one (oid (one ++ one)) (oid one)));
+  test_raises "oplusmap0: nested Plus on right" (fun () ->
+    ignore (oplusmap0 one (one ++ one) (oid one) (oid (one ++ one))));
+  test_raises "phased_omap0: nested Plus on left" (fun () ->
+    ignore (phased_omap0 Complex.one (one ++ one) one (id (one ++ one)) (id one)));
+  (* Verify genuinely binary omap0 still works *)
+  let _binary_ok = omap0 q q (id q) (id q) in
+  Printf.printf "  %-35s OK\n" "omap0: genuinely binary (Q,Q)";
+  let _omapn_ok = omapn [|one; one; one|] [|id one; id one; id one|] in
+  Printf.printf "  %-35s OK\n" "omapn: 3-ary sum";
+
   print_endline "";
   print_endline "  All combinators type-checked in Linear GADT."

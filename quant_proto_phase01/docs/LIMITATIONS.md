@@ -23,13 +23,25 @@ Tag register width k = ceil(log₂(n)) where n is the number of leaf summands af
 
 **Affected operations:** `TwistPlus`, `AssocPlus`, `PlusMap`, `PhasedPlusMap`, and any structural operation that emits a tag permutation on sums with 9+ leaf summands.
 
-### 1b. PlusMap Strategy B: total width ≤ 3
+### 1b. PlusMap Strategy B: total width ≤ 3 (fallback only)
 
-When PlusMap has an asymmetric split (one side exceeds half the codeword space), Strategy A (tag permutation sandwich with MSB control) cannot partition left/right indices. Strategy B builds the full block-diagonal unitary and emits it as a single box.
+The compiler now **auto-flattens** nested PlusMap trees to NPlusMap when branches are
+decomposable (recursive PlusMap/Case trees, Id on Plus types). Auto-flatten is the
+preferred compilation path and handles most cases from the OCaml pipeline.
 
-Total width w = k + payload_width. Strategy B requires w ≤ 3 (for `Unitary3qBox`).
+When auto-flatten fails (opaque branches that cannot be decomposed into per-leaf
+morphisms), the compiler falls back to Strategy A or B:
 
-**What this blocks:** Deeply left-skewed sums with 6+ summands where the outer PlusMap has a 5/1 or worse split. Balanced or moderately skewed splits up to 8 summands work via Strategy A.
+- **Strategy A** (symmetric splits): tag permutation sandwich with MSB control
+- **Strategy B** (asymmetric splits): full block-diagonal unitary via `Unitary3qBox`
+
+Strategy B requires total width w = k + payload_width ≤ 3.
+
+**What this blocks:** Opaque branches on deeply left-skewed sums with 6+ summands where the outer PlusMap has a 5/1 or worse split. This only affects direct Python API usage with opaque composed branches — the OCaml pipeline's elaborated terms are always decomposable.
+
+**OCaml-side validation:** The `omap0`/`oplusmap0` smart constructors now reject nested
+Plus summands at construction time. If either summand is itself a Plus type, they raise
+`Invalid_argument` directing the user to `omapn` for n-ary sums.
 
 ---
 
@@ -92,7 +104,7 @@ The compiler previously used `DecomposeBoxes()` to blow up compound gates (QCont
 | Limitation | Root cause | Fix path |
 |:---|:---:|:---|
 | 1a. Sum ≤ 8 summands | pytket | pytket `UnitaryNqBox` |
-| 1b. PlusMap Strategy B ≤ 3 width | pytket | pytket `UnitaryNqBox` |
+| 1b. PlusMap Strategy B ≤ 3 width (fallback) | pytket | pytket `UnitaryNqBox` (auto-flatten preferred) |
 | 2. ExpInvolution ≤ 3 qubits | pytket | pytket `UnitaryNqBox` |
 | 3. Feedback not compiled | language design | Future work |
 | 4. No Python linearity checking | language design | Use OCaml pipeline |
@@ -101,7 +113,7 @@ The compiler previously used `DecomposeBoxes()` to blow up compound gates (QCont
 **What works without limitation:**
 
 - Binary sums (`A ⊕ B`): all operations
-- Nested sums up to 8 summands (balanced splits): PlusMap, PhasedPlusMap, PhasedControl, structural ops
+- Nested sums up to 8 summands: auto-flattened to NPlusMap (preferred), with Strategy A/B fallback for opaque branches
 - Tensor types: unlimited nesting depth and width
 - Higher-order terms: Lam, Apply, Cup, Cap, Var, LetPair
 - All gates with arbitrary control nesting via `QControlBox` (O(1) pytket boxes per ctrl level; primitive gate count is higher)
