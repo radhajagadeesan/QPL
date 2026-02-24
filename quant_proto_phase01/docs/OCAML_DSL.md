@@ -277,10 +277,10 @@ The case sugar combinators handle this at the `prog` level (closed, unit context
 
 These desugar to existing structural ops — no new GADT constructors needed.
 
-> **Binary-only constraint:** `omap0`, `oplusmap0`, `case_hom`, `case_hom0`, and
-> `case_het` require genuinely binary sums — neither `A` nor `B` may itself be a
-> `Plus` type. Passing a nested Plus (e.g., `(I⊕I) ⊕ Q`) raises `Invalid_argument`.
-> For n-ary sums with 3+ summands, use `omapn`/`control` instead.
+> **Binary vs N-ary:** `omap0`, `oplusmap0`, and the case sugar accept nested Plus
+> summands (e.g., `W = I ⊕ Bool` where `Bool = I⊕I`). The compiler handles nested
+> sums via auto-flatten or Strategy A/B. For flat n-ary sums with 3+ summands,
+> prefer `omapn`/`control` for direct compilation against the flat tag encoding.
 
 ```ocaml
 (* Example: ctrl using case_hom + make_branch *)

@@ -1570,16 +1570,13 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             from lang.types import Plus, flatten_plus, tag_width as tw_fn, payload_width
             import math
 
-            # Reject nested Plus — OCaml phased_omap0 now validates this
-            if isinstance(t.ty_left, Plus) or isinstance(t.ty_right, Plus):
-                raise TypeError(
-                    f"PhasedPlusMap with nested Plus is not supported. "
-                    f"Use phased_control for n-ary sums. "
-                    f"ty_left={t.ty_left}, ty_right={t.ty_right}")
-
             theta = t.theta
 
-            # Genuinely binary: k=1
+            n_left = len(flatten_plus(t.ty_left)) if isinstance(t.ty_left, Plus) else 1
+            n_right = len(flatten_plus(t.ty_right)) if isinstance(t.ty_right, Plus) else 1
+            n_sum = n_left + n_right
+            k = math.ceil(math.log2(n_sum)) if n_sum > 1 else 0
+
             # Compile branches to sub-circuits
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
@@ -1589,24 +1586,160 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             right_w = width(right_dom)
             right_cmds = _get_sub_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
 
-            tag_phys = p.apply_new_to_old(offset)
-            payload_base = offset + 1
+            if k <= 1:
+                tag_phys = p.apply_new_to_old(offset)
+                payload_base = offset + max(k, 1)
 
-            wire_map = lambda w: p.apply_new_to_old(w + payload_base)
+                wire_map = lambda w: p.apply_new_to_old(w + payload_base)
+                if left_cmds:
+                    _emit_controlled_branch(tag_phys, left_cmds, wire_map, anti=True)
+                if right_cmds:
+                    _emit_controlled_branch(tag_phys, right_cmds, wire_map)
+
+                # Phase application: X; U1(θ/π); X for left branch (tag=0)
+                half_turns = theta / math.pi
+                circ.X(tag_phys)
+                circ.add_gate(OpType.U1, [half_turns], [tag_phys])
+                circ.X(tag_phys)
+
+                if explain:
+                    log.append(f"PhasedPlusMap(k=1, θ={theta:.4f}): {len(left_cmds)} left, "
+                               f"{len(right_cmds)} right at offset {offset}")
+                return
+
+            # k >= 2: Strategy A — tag permutation sandwich
+            half = 2 ** (k - 1)
+
+            if n_left > half or n_right > half:
+                # Strategy B: full unitary synthesis (same as PlusMap, plus phase)
+                import numpy as np
+                pw = payload_width(Plus(t.ty_left, t.ty_right))
+                w = k + pw
+                dim_pw = 2 ** pw
+
+                U_f = compile(t.left, materialize=True).circuit.get_unitary()
+                U_g = compile(t.right, materialize=True).circuit.get_unitary()
+                dim = 2 ** w
+
+                if n_left > half:
+                    U_full = U_f.copy()
+                    w_g = width(type_of(t.right)[0])
+                    for tr in range(n_right):
+                        tf = n_left + tr
+                        rs, re = tf * dim_pw, (tf + 1) * dim_pw
+                        U_full[rs:re, :] = 0
+                        U_full[:, rs:re] = 0
+                        if w_g == 0:
+                            U_full[rs:re, rs:re] = np.eye(dim_pw)
+                        else:
+                            g_rs = tr * dim_pw
+                            U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
+                else:
+                    U_full = np.eye(dim, dtype=complex)
+                    w_f = width(type_of(t.left)[0])
+                    for tl in range(n_left):
+                        rs, re = tl * dim_pw, (tl + 1) * dim_pw
+                        if w_f == 0:
+                            U_full[rs:re, rs:re] = np.eye(dim_pw)
+                        else:
+                            f_rs = tl * dim_pw
+                            U_full[rs:re, rs:re] = U_f[f_rs:f_rs+dim_pw, f_rs:f_rs+dim_pw]
+                    for tr in range(n_right):
+                        tf = n_left + tr
+                        rs, re = tf * dim_pw, (tf + 1) * dim_pw
+                        g_rs = tr * dim_pw
+                        U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
+
+                # Apply phase e^{iθ} to all left tag blocks
+                phase = np.exp(1j * theta)
+                for tl in range(n_left):
+                    rs, re = tl * dim_pw, (tl + 1) * dim_pw
+                    U_full[rs:re, :] *= phase
+
+                phys = [p.apply_new_to_old(offset + i) for i in range(w)]
+                if w == 2:
+                    from pytket.circuit import Unitary2qBox
+                    box = Unitary2qBox(U_full)
+                    circ.add_unitary2qbox(box, phys[0], phys[1])
+                elif w == 3:
+                    from pytket.circuit import Unitary3qBox
+                    box = Unitary3qBox(U_full)
+                    circ.add_unitary3qbox(box, phys[0], phys[1], phys[2])
+                else:
+                    raise NotImplementedError(
+                        f"PhasedPlusMap full unitary for width {w} > 3 not yet supported")
+
+                if explain:
+                    log.append(f"PhasedPlusMap(k={k}, θ={theta:.4f}, Strategy B): "
+                               f"n_left={n_left}, n_right={n_right}, w={w}")
+                return
+
+            dim = 2 ** k
+            P_list = [None] * dim
+            for i in range(n_left):
+                P_list[i] = i
+            for i in range(n_right):
+                P_list[n_left + i] = half + i
+            used_targets = set(v for v in P_list if v is not None)
+            free_targets = sorted(set(range(dim)) - used_targets)
+            j = 0
+            for i in range(dim):
+                if P_list[i] is None:
+                    P_list[i] = free_targets[j]
+                    j += 1
+            P_tup = tuple(P_list)
+            is_identity_P = (P_tup == tuple(range(dim)))
+
+            tw_left = tw_fn(t.ty_left) if isinstance(t.ty_left, Plus) else 0
+            tw_right = tw_fn(t.ty_right) if isinstance(t.ty_right, Plus) else 0
+
+            # Step 1: Emit P
+            if not is_identity_P:
+                _emit_tag_perm_unitary(circ, p, P_tup, k, offset, explain, log)
+
+            # Step 2: PlusMap_bit on MSB
+            msb_phys = p.apply_new_to_old(offset)
+
             if left_cmds:
-                _emit_controlled_branch(tag_phys, left_cmds, wire_map, anti=True)
+                left_wm = lambda w, stw=tw_left: p.apply_new_to_old(
+                    _sub_wire_to_full(w, stw, offset, k))
+                _emit_controlled_branch(msb_phys, left_cmds, left_wm, anti=True)
             if right_cmds:
-                _emit_controlled_branch(tag_phys, right_cmds, wire_map)
+                right_wm = lambda w, stw=tw_right: p.apply_new_to_old(
+                    _sub_wire_to_full(w, stw, offset, k))
+                _emit_controlled_branch(msb_phys, right_cmds, right_wm)
 
-            # Phase application: X; U1(θ/π); X for left branch (tag=0)
+            # Step 3: Emit P⁻¹
+            if not is_identity_P:
+                P_inv = [0] * dim
+                for i in range(dim):
+                    P_inv[P_tup[i]] = i
+                _emit_tag_perm_unitary(circ, p, tuple(P_inv), k, offset, explain, log)
+
+            # Phase application on left branch (tag ∈ left_set)
+            sum_ty = Plus(t.ty_left, t.ty_right)
+            total_tag_bits = tw_fn(sum_ty)
             half_turns = theta / math.pi
-            circ.X(tag_phys)
-            circ.add_gate(OpType.U1, [half_turns], [tag_phys])
-            circ.X(tag_phys)
+            tag_qubits = [p.apply_new_to_old(offset + i) for i in range(total_tag_bits)]
+
+            for tq in tag_qubits:
+                circ.X(tq)
+            if total_tag_bits == 1:
+                circ.add_gate(OpType.U1, [half_turns], [tag_qubits[0]])
+            elif total_tag_bits == 2:
+                circ.add_gate(OpType.CU1, [half_turns], [tag_qubits[0], tag_qubits[1]])
+            else:
+                # k >= 3: multi-controlled U1 via QControlBox
+                from pytket.circuit import QControlBox, Op
+                base_op = Op.create(OpType.U1, [half_turns])
+                qcb = QControlBox(base_op, total_tag_bits - 1)
+                circ.add_qcontrolbox(qcb, tag_qubits)
+            for tq in reversed(tag_qubits):
+                circ.X(tq)
 
             if explain:
-                log.append(f"PhasedPlusMap(k=1, θ={theta:.4f}): {len(left_cmds)} left, "
-                           f"{len(right_cmds)} right at offset {offset}")
+                log.append(f"PhasedPlusMap(k={k}, θ={theta:.4f}, Strategy A): "
+                           f"n_left={n_left}, n_right={n_right} at offset {offset}")
             return
 
         # PhasedControl: phase-weighted n-ary control

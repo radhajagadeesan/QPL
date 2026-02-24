@@ -39,9 +39,8 @@ Strategy B requires total width w = k + payload_width ≤ 3.
 
 **What this blocks:** Opaque branches on deeply left-skewed sums with 6+ summands where the outer PlusMap has a 5/1 or worse split. This only affects direct Python API usage with opaque composed branches — the OCaml pipeline's elaborated terms are always decomposable.
 
-**OCaml-side validation:** The `omap0`/`oplusmap0` smart constructors now reject nested
-Plus summands at construction time. If either summand is itself a Plus type, they raise
-`Invalid_argument` directing the user to `omapn` for n-ary sums.
+**OCaml-side:** The `omap0`/`oplusmap0` smart constructors accept nested Plus summands
+(e.g., `W = I ⊕ Bool` where `Bool = I⊕I`). For flat n-ary sums, prefer `omapn`/`control`.
 
 ---
 

@@ -182,12 +182,7 @@ let lam dom cod body = Lam (dom, cod, body)
 
 let app f e = App (f, e)
 
-let omap ty_left ty_right f g =
-  if Rep.is_plus ty_left then
-    invalid_arg "omap: ty_left is nested Plus — use omapn for n-ary sums";
-  if Rep.is_plus ty_right then
-    invalid_arg "omap: ty_right is nested Plus — use omapn for n-ary sums";
-  OMap (ty_left, ty_right, f, g)
+let omap ty_left ty_right f g = OMap (ty_left, ty_right, f, g)
 
 let case_ ty_left ty_right scrut left right = Case (ty_left, ty_right, scrut, left, right)
 
@@ -232,12 +227,7 @@ let seq0 f g = Seq0 (f, g)
 
 let par0 f g = Par0 (f, g)
 
-let omap0 ty_left ty_right f g =
-  if Rep.is_plus ty_left then
-    invalid_arg "omap0: ty_left is nested Plus — use omapn for n-ary sums";
-  if Rep.is_plus ty_right then
-    invalid_arg "omap0: ty_right is nested Plus — use omapn for n-ary sums";
-  OMap0 (ty_left, ty_right, f, g)
+let omap0 ty_left ty_right f g = OMap0 (ty_left, ty_right, f, g)
 
 let omapn summand_types branches =
   if Array.length summand_types < 2 then
@@ -250,10 +240,6 @@ let omapn summand_types branches =
 (* Phase-weighted omap: applies phase z to left branch
    Validates |z| = 1 within tolerance *)
 let phased_omap0 z ty_left ty_right f g =
-  if Rep.is_plus ty_left then
-    invalid_arg "phased_omap0: ty_left is nested Plus — use omapn for n-ary sums";
-  if Rep.is_plus ty_right then
-    invalid_arg "phased_omap0: ty_right is nested Plus — use omapn for n-ary sums";
   let tolerance = 1e-10 in
   let modulus = Complex.norm z in
   if abs_float (modulus -. 1.0) > tolerance then
@@ -484,12 +470,7 @@ let opair e1 e2 sp = OPair (e1, e2, sp)
 let oletpair x y ty_x ty_y pair body sp = OLetPair (x, y, ty_x, ty_y, pair, body, sp)
 let olam name dom cod body = OLam (name, dom, cod, body)
 let oapp f arg sp = OApp (f, arg, sp)
-let oplusmap ty_l ty_r f g sp =
-  if Rep.is_plus ty_l then
-    invalid_arg "oplusmap: ty_left is nested Plus — use omapn for n-ary sums";
-  if Rep.is_plus ty_r then
-    invalid_arg "oplusmap: ty_right is nested Plus — use omapn for n-ary sums";
-  OPlusMap (ty_l, ty_r, f, g, sp)
+let oplusmap ty_l ty_r f g sp = OPlusMap (ty_l, ty_r, f, g, sp)
 let oid ty = OId ty
 let oembed p = OEmbed p
 let oseq f g sp = OSeq (f, g, sp)
@@ -497,12 +478,7 @@ let oseq f g sp = OSeq (f, g, sp)
 (** Closed convenience constructors (both subterms closed, split = SNil) *)
 let opair0 e1 e2 = OPair (e1, e2, SNil)
 let oapp0 f arg = OApp (f, arg, SNil)
-let oplusmap0 ty_l ty_r f g =
-  if Rep.is_plus ty_l then
-    invalid_arg "oplusmap0: ty_left is nested Plus — use omapn for n-ary sums";
-  if Rep.is_plus ty_r then
-    invalid_arg "oplusmap0: ty_right is nested Plus — use omapn for n-ary sums";
-  OPlusMap (ty_l, ty_r, f, g, SNil)
+let oplusmap0 ty_l ty_r f g = OPlusMap (ty_l, ty_r, f, g, SNil)
 let oseq0 f g = OSeq (f, g, SNil)
 let oletpair0 x y ty_x ty_y pair body = OLetPair (x, y, ty_x, ty_y, pair, body, SNil)
 
