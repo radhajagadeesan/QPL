@@ -23,9 +23,8 @@ When verifying docs:
 ## Phase 1: Extract and run code examples
 
 Read through all documentation:
-- `quant_proto_phase01/USER_MANUAL.md`
 - `quant_proto_phase01/docs/` (all files)
-- `quant_proto_phase01/demos/README.md`
+- `quant_proto_phase01/ocaml/demos/README.md`
 
 For every code example you find:
 1. Extract it
@@ -63,7 +62,7 @@ If docs say "run this command" or "do this step":
 
 ## Rules:
 - You do NOT update docs. You only report discrepancies.
-- Be specific: "USER_MANUAL.md line 42 shows `func(a, b)` but src/module.py has `func(a, b, c=None)`"
+- Be specific: "docs/ line 42 shows `func(a, b)` but src/module.py has `func(a, b, c=None)`"
 - Prioritize: broken code examples > wrong signatures > missing docs > stale descriptions
 
 ## Output format:
@@ -72,7 +71,7 @@ If docs say "run this command" or "do this step":
 ✓/✗ N of M examples work
 
 Broken examples:
-- USER_MANUAL.md line X: [error message]
+- docs/ line X: [error message]
 - docs/file.md line Y: [error message]
 
 ## API Mismatches
