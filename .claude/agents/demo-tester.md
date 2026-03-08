@@ -34,19 +34,16 @@ dune exec demos/datatype_demo.exe
 
 Compare output against saved `.output` files in `ocaml/demos/`.
 
-### 2. Python backend demos (secondary — just verify they run)
-Run Python demos and verify no crashes:
+### 2. Python backend demos (secondary — smoke test only)
+Just verify they don't crash. Do NOT do detailed output comparison, do NOT flag
+undocumented Python demos, do NOT report stale Python output files. These are
+internal backend tests, not user-facing.
 ```bash
 cd quant_proto_phase01
-PYTHONPATH=python/src python python/demos/exp_twist_demo.py
-PYTHONPATH=python/src python python/demos/pauli_conjugation_demo.py
-PYTHONPATH=python/src python python/demos/qswitch_demo.py
-PYTHONPATH=python/src python python/demos/quantum_switch_demo.py
 PYTHONPATH=python/src python python/demos/short_circuit_demo.py
 PYTHONPATH=python/src python python/demos/case_demo.py
 ```
-
-Compare against saved output files where they exist.
+Only report if a Python demo actually crashes (non-zero exit code).
 
 ### 3. Adversarial testing (your main job)
 Try to break things:

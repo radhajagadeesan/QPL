@@ -49,7 +49,9 @@ For each mismatch, note: "docs say X, code says Y"
 For every feature mentioned in docs:
 - Does it actually exist in the code?
 - Does it work as described?
-- Are there features in code that aren't documented?
+
+Do NOT flag undocumented Python demos, missing Python API docs, or stale Python
+output files. The Python layer is an internal backend — only OCaml-facing docs matter.
 
 ## Phase 4: Instruction verification
 
