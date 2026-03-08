@@ -274,7 +274,7 @@ At compile time, `ExpInvolution`:
 1. Compiles body P to a unitary matrix U
 2. Verifies U is involutive (U² ≈ I)
 3. Computes `M = cos(θ)·I + i·sin(θ)·U` via direct unitary synthesis
-4. Emits the result as a `UnitaryNqBox` (1, 2, or 3 qubits)
+4. Emits the result as a `Unitary1qBox`/`Unitary2qBox`/`Unitary3qBox` (up to 3 qubits)
 
 ---
 
@@ -352,9 +352,9 @@ ty = Ten(Q(), Q())
 # Create exp(iθ · SWAP)
 term = ExpInvolution(theta=0.5, body=swap, ty_total=ty)
 
-# Compile - verifies involution and emits UnitaryNqBox
+# Compile - verifies involution and emits Unitary2qBox
 result = compile(term, materialize=True)
-# Produces a single UnitaryNqBox via direct unitary synthesis
+# Produces a single Unitary2qBox via direct unitary synthesis
 ```
 
 If the body is not involutive (U² ≠ I), compilation raises an error.

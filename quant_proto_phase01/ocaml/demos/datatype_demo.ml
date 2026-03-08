@@ -138,9 +138,6 @@ let compile_and_report name term =
 (* ============================================================ *)
 
 let () =
-  let project_root = Filename.dirname (Sys.getcwd ()) in
-  Bridge.set_project_root project_root;
-
   print_endline "=== Datatype Declaration Demo ===\n";
 
   print_endline "--- Bool datatype ---";

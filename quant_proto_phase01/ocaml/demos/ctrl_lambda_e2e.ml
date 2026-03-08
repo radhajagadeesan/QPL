@@ -126,9 +126,6 @@ let ctrl (a_ty : 'a ty) (f : (unit, [`Lolli of 'a * 'a]) prog)
 (* ========================================================================= *)
 
 let () =
-  let project_root = Filename.dirname (Sys.getcwd ()) in
-  Bridge.set_project_root project_root;
-
   banner "HIGHER-ORDER ctrl COMBINATOR";
   print_endline "";
   print_endline "  ctrl := \\lambda f.  undist \\circ (id \\oplus (id_I \\otimes f)) \\circ dist";

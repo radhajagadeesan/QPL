@@ -250,8 +250,7 @@ let compile_and_report name term =
 
 let () =
   (* Set project root for bridge.py *)
-  let project_root = Filename.dirname (Sys.getcwd ()) in
-  Bridge.set_project_root project_root;
+
 
   banner "SHORT-CIRCUIT CONJUNCTION E2E DEMO";
   print_endline "\nImplementing short-circuit conjunction with witness routing\n";
@@ -499,21 +498,20 @@ Demonstrated short-circuit conjunction in Linear DSL:
    Bool = I + I (2-element, 1 qubit)
    W = I + Bool (3-element witness, 2 qubits)
 
-2. STRUCTURAL OPERATIONS (expected gate counts)
-   toggle_W = id_I ⊕ twist_Bool : W → W         (expected: 1 gate)
+2. STRUCTURAL OPERATIONS
+   toggle_W = id_I ⊕ twist_Bool : W → W         (3 gates)
    ctrl_W(M_0, M_1) : Bool ⊗ W → Bool ⊗ W      (coherent control)
-   and_sc : (Bool ⊗ Bool) ⊗ W → ...            (expected: 3 gates)
+   and_sc : (Bool ⊗ Bool) ⊗ W → ...            (5 gates)
 
-3. QUANTUM PHASE MARKING (expected gate counts)
-   phase_W : W → W                              (expected: 5 gates)
-     X[0]; X[1]; CZ[0,1]; X[1]; X[0]
+3. QUANTUM PHASE MARKING
+   phase_W : W → W                              (7 gates)
      Applies -1 phase to inl branch (tag 00)
 
-   kick : (Bool ⊗ Bool) ⊗ W → ...              (expected: 5 gates)
+   kick : (Bool ⊗ Bool) ⊗ W → ...              (7 gates)
      Applies phase_W to witness wires
 
 4. QUANTUM SHORT-CIRCUIT CONJUNCTION
-   and_sc_quant = and_sc ; kick                 (expected: 8 gates total)
+   and_sc_quant = and_sc ; kick                 (12 gates total)
      Structural routing + phase marking
      Creates interference between execution paths
 

@@ -32,10 +32,6 @@ let tag_width n =
     log2_ceil n 0
 
 let () =
-  (* Set project root for bridge.py *)
-  let project_root = Filename.dirname (Sys.getcwd ()) in
-  Bridge.set_project_root project_root;
-
   banner "Zn CONTROLLED PHASE ROTATION E2E DEMO";
   print_endline "\nCoherent control over cyclic groups Zn\n";
 

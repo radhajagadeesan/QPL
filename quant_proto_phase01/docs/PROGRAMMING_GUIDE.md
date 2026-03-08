@@ -272,7 +272,7 @@ phased_omap0 : Complex.t → 'a ty → 'b ty → (A → C) → (B → D) → (A+
 ```ocaml
 open Qpl_surface.Linear
 
-(* Apply -1 phase to left branch of Bool = I + I *)
+(* Apply -1 phase to left branch of W = I + Bool *)
 let neg_one = Complex.neg Complex.one
 let phase_w = phased_omap0 neg_one one bool_ty (id one) (id bool_ty)
 (* For W = I + Bool (2 tag qubits): compiles to PlusMap branches +
@@ -512,7 +512,7 @@ When using `exp_i[θ,P]`, the compiler:
 1. Compiles body P to a unitary matrix U
 2. Verifies U² ≈ I (involutive check)
 3. Computes `cos(θ)·I + i·sin(θ)·U` via direct unitary synthesis
-4. Emits the result as a `UnitaryNqBox` (supports up to 3 qubits)
+4. Emits as `Unitary1qBox`/`Unitary2qBox`/`Unitary3qBox` (up to 3 qubits)
 
 If P is not involutive, compilation fails with an error.
 

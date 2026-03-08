@@ -297,7 +297,7 @@ Ctrl(f) : Bool ⊗ A → Bool ⊗ A    where f : A → A
 
 **Example:**
 ```python
-from lang.terms import Ctrl, H, S, Seq, TenTerm
+from lang.terms import Ctrl, H, S, X, Seq, TenTerm
 from lang.types import Q, Ten
 
 # Single-qubit controlled gates

@@ -92,9 +92,6 @@ let ctrl (a_ty : 'a ty) (f : (unit, [`Lolli of 'a * 'a]) prog)
 (* ========================================================================= *)
 
 let () =
-  let project_root = Filename.dirname (Sys.getcwd ()) in
-  Bridge.set_project_root project_root;
-
   banner "VERIFY NESTED CONTROLS: Mathematical Ground Truth";
   print_endline "";
   print_endline "  Compares compiled ctrl^k(G) against mathematically constructed";

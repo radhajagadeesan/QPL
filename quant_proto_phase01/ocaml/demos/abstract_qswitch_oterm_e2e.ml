@@ -145,9 +145,6 @@ let abstract_qswitch : (unit, [`Lolli of _ * _]) oterm =
 (* ========================================================================= *)
 
 let () =
-  let project_root = Filename.dirname (Sys.getcwd ()) in
-  Bridge.set_project_root project_root;
-
   banner "ABSTRACT QSWITCH (Full Source Language - oterm)";
   print_endline "\nFull pipeline: OCaml oterm -> Bridge -> Python compile -> Circuit\n";
 

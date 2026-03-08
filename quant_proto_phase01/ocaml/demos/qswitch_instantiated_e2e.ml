@@ -74,10 +74,6 @@ let compile_and_report name term =
 
 
 let () =
-  (* Set project root for bridge.py *)
-  let project_root = Filename.dirname (Sys.getcwd ()) in
-  Bridge.set_project_root project_root;
-
   banner "INSTANTIATED QSWITCH E2E DEMO (Case Sugar)";
   print_endline "\nDemonstrating compositional use of abstract QSwitch\n";
   print_endline "All QSwitch instances use case sugar combinators:";

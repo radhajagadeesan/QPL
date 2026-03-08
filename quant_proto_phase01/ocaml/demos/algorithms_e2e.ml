@@ -199,9 +199,6 @@ let ghz =
 (* ========================================================================= *)
 
 let () =
-  let project_root = Filename.dirname (Sys.getcwd ()) in
-  Bridge.set_project_root project_root;
-
   banner "PARAMETERIZED ALGORITHM DEMOS (Linear GADT)";
   print_endline "\nFull pipeline: OCaml Linear DSL -> Bridge -> Python compile -> Circuit\n";
 

@@ -104,6 +104,19 @@ type ('g, 'a) prog
 - `unit` = empty context
 - `'a * 'g` = context with variable of type `'a`
 
+**Gate combinators:**
+
+| Combinator | Type | Gate |
+|------------|------|------|
+| `gate_h` | `Q ⊸ Q` | Hadamard |
+| `gate_s` | `Q ⊸ Q` | S (phase π/2) |
+| `gate_t` | `Q ⊸ Q` | T (phase π/4) |
+| `gate_x` | `Q ⊸ Q` | Pauli-X |
+| `gate_y` | `Q ⊸ Q` | Pauli-Y |
+| `gate_z` | `Q ⊸ Q` | Pauli-Z |
+| `gate_rz θ` | `Q ⊸ Q` | Rz(θ) rotation |
+| `gate_cx` | `Q⊗Q ⊸ Q⊗Q` | CNOT |
+
 ---
 
 ## Staging: Meta-Level vs Object-Level
