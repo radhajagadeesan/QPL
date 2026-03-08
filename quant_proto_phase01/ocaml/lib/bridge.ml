@@ -23,9 +23,6 @@ type involution_result =
 (** Path to bridge.py (relative to ocaml/) *)
 let bridge_path = "bridge.py"
 
-(** Path to Python interpreter *)
-let python_path = "python3"
-
 (** Path to project root (for activating venv) *)
 let project_root = ref ""
 
@@ -313,26 +310,29 @@ let call_bridge request_json =
   let tmp_in = Filename.temp_file "qpl_bridge_" ".json" in
   let tmp_out = Filename.temp_file "qpl_bridge_" ".out" in
 
-  let oc = open_out tmp_in in
-  output_string oc request_json;
-  close_out oc;
+  Fun.protect ~finally:(fun () ->
+    (try Sys.remove tmp_in with Sys_error _ -> ());
+    (try Sys.remove tmp_out with Sys_error _ -> ())
+  ) (fun () ->
+    let oc = open_out tmp_in in
+    output_string oc request_json;
+    close_out oc;
 
-  (* Run python with temp file I/O *)
-  let cmd = Printf.sprintf "PYTHONPATH=%s/python/src %s %s < %s > %s 2>&1"
-    root python bridge_script tmp_in tmp_out in
-  let _ = Sys.command cmd in
+    (* Run python with temp file I/O *)
+    let cmd = Printf.sprintf "PYTHONPATH=%s/python/src %s %s < %s > %s 2>&1"
+      root python bridge_script tmp_in tmp_out in
+    let exit_code = Sys.command cmd in
+    if exit_code <> 0 then
+      failwith (Printf.sprintf "Bridge process failed with exit code %d" exit_code);
 
-  (* Read response *)
-  let ic = open_in tmp_out in
-  let len = in_channel_length ic in
-  let output = really_input_string ic len in
-  close_in ic;
+    (* Read response *)
+    let ic = open_in tmp_out in
+    let len = in_channel_length ic in
+    let output = really_input_string ic len in
+    close_in ic;
 
-  (* Cleanup *)
-  Sys.remove tmp_in;
-  Sys.remove tmp_out;
-
-  String.trim output
+    String.trim output
+  )
 
 (** Compile a term and return the wire permutation *)
 let compile term =
