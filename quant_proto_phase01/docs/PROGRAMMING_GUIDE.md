@@ -182,6 +182,7 @@ datatype Maybe['a] = None of I | Some of 'a
 | Gate | Description |
 |------|-------------|
 | `CCX[i,j,k]` | Toffoli (controls i,j, target k) |
+| `CSWAP[c,i,j]` | Controlled-SWAP (Fredkin gate) |
 
 ### Structural Primitives
 
@@ -245,9 +246,10 @@ let e = exp_i (Float.pi /. 4.0) (twist_tensor q q)
 ```
 
 The compiler:
-1. Verifies P is involutive (P² = id)
-2. Decomposes P into disjoint transpositions
-3. Emits `ExpSwap` gates for each transposition
+1. Compiles body P to a unitary matrix U
+2. Verifies U² ≈ I (involutive check)
+3. Computes cos(θ)·I + i·sin(θ)·U via direct unitary synthesis
+4. Emits as Unitary1qBox/Unitary2qBox/Unitary3qBox (up to 3 qubits)
 
 ### Phase-Weighted Bifunctors
 

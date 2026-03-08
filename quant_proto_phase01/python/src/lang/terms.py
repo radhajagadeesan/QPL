@@ -534,14 +534,14 @@ class ExpSwap:
 class ExpInvolution:
     """Exponential of a structural involution: exp(iθP).
 
-    P must be a structural term that compiles to an involutive WirePerm (π² = id).
+    The body P can be any term that compiles to an involutive unitary (U² ≈ I).
     At compile time:
-    1. Compile P to WirePerm π
-    2. Verify π² = id
-    3. Decompose π into disjoint transpositions
-    4. Emit ExpSwap(θ, a, b) for each transposition (a, b)
+    1. Compile P to a unitary matrix U
+    2. Verify U² ≈ I (involutive check)
+    3. Compute cos(θ)·I + i·sin(θ)·U via direct unitary synthesis
+    4. Emit as Unitary1qBox/Unitary2qBox/Unitary3qBox (up to 3 qubits)
 
-    This gives: exp(iθ · P) = cos(θ)·id + i·sin(θ)·P
+    This gives: exp(iθ · P) = cos(θ)·I + i·sin(θ)·P
     """
     theta: float
     body: "Term"  # The involution P

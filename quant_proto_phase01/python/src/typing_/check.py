@@ -287,7 +287,7 @@ def type_of(t: Term) -> DomCod:
         # decode : I + I → Q
         return (Plus(Unit(), Unit()), Q_ty())
 
-    # Case/copairing: [f, g] : (A + B) → C
+    # Case/bifunctor: [f, g] : (A + B) → (C + D)
     if isinstance(t, Case):
         # left  : A → C
         # right : B → D

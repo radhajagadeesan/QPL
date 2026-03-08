@@ -75,6 +75,10 @@ from lang.types import Q, I, Ten, Plus, width, tag_width, payload_width
 width(ty: Ty) -> int           # Number of physical wires
 tag_width(ty: Ty) -> int       # Number of tag qubits (0 for non-Plus)
 payload_width(ty: Ty) -> int   # Shared payload width (= width for non-Plus)
+data_width(ty: Ty) -> int      # Data wires excluding tags (= payload_width for Plus)
+tag_count(ty: Ty) -> int       # Number of tag qubits (same as tag_width)
+flatten_plus(ty: Ty) -> list   # Flatten Plus tree into leaf summands
+flatten_tensor(ty: Ty) -> list # Flatten Ten tree into factors
 ```
 
 ---
@@ -111,7 +115,7 @@ Sum structurals compile to **symbolic tag permutations** (lowered to gates late)
 
 | Term | Type | Description |
 |------|------|-------------|
-| `Case(ty_left, ty_right, left, right)` | (A + B) → C | Copairing (case expression) |
+| `Case(ty_left, ty_right, left, right)` | (A + B) → (C + D) | Bifunctorial case (same as PlusMap) |
 | `PlusMap(ty_left, ty_right, left, right)` | (A + B) → (C + D) | Bifunctorial action (⊕-Map) |
 
 **Case signature:**
@@ -120,9 +124,10 @@ Case(
     ty_left: Ty,    # Type A (left payload type)
     ty_right: Ty,   # Type B (right payload type)
     left: Term,     # Left branch: A → C
-    right: Term     # Right branch: B → C
+    right: Term     # Right branch: B → D
 ) -> Term
-# Returns: term of type (A + B) → C
+# Returns: term of type (A + B) → (C + D)
+# Tag is preserved: left stays left, right stays right
 ```
 
 **PlusMap signature (⊕-Map):**
@@ -146,8 +151,8 @@ PlusMap(
 On superposition inputs, both branches execute coherently (indefinite causal order).
 
 **Case vs PlusMap:**
-- Case: `[f, g] : (A + B) → C` — copairing, both branches produce same output type
-- PlusMap: `f ⊕ g : (A + B) → (C + D)` — bifunctor, branches can have different output types
+- Case and PlusMap are semantically identical: both are `f ⊕ g : (A + B) → (C + D)`
+- For true copairing (both branches produce the same type C), use branches where C = D
 
 ### N-ary Sum Eliminator
 

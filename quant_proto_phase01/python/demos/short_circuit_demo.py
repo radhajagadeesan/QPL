@@ -440,19 +440,19 @@ def demo_and_sc_quant():
     print("\nUnitary matrix:")
     print(np.round(U.real, 3))
 
-    # Analyze: toggle_W swaps |10⟩↔|11⟩, phase_W applies -1 to |0x⟩
+    # Analyze: toggle_W swaps |01⟩↔|10⟩, phase_W applies -1 to |0x⟩
     print("\nSemantics (on basis states):")
     print("  |00⟩ → toggle → |00⟩ → phase → -|00⟩")
-    print("  |01⟩ → toggle → |01⟩ → phase → -|01⟩")
-    print("  |10⟩ → toggle → |11⟩ → phase → |11⟩")
-    print("  |11⟩ → toggle → |10⟩ → phase → |10⟩")
+    print("  |01⟩ → toggle → |10⟩ → phase →  |10⟩")
+    print("  |10⟩ → toggle → |01⟩ → phase → -|01⟩")
+    print("  |11⟩ → toggle → |11⟩ → phase →  |11⟩")
 
     # Verify
     expected = np.array([
         [-1, 0, 0, 0],
-        [0, -1, 0, 0],
-        [0, 0, 0, 1],
-        [0, 0, 1, 0]
+        [0, 0, -1, 0],
+        [0, 1, 0, 0],
+        [0, 0, 0, 1]
     ], dtype=complex)
 
     if np.allclose(U, expected):

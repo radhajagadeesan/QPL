@@ -273,17 +273,16 @@ PYTHONPATH=python/src python python/demos/exp_twist_demo.py
 
 ## Pauli Conjugation Demo
 
-Verifies the Pauli identity using qubit represented as `I + I` (one-hot encoding):
+Verifies the conjugation identity using `Q ⊗ Q` with `TwistTen` (SWAP):
 
 ```
-exp_i(π/4, X) ; Z ; exp_i(-π/4, X) = Y
+exp_i(π/4, SWAP) ; Z ; exp_i(-π/4, SWAP)
 ```
 
 Where:
-- Qubit = `I + I` (2 one-hot tag wires)
-- X = `twist+[I,I]` (structural swap)
-- Z = `Z[1]` (Z gate on wire 1)
-- Y = `twist ; S[1] ; Sdg[0]` (swap + phases)
+- Domain = `Q ⊗ Q` (2 qubits)
+- SWAP = `TwistTen(Q, Q)` (wire permutation involution)
+- Z = `Z(0, Q⊗Q)` (Z gate on wire 0)
 
 | Format | File | Requirements |
 |--------|------|--------------|
@@ -298,18 +297,13 @@ PYTHONPATH=python/src python python/demos/pauli_conjugation_demo.py
 
 **What it verifies:**
 
-| Term | Gates | Logical Unitary |
-|------|-------|-----------------|
-| `twist+[I,I]` | 1 | Pauli-X |
-| `Z[1]` | 1 | Pauli-Z |
-| `twist ; S[1] ; Sdg[0]` | 3 | Pauli-Y |
-| `exp_i(π/4,X) ; Z ; exp_i(-π/4,X)` | 7 | = Y (up to phase) |
+| Term | Gates | Description |
+|------|-------|-------------|
+| `TwistTen(Q,Q)` | 0 | SWAP (pure wire permutation) |
+| `exp_i(π/4, SWAP)` | 1 | UnitaryNqBox (direct synthesis) |
+| `exp_i(π/4, SWAP) ; Z ; exp_i(-π/4, SWAP)` | 3 | Conjugation identity |
 
-**Key insight:** The one-hot encoding of `I + I` maps:
-- Logical |0⟩ → physical |10⟩
-- Logical |1⟩ → physical |01⟩
-
-This allows Pauli matrices to be implemented as structural operations (X) or gates on specific wires (Z, Y).
+**Key insight:** ExpInvolution handles SWAP as a genuine involution (SWAP² = I), computing the matrix exponential via direct unitary synthesis.
 
 ---
 
@@ -369,6 +363,8 @@ q[1]: ───────[H]───────────[S]────�
 - `qswitch_instantiation_demo.py`
 - `quantum_switch_demo.py`
 - `short_circuit_demo.py`
+- `z8_coherent_action_demo.py`
+- `zn_controlled_phase_demo.py`
 
 ---
 

@@ -17,7 +17,7 @@ from lang.terms import (
     ExpSwap, ExpInvolution, H, CX,
 )
 from typing_.check import type_of, assert_well_typed, TypeCheckError
-from compile.to_pytket import compile, _compile_structural_to_perm
+from compile.to_pytket import compile
 from core.perm import identity, WirePerm, is_involution, decompose_involution
 
 
@@ -132,12 +132,13 @@ class TestExpInvolutionCompilation:
     """Tests for ExpInvolution compilation."""
 
     def test_twistten_is_involution(self):
-        """TwistTen(Q,Q) is an involution: (0,1) swap."""
+        """TwistTen(Q,Q) is an involution: SWAP² = I."""
+        import numpy as np
         body = TwistTen(Q(), Q())
-        perm = _compile_structural_to_perm(body)
-
-        assert is_involution(perm)
-        assert perm.new_to_old == [1, 0]
+        result = compile(body, materialize=True)
+        U = result.circuit.get_unitary()
+        # SWAP² = I
+        assert np.allclose(U @ U, np.eye(4), atol=1e-9)
 
     def test_exp_twistten_compiles(self):
         """exp(iθ · TwistTen) compiles via direct unitary synthesis."""
