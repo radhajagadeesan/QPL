@@ -1,10 +1,15 @@
-# OCaml E2E Demos
+# OCaml E2E Demos (Primary User Language)
 
-End-to-end demonstrations of the full compilation pipeline:
+**OCaml is the primary user language for this release.** Programs are written using the
+OCaml Linear DSL (`ocaml/lib/linear.ml`), which provides GADT-enforced linearity at
+compile time. The full pipeline is:
 
 ```
-OCaml Linear DSL -> Bridge -> Python compile() -> pytket Circuit
+OCaml Linear DSL → Elaborate → Bridge (JSON) → Python compile() → pytket Circuit
 ```
+
+These demos are the main showcase of the system's capabilities. For backend-level
+Python demos that exercise the compiler directly, see `python/demos/`.
 
 ## Running the Demos
 

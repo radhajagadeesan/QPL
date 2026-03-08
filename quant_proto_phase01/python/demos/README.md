@@ -1,8 +1,13 @@
-# Python Demos
+# Python Backend Demos
 
-Demonstrations of Granthi language features and compilation using the Python API.
-
-> **Note:** For OCaml E2E demos that compile through the full pipeline to circuits, see `ocaml/demos/`.
+> **The primary user language for this release is OCaml.** Users should write programs
+> using the OCaml Linear DSL (`ocaml/lib/linear.ml`), which compiles through the full
+> pipeline: OCaml → Bridge → Python → pytket circuits. See `ocaml/demos/` for
+> user-facing E2E demos.
+>
+> The Python demos below exercise the **compilation backend** directly. They are useful
+> for testing and understanding the compiler internals, but are not the intended
+> user-facing API.
 
 ---
 
