@@ -1,6 +1,6 @@
 (** SRC_TESTS.md Conformance Test Suite (Linear GADT Version)
 
-    This file implements the conformance tests from RadhaMSG/SRC_TESTS.md
+    This file implements the conformance tests for the source language
     using the Linear GADT module where OCaml enforces linearity at compile time.
 
     Tests are organized by section:

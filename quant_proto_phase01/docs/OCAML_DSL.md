@@ -116,6 +116,8 @@ type ('g, 'a) prog
 | `gate_z` | `Q ⊸ Q` | Pauli-Z |
 | `gate_rz θ` | `Q ⊸ Q` | Rz(θ) rotation |
 | `gate_cx` | `Q⊗Q ⊸ Q⊗Q` | CNOT |
+| `phase z ty` | `A ⊸ A` | Scalar phase e^{iθ} (requires \|z\|=1) |
+| `phased_omap0 z a b f g` | `A⊕B ⊸ A⊕B` | Phase-weighted PlusMap: applies phase z to left branch |
 
 ---
 

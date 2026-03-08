@@ -17,7 +17,7 @@ Expected properties:
 - Introduces no gates
 - Produces a wire permutation that moves the tag to the front
 
-See: RadhaMSG/distR_expanded_single_pattern.md
+See the DistR compilation specification for details.
 """
 
 import sys

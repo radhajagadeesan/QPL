@@ -154,7 +154,7 @@ class TestPlusMapSemantics:
 class TestPlusMapNestedFlat:
     """PM-FLAT tests: nested PlusMap under flattened sum encoding.
 
-    Tests from RadhaMSG/COH-PLUSMAP-02.md, verifying Strategy A
+    Tests verifying Strategy A
     (tag permutation sandwich) for nested sums.
     """
 

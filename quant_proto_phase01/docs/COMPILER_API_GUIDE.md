@@ -50,7 +50,7 @@ For IR architecture details, see `IR_DESIGN.md`.
 > 3. **Manual verification:** If constructing terms with Var/LetPair, carefully audit
 >    that each variable is used exactly once.
 >
-> See `RadhaMSG/SRC_TESTS.md` for the conformance test suite. Linearity rejection tests
+> See `ocaml/test/test_src_conformance.ml` for the conformance test suite. Linearity rejection tests
 > (T3, T6, T8, T10, T12, T14, T15) apply **only to OCaml**, not Python.
 
 ---

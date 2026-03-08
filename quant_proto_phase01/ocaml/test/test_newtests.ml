@@ -1,5 +1,5 @@
 (** Comprehensive test suite for the surface language.
-    Follows the specification in RadhaMSG/NEWTESTS.md.
+    Comprehensive test suite for all surface language features.
 
     Tests are organized by section:
     - §2: Basic typing + linearity
@@ -932,7 +932,7 @@ let test_section_10 () =
 let () =
   print_endline "================================================================";
   print_endline "NEWTESTS: Comprehensive test suite for the source language";
-  print_endline "  (specification: RadhaMSG/NEWTESTS.md)";
+  print_endline "  (comprehensive surface language test suite)";
   print_endline "================================================================";
   print_endline "";
 

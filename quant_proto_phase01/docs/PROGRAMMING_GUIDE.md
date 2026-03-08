@@ -49,7 +49,7 @@ For compiler API details, see `COMPILER_API_GUIDE.md`.
 >    - Manually verify linearity before calling `compile()`
 >    - Use only combinator-style construction (no explicit variables)
 >
-> 3. **For testing:** The conformance test suite (`RadhaMSG/SRC_TESTS.md`) documents
+> 3. **For testing:** The conformance test suite (`ocaml/test/test_src_conformance.ml`) documents
 >    linearity rejection tests (T3, T6, T8, T10, T12, T14, T15) that apply **only to OCaml**.
 >
 > ### OCaml Options
