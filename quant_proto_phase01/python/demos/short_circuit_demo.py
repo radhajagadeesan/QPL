@@ -65,7 +65,10 @@ def print_circuit(result, title):
     print("Gates:")
     for cmd in result.circuit.get_commands():
         qubits = [q.index[0] for q in cmd.qubits]
-        params = list(cmd.op.params) if cmd.op.params else []
+        try:
+            params = list(cmd.op.params) if cmd.op.params else []
+        except RuntimeError:
+            params = []  # Box-type ops (Unitary2qBox, etc.) don't support .params
         if params:
             print(f"  {cmd.op.type.name}({[round(p, 4) for p in params]}) on {qubits}")
         else:

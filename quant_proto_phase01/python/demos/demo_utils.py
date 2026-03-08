@@ -143,6 +143,19 @@ class DemoRunner:
                         lines[q] += "──│──"
                     else:
                         lines[q] += "─────"
+            else:
+                # Multi-qubit or box-type gate
+                min_q, max_q = min(qubits), max(qubits)
+                label = f"[{gate_name}]"
+                for q in range(n_qubits):
+                    if q == min_q:
+                        lines[q] += label
+                    elif q in qubits:
+                        lines[q] += "──■──"
+                    elif min_q < q < max_q:
+                        lines[q] += "──│──"
+                    else:
+                        lines[q] += "─" * len(label)
 
         # Pad to equal length and print
         max_len = max(len(line) for line in lines)

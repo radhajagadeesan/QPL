@@ -346,10 +346,10 @@ exp(iθ · SWAP) = cos(θ)·I + i·sin(θ)·SWAP
 ```
 
 **ExpInvolution compilation:**
-1. Compile body P to WirePerm π
-2. Verify π² = identity (involutive)
-3. Decompose π into disjoint transpositions (a₁,b₁), (a₂,b₂), ...
-4. Emit `ExpSwap(θ, aₖ, bₖ)` for each transposition
+1. Compile body P to a unitary matrix U
+2. Verify U² ≈ I (involutive check)
+3. Compute `cos(θ)·I + i·sin(θ)·U` via direct unitary synthesis
+4. Emit the result as a `Unitary1qBox`/`Unitary2qBox`/`Unitary3qBox` (up to 3 qubits)
 
 ### Qubit Encoding Isomorphism
 

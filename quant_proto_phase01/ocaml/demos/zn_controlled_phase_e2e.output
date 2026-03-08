@@ -267,11 +267,11 @@ NPlusMap APPROACH
 Zn CONTROLLED PHASE ROTATION
 ----------------------------
 
-Demonstrated: Coherent control over cyclic groups
+Demonstrated: Coherent control over cyclic groups (expected gate counts)
 
-    Z2 (Bool):     1 tag qubit,  1 gate  (CZ)
-    Z4:            2 tag qubits, 2 gates (CS ; CZ)
-    Z5:            3 tag qubits, 3 gates (CRz ; CRz ; CRz)
+    Z2 (Bool):     1 tag qubit,  expected 1 gate  (CZ)
+    Z4:            2 tag qubits, expected 2 gates (CS ; CZ)
+    Z5:            3 tag qubits, expected 3 gates (CRz ; CRz ; CRz)
     Z8 (NPlusMap): 3 tag qubits, compiled via NPlusMap (8 branches)
 
 Key formula:

@@ -172,7 +172,7 @@ let () =
 
   (* --- Part 3: Compare with existing meta-level QSwitch --- *)
   banner "Part 3: Comparison with Meta-level QSwitch";
-  print_endline "The existing meta-level qswitch[H,S] compiles to 6 gates.";
+  print_endline "The existing meta-level qswitch[H,S] is expected to compile to 6 gates.";
   print_endline "The abstract lambda should compile to a larger circuit";
   print_endline "(it includes the function application overhead).\n";
 

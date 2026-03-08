@@ -112,3 +112,6 @@ Verified by extracting unitaries from compiled circuits:
   4. exp_i(π/4, twist) ; exp_i(π/4, twist) = exp_i(π/2, twist)
 
 The composition law exp_i(θ,P) ; exp_i(θ,P) = exp_i(2θ,P) is verified!
+
+
+Tip: Run with --circuits to see ASCII circuit diagrams

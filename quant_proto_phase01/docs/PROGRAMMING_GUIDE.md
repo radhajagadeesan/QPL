@@ -273,7 +273,8 @@ open Qpl_surface.Linear
 (* Apply -1 phase to left branch of Bool = I + I *)
 let neg_one = Complex.neg Complex.one
 let phase_w = phased_omap0 neg_one one bool_ty (id one) (id bool_ty)
-(* Compiles to: X[0]; X[1]; CU1(1.0); X[1]; X[0] for 2-tag-qubit type *)
+(* For W = I + Bool (2 tag qubits): compiles to PlusMap branches +
+   phase gates X[0]; X[1]; CU1(1.0); X[1]; X[0] on the tag register *)
 ```
 
 **Requirements:**

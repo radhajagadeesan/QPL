@@ -20,6 +20,7 @@ Demonstrations of Granthi language features and compilation using the Python API
 | **Zn Controlled Phase** | `zn_controlled_phase_demo.py` | **Z2, Z4, Z5 controlled phase rotation via Ctrl** |
 | ExpInvolution | `exp_twist_demo.py` | Exponentials of structural involutions |
 | Pauli Conjugation | `pauli_conjugation_demo.py` | Qubit as I+I, Pauli identity verification |
+| Case Expression | `case_demo.py` | Case compilation to controlled gates |
 
 ---
 

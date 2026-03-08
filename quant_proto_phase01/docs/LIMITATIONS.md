@@ -6,9 +6,9 @@ Last updated: 2026-02-20.
 
 ## 1. Sum Type Arity — pytket
 
-**Root cause:** pytket provides `Unitary2qBox` (2 qubits) and `Unitary3qBox` (3 qubits) but no general `UnitaryNqBox`. Tag permutation unitaries and full PlusMap block-diagonal unitaries are emitted through these boxes.
+**Root cause:** pytket provides `Unitary1qBox` (1 qubit), `Unitary2qBox` (2 qubits), and `Unitary3qBox` (3 qubits) but no general `UnitaryNqBox`. Tag permutation unitaries and full PlusMap block-diagonal unitaries are emitted through these boxes.
 
-**Precise pytket limitation:** `pytket.circuit` exposes `Unitary2qBox` and `Unitary3qBox` only. There is no `UnitaryNqBox` for arbitrary n. If pytket added one, limitations 1a and 1b would be eliminated.
+**Precise pytket limitation:** `pytket.circuit` exposes `Unitary1qBox`, `Unitary2qBox`, and `Unitary3qBox` only. There is no `UnitaryNqBox` for arbitrary n. If pytket added one, limitations 1a and 1b would be eliminated.
 
 ### 1a. Tag permutations: ≤ 8 summands (k ≤ 3 tag qubits)
 
@@ -46,7 +46,7 @@ Strategy B requires total width w = k + payload_width ≤ 3.
 
 ## 2. ExpInvolution: ≤ 3 qubits — pytket
 
-`ExpInvolution(θ, P)` synthesizes the unitary cos(θ)·I + i·sin(θ)·U and emits it via `Unitary2qBox` or `Unitary3qBox`.
+`ExpInvolution(θ, P)` synthesizes the unitary cos(θ)·I + i·sin(θ)·U and emits it via `Unitary1qBox`, `Unitary2qBox`, or `Unitary3qBox`.
 
 | Body width | Supported? |
 |:---:|:---:|

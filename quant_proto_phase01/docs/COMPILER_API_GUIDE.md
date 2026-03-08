@@ -336,9 +336,9 @@ result = compile(lam_apply_term)
 
 ## Involution Certification (exp_i)
 
-The compiler provides involution checking for `ExpInvolution`. The body must be a
-**wire permutation involution** (structural operation that compiles to a self-inverse
-permutation with no gates).
+The compiler provides involution checking for `ExpInvolution`. The body can be any
+term that compiles to an **involutive unitary** (U² ≈ I), including gate-containing
+bodies (e.g., `TwistPlus` which emits an X gate, or `H` which is self-inverse).
 
 ```python
 from lang.terms import TwistTen, ExpInvolution

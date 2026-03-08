@@ -6,7 +6,7 @@
 Type: Q ⊗ Q (width = 2 qubits)
 
 SWAP = TwistTen(Q, Q) — wire permutation [1, 0]
-exp_i(θ, SWAP) = exp(iθ · SWAP) — uses direct unitary synthesis
+exp_i(θ, SWAP) = exp(iθ · SWAP) — uses ExpSwap decomposition
 
 
 ============================================================
@@ -145,3 +145,5 @@ The ExpInvolution infrastructure correctly implements exp(iθ·P)
 for wire-permutation involutions P.
 
 ✓ ALL TESTS PASSED!
+
+Tip: Run with --circuits to see ASCII circuit diagrams

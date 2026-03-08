@@ -209,19 +209,6 @@ let phase_w : (unit, [`Lolli of [`Plus of [`One] * [`Plus of [`One] * [`One]]]
                                * [`Plus of [`One] * [`Plus of [`One] * [`One]]]]) prog =
   phased_omap0 neg_one one bool_ty (id one) (id bool_ty)
 
-(** Bridge-level phase_W - for comparison with source-level. *)
-let phase_w_bridge : Bridge.term =
-  (* W has 2 tag qubits at indices 0 and 1 *)
-  let x0 = Bridge.TX 0 in
-  let x1 = Bridge.TX 1 in
-  let cz = Bridge.TCZ (0, 1) in
-  (* X[0]; X[1]; CZ[0,1]; X[1]; X[0] *)
-  Bridge.TSeq (x0,
-    Bridge.TSeq (x1,
-      Bridge.TSeq (cz,
-        Bridge.TSeq (x1, x0))))
-
-
 (** kick : (Bool ⊗ Bool) ⊗ W -> (Bool ⊗ Bool) ⊗ W
 
     Source-level: applies id to (Bool ⊗ Bool) and phase_W to W.
@@ -229,39 +216,17 @@ let phase_w_bridge : Bridge.term =
 *)
 let kick = par0 (id bb_ty) phase_w
 
-(** kick_bridge - for comparison with source-level. *)
-let kick_bridge : Bridge.term =
-  (* W is at wires 2 and 3 in the (Bool ⊗ Bool) ⊗ W layout *)
-  let x2 = Bridge.TX 2 in
-  let x3 = Bridge.TX 3 in
-  let cz = Bridge.TCZ (2, 3) in
-  (* X[2]; X[3]; CZ[2,3]; X[3]; X[2] *)
-  Bridge.TSeq (x2,
-    Bridge.TSeq (x3,
-      Bridge.TSeq (cz,
-        Bridge.TSeq (x3, x2))))
-
 
 (** and_sc_quant : (Bool ⊗ Bool) ⊗ W -> (Bool ⊗ Bool) ⊗ W
 
     Source-level quantum short-circuit conjunction:
-    and_sc_quant = and_sc ; kick
-*)
-let and_sc_quant = seq0 and_sc kick
-
-
-(** and_sc_quant_bridge - for comparison.
-
-    Quantum short-circuit conjunction: structural routing followed by phase marking.
-
     and_sc_quant = and_sc ; kick
 
     When run on superposition inputs, the -1 phase on the short-circuit
     branch creates interference between paths where short-circuit occurred
     and paths where it did not.
 *)
-let and_sc_quant_bridge : Bridge.term =
-  Bridge.TSeq (emit and_sc, kick_bridge)
+let and_sc_quant = seq0 and_sc kick
 
 
 (* ========================================================================= *)
@@ -433,14 +398,6 @@ Quantum phase marking creates interference between paths:
    | Bridge.CompileError err ->
        Printf.printf "  ✗ FAILED: %s\n" err);
 
-  print_endline "\n--- Bridge-level phase_W (for comparison) ---\n";
-  Printf.printf "phase_w_bridge = X[0]; X[1]; CZ[0,1]; X[1]; X[0]\n";
-  Printf.printf "  Bridge: %s\n" (Bridge.term_to_json phase_w_bridge);
-  (match Bridge.compile_show phase_w_bridge with
-   | Bridge.CompileOk _ -> ()
-   | Bridge.CompileError err ->
-       Printf.printf "  ✗ FAILED: %s\n" err);
-
   print_endline "
 kick : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
   Source-level: kick = par0 (id bb_ty) phase_w
@@ -454,13 +411,6 @@ kick : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
    | Bridge.CompileError err ->
        Printf.printf "  ✗ FAILED: %s\n" err);
 
-  print_endline "\n--- Bridge-level kick (for comparison) ---\n";
-  Printf.printf "kick_bridge = X[2]; X[3]; CZ[2,3]; X[3]; X[2]\n";
-  (match Bridge.compile_show kick_bridge with
-   | Bridge.CompileOk _ -> ()
-   | Bridge.CompileError err ->
-       Printf.printf "  ✗ FAILED: %s\n" err);
-
   print_endline "
 and_sc_quant : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
   Source-level: and_sc_quant = seq0 and_sc kick
@@ -470,12 +420,6 @@ and_sc_quant : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
   print_endline "\n--- Source-level and_sc_quant ---\n";
   Printf.printf "and_sc_quant = seq0 and_sc kick\n";
   (match Bridge.compile_show (emit and_sc_quant) with
-   | Bridge.CompileOk _ -> ()
-   | Bridge.CompileError err ->
-       Printf.printf "  ✗ FAILED: %s\n" err);
-
-  print_endline "\n--- Bridge-level and_sc_quant (for comparison) ---\n";
-  (match Bridge.compile_show and_sc_quant_bridge with
    | Bridge.CompileOk _ -> ()
    | Bridge.CompileError err ->
        Printf.printf "  ✗ FAILED: %s\n" err);
@@ -555,21 +499,21 @@ Demonstrated short-circuit conjunction in Linear DSL:
    Bool = I + I (2-element, 1 qubit)
    W = I + Bool (3-element witness, 2 qubits)
 
-2. STRUCTURAL OPERATIONS
-   toggle_W = id_I ⊕ twist_Bool : W → W         (1 gate)
+2. STRUCTURAL OPERATIONS (expected gate counts)
+   toggle_W = id_I ⊕ twist_Bool : W → W         (expected: 1 gate)
    ctrl_W(M_0, M_1) : Bool ⊗ W → Bool ⊗ W      (coherent control)
-   and_sc : (Bool ⊗ Bool) ⊗ W → ...            (3 gates)
+   and_sc : (Bool ⊗ Bool) ⊗ W → ...            (expected: 3 gates)
 
-3. QUANTUM PHASE MARKING
-   phase_W : W → W                              (5 gates)
+3. QUANTUM PHASE MARKING (expected gate counts)
+   phase_W : W → W                              (expected: 5 gates)
      X[0]; X[1]; CZ[0,1]; X[1]; X[0]
      Applies -1 phase to inl branch (tag 00)
 
-   kick : (Bool ⊗ Bool) ⊗ W → ...              (5 gates)
+   kick : (Bool ⊗ Bool) ⊗ W → ...              (expected: 5 gates)
      Applies phase_W to witness wires
 
 4. QUANTUM SHORT-CIRCUIT CONJUNCTION
-   and_sc_quant = and_sc ; kick                 (8 gates total)
+   and_sc_quant = and_sc ; kick                 (expected: 8 gates total)
      Structural routing + phase marking
      Creates interference between execution paths
 

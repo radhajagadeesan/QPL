@@ -31,7 +31,7 @@ Compilation SUCCESS!
 ==========================================================================
   Part 3: Comparison with Meta-level QSwitch
 ==========================================================================
-The existing meta-level qswitch[H,S] compiles to 6 gates.
+The existing meta-level qswitch[H,S] is expected to compile to 6 gates.
 The abstract lambda should compile to a larger circuit
 (it includes the function application overhead).
 
