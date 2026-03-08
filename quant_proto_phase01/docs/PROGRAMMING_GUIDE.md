@@ -542,7 +542,7 @@ See `python/demos/README.md` and `ocaml/demos/README.md` for full details.
 | Algorithmic Snippets | `algorithmic_snippets_demo.py` | Bell, GHZ, Deutsch, short-circuit, Grover snippets |
 | Short-Circuit | `short_circuit_demo.py` | Short-circuit conjunction with witness routing |
 | ExpInvolution | `exp_twist_demo.py` | Composition law: exp(θ);exp(θ) = exp(2θ) |
-| Pauli Conjugation | `pauli_conjugation_demo.py` | exp(π/4,X);Z;exp(-π/4,X) = Y on qubit as I+I |
+| Pauli Conjugation | `pauli_conjugation_demo.py` | Conjugation identity using exp(π/4,SWAP) on Q⊗Q |
 
 ### OCaml E2E Demos
 
@@ -582,17 +582,16 @@ Extracts unitaries from compiled circuits and compares mathematically.
 
 ### Pauli Conjugation Demo
 
-Verifies the Pauli identity using qubit as `I + I` (one-hot encoding):
+Verifies the conjugation identity using `Q ⊗ Q` with `TwistTen` (SWAP):
 ```
-exp_i(π/4, X) ; Z ; exp_i(-π/4, X) = Y
+exp_i(π/4, SWAP) ; Z ; exp_i(-π/4, SWAP)
 ```
 
 Where:
-- X = `twist+[I,I]` (structural swap of tags)
-- Z = Z gate on wire 1
-- Y = `twist ; S[1] ; Sdg[0]`
+- SWAP = `TwistTen(Q, Q)` (wire permutation involution, SWAP² = I)
+- Z = `Z(0, Q⊗Q)` (Z gate on wire 0)
 
-Shows both 4×4 physical unitaries and 2×2 logical qubit submatrices.
+Shows compiled unitaries and verifies the conjugation via matrix comparison.
 
 **No knowledge of compiler internals is required to understand the demos.**
 

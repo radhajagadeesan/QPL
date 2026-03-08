@@ -55,6 +55,7 @@ open Qpl_surface.Ast
 
 (* Types *)
 type ty =
+  | TyVar of tyvar          (* Type variable: 'a *)
   | TyQ                     (* Qubit *)
   | TyUnit                  (* Unit type I *)
   | TyTensor of ty * ty     (* A ⊗ B *)
