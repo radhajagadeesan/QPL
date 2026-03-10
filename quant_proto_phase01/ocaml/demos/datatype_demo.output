@@ -27,7 +27,7 @@ G.inv:
 
 --- Control combinator ---
 control Bool Q [H; X]:
-  {"node": "Gate", "name": "control_Bool_2", "targets": [0], "controls": []}
+  {"node": "NPlusMap", "summand_types": [{"node": "Q"}, {"node": "Q"}], "branches": [{"node": "H", "i": 0}, {"node": "X", "i": 0}]}
 
 --- I^{⊕k} generation ---
   i_sum 1 = I
@@ -53,7 +53,7 @@ Coherent selector (NOT observational case):
   λg. case g of 0 => P_0 | 1 => P_1 | 2 => P_2 | 3 => P_3
 
 Control combinator (A ⊗ Z_4 ⊸ A ⊗ Z_4):
-  {"node": "Gate", "name": "control_Z4_4", "targets": [0], "controls": []}
+  {"node": "NPlusMap", "summand_types": [{"node": "Q"}, {"node": "Q"}, {"node": "Q"}, {"node": "Q"}], "branches": [{"node": "Rz", "theta": 0.000000, "i": 0}, {"node": "Rz", "theta": 1.570796, "i": 0}, {"node": "Rz", "theta": 3.141593, "i": 0}, {"node": "Rz", "theta": 4.712389, "i": 0}]}
 
 Z_8 datatype:
   Name: Z8
@@ -71,7 +71,7 @@ Phase rotations P_g = Rz(2πg/8):
   P_7 = Rz(5.4978) = Rz(7π/4)
 
 Control combinator (A ⊗ Z_8 ⊸ A ⊗ Z_8):
-  {"node": "Gate", "name": "control_Z8_8", "targets": [0], "controls": []}
+  {"node": "NPlusMap", "summand_types": [{"node": "Q"}, {"node": "Q"}, {"node": "Q"}, {"node": "Q"}, {"node": "Q"}, {"node": "Q"}, {"node": "Q"}, {"node": "Q"}], "branches": [{"node": "Rz", "theta": 0.000000, "i": 0}, {"node": "Rz", "theta": 0.785398, "i": 0}, {"node": "Rz", "theta": 1.570796, "i": 0}, {"node": "Rz", "theta": 2.356194, "i": 0}, {"node": "Rz", "theta": 3.141593, "i": 0}, {"node": "Rz", "theta": 3.926991, "i": 0}, {"node": "Rz", "theta": 4.712389, "i": 0}, {"node": "Rz", "theta": 5.497787, "i": 0}]}
 
 --- E2E Compilation via Bridge ---
 (Note: control combinator emits opaque Gate terms that require
