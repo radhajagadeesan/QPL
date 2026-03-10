@@ -687,12 +687,11 @@ let control (dt : datatype_desc) (a_ty : 'a ty)
   if dt.arity = 1 then
     par0 (id dt.rep) branches.(0)
   else
-    (* Emit as a primitive control operation.
-       The control name encodes: "control_<datatype>_<arity>"
-       The backend interprets this as coherent control over I^{⊕k}. *)
-    let ctrl_name = Printf.sprintf "control_%s_%d" dt.name dt.arity in
-    let da = Rep.Tensor (dt.rep, a_ty) in
-    Prim (ctrl_name, da, da)
+    (* D = I^{⊕n}, so D ⊗ A has flat tag encoding [tag_bits | A_wires].
+       Each summand of D is Unit, so summand ⊗ A = A in the payload.
+       We use NMap on n copies of a_ty to apply per-branch morphisms. *)
+    let summand_types = Array.make dt.arity a_ty in
+    omapn summand_types branches
 
 
 (** Phase-weighted coherent control over n-ary datatype.

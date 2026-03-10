@@ -588,6 +588,127 @@ def handle_verify_ctrl_unitary(request: dict) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def handle_eq_circ_partial(request: dict) -> dict:
+    """Compare circuits via partial trace channel fidelity.
+
+    Compiles term1 (n qubits) and term2 (m qubits, m <= n).
+    Treats term1 as defining a quantum channel on m visible wires
+    (ancilla initialized to |0⟩, then traced out). Compares this
+    channel to the unitary defined by term2 using entanglement fidelity
+    via Kraus operators.
+
+    F_e = (1/d²) Σ_a |Tr(V† A_a)|²
+
+    where A_a = ⟨a|_anc U |0⟩_anc are the Kraus operators and V = U_small.
+    F_e = 1.0 iff the channel equals V(·)V†.
+
+    visible_wires: list of m wire indices, or "auto" to try all C(n,m).
+    """
+    import numpy as np
+    from itertools import combinations
+
+    def channel_fidelity(U_big, V_small, n, visible_wires):
+        """Compute entanglement fidelity between partial-trace channel and V_small.
+
+        Channel: Φ(ρ) = Tr_anc[U(|0⟩⟨0|_anc ⊗ ρ)U†]
+        Kraus operators: A_a = ⟨a|_anc U |0⟩_anc
+        F_e = (1/d²) Σ_a |Tr(V† A_a)|²
+        """
+        m = len(visible_wires)
+        anc_wires = sorted(w for w in range(n) if w not in visible_wires)
+        n_anc = len(anc_wires)
+        d_v = 2**m
+        d_a = 2**n_anc
+
+        # Reshape U_big into tensor form: [out_0, out_1, ..., out_{n-1}, in_0, ..., in_{n-1}]
+        U_tensor = U_big.reshape([2]*n + [2]*n)
+
+        # Reorder axes: (vis_out..., anc_out..., vis_in..., anc_in...)
+        out_order = list(visible_wires) + list(anc_wires)
+        in_order = [n + w for w in visible_wires] + [n + w for w in anc_wires]
+        U_reordered = np.transpose(U_tensor, out_order + in_order)
+
+        # Reshape to (d_v, d_a, d_v, d_a) = (vis_out, anc_out, vis_in, anc_in)
+        U_block = U_reordered.reshape(d_v, d_a, d_v, d_a)
+
+        # Kraus operators: A_a[i,j] = U_block[i, a, j, 0]  (anc_in = |0⟩)
+        # F_e = (1/d_v²) Σ_a |Tr(V† A_a)|²
+        Vdag = V_small.conj().T
+        F_e = 0.0
+        for a in range(d_a):
+            A_a = U_block[:, a, :, 0]  # (d_v, d_v) matrix
+            tr_val = np.trace(Vdag @ A_a)
+            F_e += abs(tr_val)**2
+
+        F_e /= d_v**2
+        return float(F_e)
+
+    try:
+        term1 = parse_term(request["term1"])
+        term2 = parse_term(request["term2"])
+        visible = request.get("visible_wires", "auto")
+
+        # Compile term1 WITHOUT materialization: we want the gate unitary only,
+        # not the final permutation SWAPs. SWAPs would mix visible/ancilla wires
+        # and destroy the partial trace structure. The perm is recorded as metadata.
+        result1 = compile(term1, materialize=False)
+        result2 = compile(term2, materialize=True)
+
+        U_big = result1.circuit.get_unitary()
+        U_small = result2.circuit.get_unitary()
+
+        n = result1.circuit.n_qubits
+        m = result2.circuit.n_qubits
+        d_v = 2**m
+
+        if visible == "auto":
+            best_fidelity = 0.0
+            best_wires = None
+
+            # First try perm-guided visible wires: logical outputs [0..m)
+            # mapped through the output perm to physical wire positions.
+            # This preserves the qubit ordering (tag/data) from the source term.
+            perm_guided = [result1.perm.new_to_old[i] for i in range(m)]
+            fidelity = channel_fidelity(U_big, U_small, n, perm_guided)
+            if fidelity > best_fidelity:
+                best_fidelity = fidelity
+                best_wires = perm_guided
+
+            if best_fidelity < 1.0 - 1e-8:
+                # Fallback: try all sorted combinations
+                from itertools import permutations as wire_perms
+                for combo in combinations(range(n), m):
+                    for perm_order in wire_perms(combo):
+                        wires = list(perm_order)
+                        fidelity = channel_fidelity(U_big, U_small, n, wires)
+                        if fidelity > best_fidelity:
+                            best_fidelity = fidelity
+                            best_wires = wires
+                            if fidelity > 1.0 - 1e-8:
+                                break
+                    if best_fidelity > 1.0 - 1e-8:
+                        break
+
+            equal = bool(best_fidelity > 1.0 - 1e-8)
+            return {
+                "success": True,
+                "equal": equal,
+                "fidelity": best_fidelity,
+                "visible_wires": best_wires
+            }
+        else:
+            if len(visible) != m:
+                return {"success": False,
+                        "error": f"visible_wires has {len(visible)} entries but reference has {m} qubits"}
+
+            fidelity = channel_fidelity(U_big, U_small, n, visible)
+            equal = bool(fidelity > 1.0 - 1e-8)
+            return {"success": True, "equal": equal, "fidelity": fidelity}
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def handle_check_involution(request: dict) -> dict:
     """Handle an involution check request.
 
@@ -647,6 +768,8 @@ def main():
         response = handle_eq_circ(request)
     elif req_type == "verify_ctrl_unitary":
         response = handle_verify_ctrl_unitary(request)
+    elif req_type == "eq_circ_partial":
+        response = handle_eq_circ_partial(request)
     else:
         response = {"success": False, "error": f"Unknown request type: {req_type}"}
 

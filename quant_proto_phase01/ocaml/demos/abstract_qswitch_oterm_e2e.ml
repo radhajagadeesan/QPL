@@ -2,9 +2,28 @@
 
     Full pipeline: OCaml open_term -> Bridge -> Python compile -> Circuit
 
-    Builds the abstract QSwitch as a LAMBDA TERM using the full
-    source language (Lam, LetPair, Var, App, PlusMap), following
-    full_source_language_compilation_spec.md section 5.
+    This demo exercises three things:
+
+    (a) BUILD the abstract QSwitch as a LAMBDA TERM using the full source
+        language (Lam, LetPair, Var, App, PlusMap).  The function parameters
+        f, g are abstract — they appear as wire bundles (Arrow type), not
+        concrete gates.  The compiled circuit has 8 qubits: 2 for f's
+        boundary, 2 for g's boundary, 1 tag qubit, 1 data qubit, and 2
+        for the output Arrow slot.
+
+    (b) APPLY the abstract QSwitch to concrete gates H, S via boundary
+        splicing (Apply).  This connects H and S values to the function
+        wire slots.  The result is still an 8-qubit circuit — the function
+        wires remain physically present.  Partial trace over the function
+        wires is used to VERIFY that the visible 2-qubit sub-circuit
+        matches the expected result.  (The trace is for verification,
+        not for producing a reduced circuit.)
+
+    (c) VERIFY circuit equality at base types: the partial trace of
+        Apply(QSwitch, H, S) over function wires equals the meta-level
+        QSwitch[H,S] (which directly compiles to 2 qubits, 6 gates).
+        This confirms that deferred function application via boundary
+        splicing is semantically correct.
 
     QSwitch : (Q⊸Q) ⊗ (Q⊸Q) ⊗ Bool ⊗ Q  →  Bool ⊗ Q
 
@@ -29,6 +48,17 @@ open Linear
 
 let tests_run = ref 0
 let tests_passed = ref 0
+
+let verify_eq name term1 term2 =
+  incr tests_run;
+  match Bridge.eq_circ term1 term2 with
+  | Bridge.EqCircOk (true, fidelity) ->
+      Printf.printf "  ✓ %s (fidelity=%.6f)\n" name fidelity;
+      incr tests_passed
+  | Bridge.EqCircOk (false, fidelity) ->
+      Printf.printf "  ✗ %s FAILED (fidelity=%.6f)\n" name fidelity
+  | Bridge.EqCircError err ->
+      Printf.printf "  ✗ %s ERROR: %s\n" name err
 
 let banner title =
   print_endline "";
@@ -188,6 +218,15 @@ let () =
    | Bridge.CompileError err ->
        Printf.printf "Meta-level FAILED: %s\n" err);
 
+  (* Semantic verification: QSwitch[id,id] should be identity *)
+  let meta_qswitch_id =
+    let left  = make_branch q one (id q) in
+    let right = make_branch q one (id q) in
+    seq0 (twist_tensor bool_ty q) (case_hom one one q q left right)
+  in
+  verify_eq "QSwitch[id,id] = id_{Bool⊗Q}"
+    (emit meta_qswitch_id) (emit (id bq_ty));
+
   (* --- Part 4: Wire-level Apply to concrete H, S --- *)
   banner "Part 4: Wire-Level Apply (Boundary Splicing)";
   print_endline "Applying abstract QSwitch to H, S via boundary splicing.";
@@ -233,6 +272,20 @@ let () =
        incr tests_passed
    | Bridge.CompileError err ->
        Printf.printf "Wire-level Apply compilation FAILED: %s\n" err);
+
+  (* Verify: partial-trace over function wires recovers QSwitch[H,S].
+     The wire-level Apply entangles function wires with the result,
+     but tracing them out should yield the same 2-qubit unitary. *)
+  let beta_applied = Bridge.TApply (bridge_qswitch, bridge_arg) in
+  incr tests_run;
+  (match Bridge.eq_circ_partial beta_applied meta_term with
+   | Bridge.EqCircOk (true, fidelity) ->
+       Printf.printf "  ✓ Tr_fg[Apply(QSwitch,H,S)] = QSwitch[H,S] (fidelity=%.6f)\n" fidelity;
+       incr tests_passed
+   | Bridge.EqCircOk (false, fidelity) ->
+       Printf.printf "  ✗ Tr_fg[Apply(QSwitch,H,S)] ≠ QSwitch[H,S] (fidelity=%.6f)\n" fidelity
+   | Bridge.EqCircError err ->
+       Printf.printf "  ✗ Partial trace check ERROR: %s\n" err);
 
   (* --- Summary --- *)
   banner "Summary";

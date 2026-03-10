@@ -432,6 +432,38 @@ let eq_circ term1 term2 =
   | None ->
     EqCircError ("Invalid response: " ^ String.sub response 0 (min 300 (String.length response)))
 
+(** Compare circuits on a subspace (auto-detect visible wires).
+
+    term1 is a larger circuit (n qubits), term2 is a reference (m qubits).
+    Tries all C(n,m) wire combinations to find which m wires of term1
+    act like term2 (with remaining wires initialized to |0⟩).
+    Returns EqCircOk(equal, fidelity) or EqCircError. *)
+let eq_circ_partial term1 term2 =
+  let term1_json = term_to_json term1 in
+  let term2_json = term_to_json term2 in
+  let request = Printf.sprintf
+    {|{"type": "eq_circ_partial", "term1": %s, "term2": %s, "visible_wires": "auto"}|}
+    term1_json term2_json in
+
+  let response = call_bridge request in
+
+  match find_bool "success" response with
+  | Some true ->
+    (match find_bool "equal" response with
+     | Some eq ->
+       let fidelity = match find_float "fidelity" response with
+         | Some f -> f
+         | None -> 0.0
+       in
+       EqCircOk (eq, fidelity)
+     | None -> EqCircError "Failed to parse equality result")
+  | Some false ->
+    (match find_string "error" response with
+     | Some err -> EqCircError err
+     | None -> EqCircError ("Unknown error"))
+  | None ->
+    EqCircError ("Invalid response: " ^ String.sub response 0 (min 300 (String.length response)))
+
 (** Verify compiled term matches C^k(G) against mathematical reference.
 
     gate_re, gate_im: 2×2 real/imaginary parts of the gate matrix.

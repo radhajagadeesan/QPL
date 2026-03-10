@@ -177,6 +177,47 @@ def _contains_encode_decode(t: Term) -> bool:
 
 
 
+def _reconstruct_value(phys_wires: list[int], ty, deferred_fns: dict) -> Term | None:
+    """Reconstruct a term value from physical wire positions and deferred Lam info.
+
+    For Arrow-typed wire ranges that match a deferred Lam, returns that Lam.
+    For Ten types, recursively decomposes into Pair of sub-values.
+    For unknown/data types, returns Id(ty) as a placeholder.
+    Returns None only if the reconstruction fails completely.
+    """
+    from lang.types import Arrow, Ten, Unit as UnitTy, width as w
+    total_w = w(ty)
+    if total_w == 0:
+        return Id(UnitTy())
+    if isinstance(ty, Arrow):
+        key = tuple(phys_wires[:total_w])
+        if key in deferred_fns:
+            return deferred_fns[key]
+        return Id(ty)  # No deferred value — identity placeholder
+    if isinstance(ty, Ten):
+        wL = w(ty.left)
+        wR = w(ty.right)
+        left_val = _reconstruct_value(phys_wires[:wL], ty.left, deferred_fns)
+        right_val = _reconstruct_value(phys_wires[wL:wL + wR], ty.right, deferred_fns)
+        if left_val is not None and right_val is not None:
+            return Pair(left_val, right_val)
+        return None
+    # Atomic data type (Q, Plus, Unit, etc.) — identity
+    return Id(ty)
+
+
+def _inject_input_value(branch: Term, input_value: Term) -> Term:
+    """Replace the first LetPair(x, y, Id(...), body) with LetPair(x, y, input_value, body).
+
+    This injects a known input value into a branch's LetPair chain so that
+    _normalize can propagate values and β-reduce inner Apply(Var, ...) terms.
+    """
+    if isinstance(branch, LetPair) and isinstance(branch.pair, Id):
+        return LetPair(branch.x, branch.y, branch.ty_x, branch.ty_y,
+                       input_value, branch.body)
+    return branch
+
+
 def _internal_width(t: Term) -> int:
     """Compute internal wire width needed for a term.
 
@@ -246,6 +287,41 @@ def _internal_width(t: Term) -> int:
 #
 #   LetPair(x, y, Pair(v1, v2), body) → body[v1/x, v2/y]
 #   Var(name) with name in subst_env    → subst_env[name]
+
+def _contains_var(term: Term, name: str) -> bool:
+    """Check if term contains a free reference to Var(name)."""
+    if isinstance(term, Var):
+        return term.name == name
+    if isinstance(term, Seq):
+        return _contains_var(term.f, name) or _contains_var(term.g, name)
+    if isinstance(term, TenTerm):
+        return _contains_var(term.f, name) or _contains_var(term.g, name)
+    if isinstance(term, Pair):
+        return _contains_var(term.fst, name) or _contains_var(term.snd, name)
+    if isinstance(term, LetPair):
+        if _contains_var(term.pair, name):
+            return True
+        if term.x == name or term.y == name:
+            return False  # shadowed
+        return _contains_var(term.body, name)
+    if isinstance(term, Lam):
+        if term.name == name:
+            return False  # shadowed
+        return _contains_var(term.body, name)
+    if isinstance(term, Apply):
+        return _contains_var(term.f, name) or _contains_var(term.arg, name)
+    if isinstance(term, Case):
+        return _contains_var(term.left, name) or _contains_var(term.right, name)
+    if isinstance(term, CaseExpr):
+        if _contains_var(term.scrut, name):
+            return True
+        if term.x == name or term.y == name:
+            return False
+        return _contains_var(term.left, name) or _contains_var(term.right, name)
+    if isinstance(term, PlusMap):
+        return _contains_var(term.left, name) or _contains_var(term.right, name)
+    return False
+
 
 def _substitute(term: Term, name: str, replacement: Term) -> Term:
     """Replace every Var(name, _) in *term* with *replacement*."""
@@ -499,6 +575,41 @@ def _ordered_free_vars(t: Term, bound: frozenset = frozenset()) -> list:
     return []  # Structural isos, gates, Id, etc.
 
 
+def _resolve_term(t: Term, term_env: dict) -> Term:
+    """Resolve a term through the term environment.
+
+    If t is a Var whose name is in term_env, return the bound term.
+    Otherwise return t as-is.
+    """
+    if isinstance(t, Var) and t.name in term_env:
+        return term_env[t.name]
+    return t
+
+
+def _find_lam(f: Term, term_env: dict) -> 'Lam | None':
+    """Extract the underlying Lam from a function term, for β-reduction.
+
+    Handles:
+    - Lam directly
+    - Var(name) where name maps to a Lam in term_env
+    - Seq(lam, Id) wrapping (used to prevent eager β-reduction in demos)
+    Returns None if no Lam can be found.
+    """
+    if isinstance(f, Lam):
+        return f
+    if isinstance(f, Var) and f.name in term_env:
+        inner = term_env[f.name]
+        if isinstance(inner, Lam):
+            return inner
+    if isinstance(f, Seq):
+        # Seq(lam, Id) is transparent — peel off Id
+        if isinstance(f.g, Id):
+            return _find_lam(f.f, term_env)
+        if isinstance(f.f, Id):
+            return _find_lam(f.g, term_env)
+    return None
+
+
 def compile(term: Term, *, materialize: bool = False, explain: bool = False, env: Env = None) -> Compiled:
     # Check for Feedback - not currently supported
     if _contains_feedback(term):
@@ -532,6 +643,16 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
     # Track pending tag flips (X gates to emit after permutation tracking)
     pending_tag_flips: List[int] = []
     log: List[str] = []
+    # Track variable → original Term bindings for deferred Apply β-reduction.
+    # When a Lam is compiled as a function value (inside a Pair/arg), its body
+    # is deferred. At Apply(Var(f), arg) time, the Lam body is retrieved and
+    # compiled on-the-fly with the argument in place.
+    term_env: dict[str, Term] = {}
+    # Track deferred function values by physical wire positions.
+    # When a Lam is compiled as a value (is_value=True), we record its
+    # physical wire range so PlusMap branch sub-compilations can reconstruct
+    # the input value and β-reduce Apply(Var("f"), ...) terms.
+    deferred_fns: dict[tuple[int, ...], Term] = {}
 
     def emit_H(i: int, offset: int = 0) -> None:
         global_idx = i + offset
@@ -771,13 +892,16 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
         if anti:
             circ.X(ctrl_q)
 
-    def go(t: Term, offset: int = 0, env: Env = None) -> None:
+    def go(t: Term, offset: int = 0, env: Env = None, *, is_value: bool = False) -> None:
         """Compile term t at given wire offset with variable environment.
 
         Args:
             t: The term to compile
             offset: Wire offset for this term within the circuit
             env: Environment mapping variable names to (start, width) wire ranges
+            is_value: If True, this term is being compiled as a function value
+                (e.g. inside a Pair argument). Lam terms defer body compilation
+                when is_value=True, and the body is compiled later at Apply time.
         """
         if env is None:
             env = {}
@@ -1287,9 +1411,29 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                                f"at offset {offset}")
                 return
 
-            # Closed branches: compile as standalone sub-circuits
-            left_cmds = _get_sub_cmds(compile(t.left, materialize=True).circuit) if left_w > 0 else []
-            right_cmds = _get_sub_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
+            # Closed branches: compile as standalone sub-circuits.
+            # If deferred function values exist (from outer Apply β-reduction),
+            # reconstruct the branch input value and inject it so _normalize
+            # can β-reduce Apply(Var("f"), ...) terms inside the branch.
+            def _compile_branch_with_deferred(branch, branch_w, payload_base_off):
+                if branch_w == 0:
+                    return []
+                if deferred_fns:
+                    # Get parent physical wires for this branch's payload
+                    parent_phys = [p.apply_new_to_old(payload_base_off + i)
+                                   for i in range(branch_w)]
+                    # Get the branch's domain type for reconstruction
+                    br_dom, _ = type_of(branch)
+                    input_val = _reconstruct_value(parent_phys, br_dom, deferred_fns)
+                    if input_val is not None and not isinstance(input_val, Id):
+                        modified = _inject_input_value(branch, input_val)
+                        modified = _normalize(modified)
+                        return _get_sub_cmds(compile(modified, materialize=True).circuit)
+                return _get_sub_cmds(compile(branch, materialize=True).circuit)
+
+            payload_base_for_branches = offset + max(k, 1)
+            left_cmds = _compile_branch_with_deferred(t.left, left_w, payload_base_for_branches)
+            right_cmds = _compile_branch_with_deferred(t.right, right_w, payload_base_for_branches)
 
             if k <= 1:
                 # Simple binary case: 1 outer tag bit
@@ -1720,6 +1864,19 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             wA = width(t.dom)
             wB = width(t.cod)
 
+            # Deferred mode: when compiled as a function VALUE (is_value=True),
+            # don't compile the body — just reserve the wire layout [A_slot|B_slot].
+            # The body will be compiled at Apply time via β-reduction.
+            # This is essential for the trace model: body gates must fire AFTER
+            # the argument data is in place, not on |0⟩.
+            if is_value:
+                # Record deferred Lam by its physical wire positions
+                phys_wires = tuple(p.new_to_old[offset + i] for i in range(wA + wB))
+                deferred_fns[phys_wires] = t
+                if explain:
+                    log.append(f"Lam '{t.name}' (deferred): wA={wA}, wB={wB} at offset {offset}, phys={phys_wires}")
+                return
+
             # Check for open lambda: body has free variables from enclosing scope.
             # If so, we must bind x AFTER the context wires to avoid overlap.
             fv = _ordered_free_vars(t.body, frozenset({t.name}))
@@ -1774,7 +1931,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
         if isinstance(t, Apply):
             # Apply: f arg : B
-            # Per spec §4.5: Boundary splicing
+            # Per spec §4.5: Boundary splicing / β-reduction
             #
             # f : ... → Arrow(A, B) produces [A_slot | B_slot] on output
             # arg : ... → A produces [A] on output
@@ -1789,19 +1946,24 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             wA = width(A)
             wB = width(B)
 
-            # Special case: closed lambda application (β-reduction at compile time)
-            # When f is Lam with f_dom = Unit, we can compile directly as arg;body
-            # without the function-layout swaps
-            if isinstance(t.f, Lam) and isinstance(f_dom, Unit):
-                # Closed lambda: compile as β-reduced (arg then body)
-                # arg fills wires [offset..offset+wA), body operates on them
-                go(t.arg, offset, env)
+            # Try to find the underlying Lam for β-reduction.
+            # This handles: Apply(Lam, arg), Apply(Var(f), arg) where f is a known Lam,
+            # and Apply(Seq(Lam, Id), arg).
+            lam = _find_lam(t.f, term_env)
+
+            if lam is not None:
+                # β-reduction: compile arg (with deferred Lam bodies), then body
+                # Arg compiled as value: Lam bodies within the arg are deferred
+                # and registered in term_env for inner Apply β-reduction.
+                go(t.arg, offset, env, is_value=True)
+                # Register arg term in term_env for LetPair propagation
+                term_env[lam.name] = t.arg
                 # Bind x to the argument wires (physical positions for perm stability)
                 x_phys = [p.new_to_old[offset + i] for i in range(wA)]
-                new_env = {**env, t.f.name: x_phys}
-                go(t.f.body, offset, new_env)
+                new_env = {**env, lam.name: x_phys}
+                go(lam.body, offset, new_env)
                 if explain:
-                    log.append(f"Apply (closed lambda): β-reduced as arg;body, x phys={x_phys}")
+                    log.append(f"Apply (β-reduce '{lam.name}'): arg;body, x phys={x_phys}")
                 return
 
             # General case: full boundary splicing with function layout
@@ -1875,10 +2037,13 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             # Use CODOMAIN width for offset: fst's output occupies
             # [offset..offset+w_cod_fst), snd starts after.
             # This is critical for Lam/Apply terms where cod_w != dom_w.
+            #
+            # Propagate is_value: if this Pair is a value (e.g. function argument),
+            # its children are also values. This defers Lam body compilation.
             _, fst_cod = type_of(t.fst)
             fst_w = width(fst_cod)
-            go(t.fst, offset, env)
-            go(t.snd, offset + fst_w, env)
+            go(t.fst, offset, env, is_value=is_value)
+            go(t.snd, offset + fst_w, env, is_value=is_value)
             if explain:
                 log.append(f"Pair: fst at offset {offset}, snd at offset {offset + fst_w}")
             return
@@ -1898,6 +2063,13 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             x_phys = [p.new_to_old[offset + i] for i in range(x_width)]
             y_phys = [p.new_to_old[offset + x_width + i] for i in range(y_width)]
             new_env = {**env, t.x: x_phys, t.y: y_phys}
+
+            # Propagate term_env: if the pair's term is a known Pair,
+            # bind x and y to its components for later β-reduction.
+            pair_term = _resolve_term(t.pair, term_env)
+            if isinstance(pair_term, Pair):
+                term_env[t.x] = pair_term.fst
+                term_env[t.y] = pair_term.snd
 
             go(t.body, offset, new_env)
             if explain:
