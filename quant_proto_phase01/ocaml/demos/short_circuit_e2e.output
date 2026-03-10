@@ -291,6 +291,21 @@ phase_w_nary = phased_control w_datatype phases one [id; id; id]
     Branch 2 (tag=10, phase=π/2): X[0]; CU1(0.5); X[0]
 
 ==========================================================================
+  PART 9: Semantic Verification (Unitary Equivalence)
+==========================================================================
+
+Verifying key algebraic properties by comparing compiled unitaries:
+
+  ✓ toggle_W ; toggle_W = id_W (involution) (fidelity=1.000000)
+  ✓ ctrl_W(id, id) = id_{Bool⊗W} (trivial control) (fidelity=1.000000)
+  ✓ and_sc ; and_sc = id (involution) (fidelity=1.000000)
+  ✓ phase_W ; phase_W = id_W (phase squared) (fidelity=1.000000)
+  ✓ kick ; kick = id (phase squared on witness) (fidelity=1.000000)
+  ✓ and_sc_quant ; and_sc_quant = id (full involution) (fidelity=1.000000)
+
+Verification: 6/6 passed
+
+==========================================================================
   SUMMARY
 ==========================================================================
 

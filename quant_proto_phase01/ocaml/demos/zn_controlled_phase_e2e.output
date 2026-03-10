@@ -106,31 +106,33 @@ TYPE STRUCTURE
 
 PHASE SELECTOR (5th roots of unity)
 -----------------------------------
-    P_k = Rz(2*pi*k/5)
+    P_k = Rz(2k/5 half-turns)
 
-    k = 0: Rz(0)       (phase 1)
-    k = 1: Rz(2pi/5)   (phase e^{2pi*i/5})
-    k = 2: Rz(4pi/5)   (phase e^{4pi*i/5})
-    k = 3: Rz(6pi/5)   (phase e^{6pi*i/5})
-    k = 4: Rz(8pi/5)   (phase e^{8pi*i/5})
+    k = 0: Rz(0)     (phase 1)
+    k = 1: Rz(2/5)   (phase e^{2pi*i/5})
+    k = 2: Rz(4/5)   (phase e^{4pi*i/5})
+    k = 3: Rz(6/5)   (phase e^{6pi*i/5})
+    k = 4: Rz(8/5)   (phase e^{8pi*i/5})
+
+    Note: pytket uses half-turns (multiples of pi), not radians.
 
 BINARY DECOMPOSITION
 --------------------
     With flat binary encoding [t0, t1, t2] where k = 4*t2 + 2*t1 + t0:
 
-    Phase(k) = k * (2pi/5)
-             = t0*(2pi/5) + t1*(4pi/5) + t2*(8pi/5)
+    Phase(k) = k * (2/5) half-turns
+             = t0*(2/5) + t1*(4/5) + t2*(8/5)
 
     Since phases are ADDITIVE:
-      CRz(2pi/5, t0, q0) ; CRz(4pi/5, t1, q0) ; CRz(8pi/5, t2, q0)
+      CRz(2/5, t0, q0) ; CRz(4/5, t1, q0) ; CRz(8/5, t2, q0)
 
     Total: 3 gates (O(log n) for general Zn)
 
 
 Z5 controlled phase circuit:
-  Term: CRz(2pi/5, t0, q0) ; CRz(4pi/5, t1, q0) ; CRz(8pi/5, t2, q0)
-  Angles: theta1=1.2566, theta2=2.5133, theta4=5.0265
-  Bridge: {"node": "Seq", "f": {"node": "CRz", "theta": 1.256637, "i": 0, "j": 3}, "g": {"node": "Seq", "f": {"node": "CRz", "theta": 2.513274, "i": 1, "j": 3}, "g": {"node": "CRz", "theta": 5.026548, "i": 2, "j": 3}}}
+  Term: CRz(2/5, t0, q0) ; CRz(4/5, t1, q0) ; CRz(8/5, t2, q0)
+  Angles (half-turns): theta1=0.4000, theta2=0.8000, theta4=1.6000
+  Bridge: {"node": "Seq", "f": {"node": "CRz", "theta": 0.400000, "i": 0, "j": 3}, "g": {"node": "Seq", "f": {"node": "CRz", "theta": 0.800000, "i": 1, "j": 3}, "g": {"node": "CRz", "theta": 1.600000, "i": 2, "j": 3}}}
 4 qubits, 3 gates
   CRz q[0, 3]
   CRz q[1, 3]
@@ -145,11 +147,12 @@ GENERAL BINARY DECOMPOSITION
 ----------------------------
 For Zn controlled phase rotation (n-th roots of unity):
 
-    Phase(k) = k * (2*pi/n) = sum_{j} t_j * (2^j * 2*pi/n)
+    Phase(k) = k * (2/n) half-turns = sum_{j} t_j * (2^j * 2/n) half-turns
 
     where k = sum_{j} t_j * 2^j (binary expansion)
 
-    Circuit: sequence of CRz(2^j * 2*pi/n, t_j, target) for j = 0..ceil(log2(n))-1
+    Circuit: sequence of CRz(2^j * 2/n, t_j, target) for j = 0..ceil(log2(n))-1
+    (all angles in half-turns, the pytket convention)
 
     Gate count: ceil(log2(n)) = O(log n)
 
@@ -259,6 +262,19 @@ NPlusMap APPROACH
   X q[2]
   QControlBox q[0, 1, 2, 3]
   perm: [0, 1, 2, 3]
+
+==========================================================================
+  PART 8: Semantic Verification
+==========================================================================
+
+Verifying cyclic group properties by comparing compiled unitaries:
+  Phase rotation applied n times (for n-th roots of unity) = identity
+
+  ✓ Z2: CZ^2 = id (involution) (fidelity=1.000000)
+  ✓ Z4: (CS;CZ)^4 = id (4th roots cycle) (fidelity=1.000000)
+  ✓ Z5: phase^10 = id (5th roots, Rz period) (fidelity=1.000000)
+
+Verification: 3/3 passed
 
 ==========================================================================
   SUMMARY

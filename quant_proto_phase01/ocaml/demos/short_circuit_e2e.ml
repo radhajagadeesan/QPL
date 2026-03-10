@@ -234,6 +234,8 @@ let and_sc_quant = seq0 and_sc kick
 (* ========================================================================= *)
 
 let had_failure = ref false
+let verifications_run = ref 0
+let verifications_passed = ref 0
 
 let compile_and_report name term =
   Printf.printf "\n%s:\n" name;
@@ -241,6 +243,19 @@ let compile_and_report name term =
   | Bridge.CompileOk _ -> ()
   | Bridge.CompileError err ->
       Printf.printf "  ✗ FAILED: %s\n" err;
+      had_failure := true
+
+let verify_eq name term1 term2 =
+  incr verifications_run;
+  match Bridge.eq_circ term1 term2 with
+  | Bridge.EqCircOk (true, fidelity) ->
+      Printf.printf "  ✓ %s (fidelity=%.6f)\n" name fidelity;
+      incr verifications_passed
+  | Bridge.EqCircOk (false, fidelity) ->
+      Printf.printf "  ✗ %s FAILED (fidelity=%.6f)\n" name fidelity;
+      had_failure := true
+  | Bridge.EqCircError err ->
+      Printf.printf "  ✗ %s ERROR: %s\n" name err;
       had_failure := true
 
 
@@ -487,6 +502,45 @@ Phases [-1, +1, +i] would apply:
        print_endline "    Branch 2 (tag=10, phase=π/2): X[0]; CU1(0.5); X[0]"
    | Bridge.CompileError err ->
        Printf.printf "  ✗ FAILED: %s\n" err);
+
+  (* ======================================================================= *)
+  banner "PART 9: Semantic Verification (Unitary Equivalence)";
+
+  print_endline "
+Verifying key algebraic properties by comparing compiled unitaries:
+";
+
+  (* 1. toggle_W is an involution: toggle ; toggle = id *)
+  let toggle_twice = seq0 toggle_w toggle_w in
+  verify_eq "toggle_W ; toggle_W = id_W (involution)"
+    (emit toggle_twice) (emit (id w_ty));
+
+  (* 2. ctrl_W(id, id) = id_{Bool⊗W} (trivial control) *)
+  let bw_ty = bool_ty ** w_ty in
+  verify_eq "ctrl_W(id, id) = id_{Bool⊗W} (trivial control)"
+    (emit ctrl_id_id) (emit (id bw_ty));
+
+  (* 3. and_sc is an involution: and_sc ; and_sc = id *)
+  let bbw_ty = bb_ty ** w_ty in
+  verify_eq "and_sc ; and_sc = id (involution)"
+    (emit and_sc_twice) (emit (id bbw_ty));
+
+  (* 4. phase_W ; phase_W = id_W (phase -1 squared = +1) *)
+  let phase_w_twice = seq0 phase_w phase_w in
+  verify_eq "phase_W ; phase_W = id_W (phase squared)"
+    (emit phase_w_twice) (emit (id w_ty));
+
+  (* 5. kick ; kick = id (phase squared on witness) *)
+  let kick_twice = seq0 kick kick in
+  verify_eq "kick ; kick = id (phase squared on witness)"
+    (emit kick_twice) (emit (id bbw_ty));
+
+  (* 6. and_sc_quant ; and_sc_quant = id (full operation squared) *)
+  let quant_twice = seq0 and_sc_quant and_sc_quant in
+  verify_eq "and_sc_quant ; and_sc_quant = id (full involution)"
+    (emit quant_twice) (emit (id bbw_ty));
+
+  Printf.printf "\nVerification: %d/%d passed\n" !verifications_passed !verifications_run;
 
   (* ======================================================================= *)
   banner "SUMMARY";
