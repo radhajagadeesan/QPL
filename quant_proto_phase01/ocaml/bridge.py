@@ -27,6 +27,7 @@ from lang.terms import (
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR, UndistL, UndistR,
+    WireIdentity,
     H, S, Sdg, T, Tdg, X, Y, Z,
     Rx, Ry, Rz, Phase,
     CX, CZ, CRz, CCX,
@@ -310,6 +311,10 @@ def parse_term(j: dict, ty_total: Ty = None, min_qubits: int = 1) -> Term:
 
     elif node == "UndistR":
         return UndistR(parse_type(j["a"]), parse_type(j["b"]), parse_type(j["c"]))
+
+    # Wire-level identity (n_dist / n_factor coercion)
+    elif node == "WireIdentity":
+        return WireIdentity(parse_type(j["dom"]), parse_type(j["cod"]))
 
     # Single-qubit gates
     elif node == "H":

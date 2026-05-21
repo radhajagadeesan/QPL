@@ -135,6 +135,24 @@ val undist_l : 'a ty -> 'b ty -> 'c ty ->
 val undist_r : 'a ty -> 'b ty -> 'c ty ->
   (unit, [`Lolli of [`Plus of [`Tensor of 'a * 'b] * [`Tensor of 'a * 'c]] * [`Tensor of 'a * [`Plus of 'b * 'c]]]) prog
 
+(** n-ary distributivity: Z_n ⊗ A ⊸ ⊕^n (b ⊗ A).
+
+    Takes the summand input types [|s_1; ...; s_n|] and the data type b.
+    Returns a closed morphism from [(Plus s_1 (Plus s_2 ...)) ⊗ b] to
+    [Plus (s_1 ⊗ b) (Plus (s_2 ⊗ b) ...)].
+
+    At the wire level this is identity (both forms share the flat n-ary
+    encoding); compiles to zero gates. Use this for n-ary case analysis
+    where you want to write [n_dist ; n-ary plusmap ; n_factor] explicitly
+    (e.g., matching the user's curried select formula). *)
+val n_dist : 'a ty array -> 'b ty
+          -> (unit, [`Lolli of 'in_ty * 'out_ty]) prog
+
+(** n-ary inverse distributivity (factor): ⊕^n (b ⊗ A) ⊸ Z_n ⊗ A.
+    Inverse of [n_dist]; also identity at the wire level. *)
+val n_factor : 'a ty array -> 'b ty
+            -> (unit, [`Lolli of 'in_ty * 'out_ty]) prog
+
 (** {2 Unitary Constants (Closed Endomorphisms)} *)
 
 (** Primitive gates are closed endomorphisms: [Prog(∅, A ⊸ A)] *)
@@ -413,6 +431,19 @@ val oplusmap : 'a ty -> 'b ty
             -> ('g1, 'c) oterm -> ('g2, 'd) oterm
             -> ('g1, 'g2, 'g) split
             -> ('g, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) oterm
+
+(** n-ary ⊕-Map (open). All branches share context 'g and produce homogeneous
+    output type 'c. The summand input types are given as an array.
+
+    For n=2 this is semantically equivalent to [oplusmap] with summand_types
+    [| 'a; 'b |]. Use this directly when you have n>2 summands to avoid the
+    asymmetric-binary nesting issues.
+
+    Result type uses existential sum types (pragmatic loose typing mirroring
+    prog-level [omapn]/[NMap]) — the n-ary sum is tracked at Bridge/Python
+    level via the [summand_types] array. *)
+val o_n_plusmap : 'a ty array -> 'c ty -> ('g, 'c) oterm array
+              -> ('g, [`Lolli of 'sum_in * 'sum_out]) oterm
 
 (** Identity morphism *)
 val oid : 'a ty -> (unit, 'a) oterm

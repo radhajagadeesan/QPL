@@ -1,0 +1,72 @@
+
+==========================================================================
+  FULLY CURRIED select_3 via n_dist / n_factor
+==========================================================================
+
+λf_0. λf_1. λf_2. λp. n_factor ⊕(id_b⊗f_i) n_dist(p)
+
+
+==========================================================================
+  Part 1: Compile abstract select_3
+==========================================================================
+15 qubits, 11 gates
+  X q[6]
+  X q[7]
+  QControlBox q[6, 7, 8, 1]
+  X q[6]
+  X q[7]
+  X q[6]
+  QControlBox q[6, 7, 8, 3]
+  X q[6]
+  X q[7]
+  QControlBox q[6, 7, 8, 5]
+  X q[7]
+  perm: [10, 11, 5, 9, 3, 4, 0, 1, 2, 6, 7, 8, 12, 13, 14]
+Abstract compilation SUCCESS!
+
+==========================================================================
+  Part 2: Instantiate with H, S, T (3 nested Apply)
+==========================================================================
+Apply(Apply(Apply(select_3, H), S), T):
+6 qubits, 11 gates
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  X q[0]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[1]
+  perm: [3, 4, 5, 0, 1, 2]
+Instantiation SUCCESS!
+
+==========================================================================
+  Part 3: Verify against meta control z_3
+==========================================================================
+Meta control z_3 q [|H; S; T|]:
+3 qubits, 11 gates
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  X q[0]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[1]
+  perm: [0, 1, 2]
+  ✓ curried select_3(H,S,T) = control z_3 [|H;S;T|] (fidelity=1.000000)
+
+==========================================================================
+  Summary
+==========================================================================
+
+  Tests: 3/3 passed
+
+  ALL TESTS PASSED
+

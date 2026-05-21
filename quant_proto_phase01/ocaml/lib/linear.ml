@@ -116,6 +116,15 @@ type (_, _) prog =
            -> (unit, [`Lolli of [`Plus of [`Tensor of 'a * 'b] * [`Tensor of 'a * 'c]]
                               * [`Tensor of 'a * [`Plus of 'b * 'c]]]) prog
 
+  (* n-ary distributivity: Z_n ⊗ A ⊸ ⊕^n (b ⊗ A) — wire-level identity.
+     Both sides have the same flat n-ary encoding (log_n tag + width(A) payload),
+     so this is identity at the wire level. The type system tracks the
+     distinction; the compiler emits zero gates. *)
+  | NDist : 'a ty array * 'b ty
+         -> (unit, [`Lolli of 'in_ty * 'out_ty]) prog
+  | NFactor : 'a ty array * 'b ty
+           -> (unit, [`Lolli of 'in_ty * 'out_ty]) prog
+
   (* Unitary constants (closed endomorphisms) *)
   | GateH : (unit, [`Lolli of [`Q] * [`Q]]) prog
   | GateS : (unit, [`Lolli of [`Q] * [`Q]]) prog
@@ -196,6 +205,12 @@ let dist_l a b c = DistL (a, b, c)
 let dist_r a b c = DistR (a, b, c)
 let undist_l a b c = UndistL (a, b, c)
 let undist_r a b c = UndistR (a, b, c)
+
+(** n-ary distributivity: Z_n ⊗ A ⊸ ⊕^n (b ⊗ A). Wire-level identity. *)
+let n_dist summand_tys b_ty = NDist (summand_tys, b_ty)
+
+(** n-ary inverse distributivity: ⊕^n (b ⊗ A) ⊸ Z_n ⊗ A. Wire-level identity. *)
+let n_factor summand_tys b_ty = NFactor (summand_tys, b_ty)
 
 let gate_h = GateH
 let gate_s = GateS
@@ -356,6 +371,35 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
   | DistR (a, b, c) -> Bridge.TDistR (a, b, c)
   | UndistL (a, b, c) -> Bridge.TUndistL (a, b, c)
   | UndistR (a, b, c) -> Bridge.TUndistR (a, b, c)
+  | NDist (summand_tys, b_ty) ->
+      (* dom = (Plus^n summand_tys) ⊗ b   ;   cod = Plus^n (summand_i ⊗ b) *)
+      let summand_reps = Array.map ty_to_rep summand_tys in
+      let b_rep = ty_to_rep b_ty in
+      let rec build_plus arr lo hi =
+        if hi - lo = 1 then arr.(lo)
+        else
+          let mid = lo + 1 in
+          Rep.Plus (arr.(lo), build_plus arr mid hi)
+      in
+      let n = Array.length summand_reps in
+      let sum_rep = build_plus summand_reps 0 n in
+      let tensored = Array.map (fun s -> Rep.Tensor (s, b_rep)) summand_reps in
+      let sum_tensored_rep = build_plus tensored 0 n in
+      Bridge.TWireIdentity (Rep.Tensor (sum_rep, b_rep), sum_tensored_rep)
+  | NFactor (summand_tys, b_ty) ->
+      let summand_reps = Array.map ty_to_rep summand_tys in
+      let b_rep = ty_to_rep b_ty in
+      let rec build_plus arr lo hi =
+        if hi - lo = 1 then arr.(lo)
+        else
+          let mid = lo + 1 in
+          Rep.Plus (arr.(lo), build_plus arr mid hi)
+      in
+      let n = Array.length summand_reps in
+      let sum_rep = build_plus summand_reps 0 n in
+      let tensored = Array.map (fun s -> Rep.Tensor (s, b_rep)) summand_reps in
+      let sum_tensored_rep = build_plus tensored 0 n in
+      Bridge.TWireIdentity (sum_tensored_rep, Rep.Tensor (sum_rep, b_rep))
 
   | GateH -> Bridge.TH 0
   | GateS -> Bridge.TS 0
@@ -453,6 +497,15 @@ type (_, _) oterm =
              * ('g1, 'g2, 'g) split
             -> ('g, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) oterm
 
+  (* n-ary ⊕-Map: all branches share context 'g and produce homogeneous output 'c.
+     This is the general primitive; binary OPlusMap is the n=2 special case.
+     Linearity for n>2 cases is the user's responsibility (each var in 'g must be
+     used in exactly one branch, mirroring the binary split discipline).
+     The result Lolli's sum-types are existential ('sum_in, 'sum_out) — pragmatic
+     loose typing mirroring the prog-level NMap. *)
+  | ONPlusMap : 'a ty array * 'c ty * ('g, 'c) oterm array
+             -> ('g, [`Lolli of 'sum_in * 'sum_out]) oterm
+
   (* Sequential composition of morphisms *)
   | OSeq : ('g1, [`Lolli of 'a * 'b]) oterm
          * ('g2, [`Lolli of 'b * 'c]) oterm
@@ -471,6 +524,8 @@ let oletpair x y ty_x ty_y pair body sp = OLetPair (x, y, ty_x, ty_y, pair, body
 let olam name dom cod body = OLam (name, dom, cod, body)
 let oapp f arg sp = OApp (f, arg, sp)
 let oplusmap ty_l ty_r f g sp = OPlusMap (ty_l, ty_r, f, g, sp)
+let o_n_plusmap summand_types output_ty branches =
+  ONPlusMap (summand_types, output_ty, branches)
 let oid ty = OId ty
 let oembed p = OEmbed p
 let oseq f g sp = OSeq (f, g, sp)
@@ -528,6 +583,9 @@ let rec context_rep : type g a. (g, a) oterm -> Rep.t = function
   | OLam (_, _, _, body) -> strip_front (context_rep body)
   | OApp (f, arg, sp) -> split_rep (context_rep f) (context_rep arg) sp
   | OPlusMap (_, _, f, g, sp) -> split_rep (context_rep f) (context_rep g) sp
+  | ONPlusMap (_, _, branches) ->
+      if Array.length branches = 0 then Rep.Unit
+      else context_rep branches.(0)
   | OSeq (f, g, sp) -> split_rep (context_rep f) (context_rep g) sp
   | OId _ -> Rep.Unit
   | OEmbed _ -> Rep.Unit
@@ -585,6 +643,10 @@ let rec emit_oterm : type g a. (g, a) oterm -> Bridge.term = function
         Bridge.TSeq (emit_oterm arg, emit_oterm f)
   | OPlusMap (ty_l, ty_r, f, g, _) ->
       Bridge.TPlusMap (ty_l, ty_r, emit_oterm f, emit_oterm g)
+  | ONPlusMap (summand_types, _output_ty, branches) ->
+      let summand_reps = Array.map ty_to_rep summand_types in
+      let branch_terms = Array.map emit_oterm branches in
+      Bridge.TNPlusMap (summand_reps, branch_terms)
   | OSeq (f, g, _) -> Bridge.TSeq (emit_oterm f, emit_oterm g)
   | OId ty -> Bridge.TId ty
   | OEmbed p -> emit p

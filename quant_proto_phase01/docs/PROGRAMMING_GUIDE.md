@@ -372,6 +372,52 @@ let z8_term = emit z8_action in
 - 2-way: `NPlusMap([A,B],[f,g]) ≡ PlusMap(A,B,f,g)` (matches binary case)
 - Non-power-of-2: unused tag values (n ≤ idx < 2^k) act as identity
 
+### Higher-Order n-ary Dispatch (`o_n_plusmap`)
+
+For higher-order use where branches reference outer-bound variables (e.g.,
+`select_n(f_0, ..., f_{n-1})`), use the oterm-level `o_n_plusmap`. This is
+the n-ary analog of binary `oplusmap` and handles asymmetric n cleanly via
+the flat n-ary encoding (matches meta `control z_n`).
+
+```ocaml
+val o_n_plusmap : 'a ty array -> 'c ty -> ('g, 'c) oterm array
+              -> ('g, [`Lolli of 'sum_in * 'sum_out]) oterm
+```
+
+Branches share OCaml context `'g`. Use `oshift` to pad branches that reference
+only a subset of the variables in scope. The Python compiler's open-branch
+NPlusMap path resolves free variables against the outer environment, including
+through the deferred-Lam mechanism for boundary-spliced function arguments.
+
+### n-ary Distributivity (`n_dist`, `n_factor`)
+
+To write the textbook curried n-ary case formula:
+```
+select_{n,A}(f_0, …, f_{n-1})(p) = factor_n((⊕^n (id_b ⊗ f_i))(dist_n(p)))
+```
+use the wire-level identity primitives `n_dist` and `n_factor`:
+
+```ocaml
+val n_dist   : 'a ty array -> 'b ty -> (unit, [`Lolli of 'in_ty * 'out_ty]) prog
+val n_factor : 'a ty array -> 'b ty -> (unit, [`Lolli of 'in_ty * 'out_ty]) prog
+```
+
+`n_dist` converts `(Plus s_0 (Plus s_1 …)) ⊗ b` → `Plus (s_0 ⊗ b) (Plus (s_1 ⊗ b) …)`,
+matching the user's `dist_n` notation. Both `n_dist` and `n_factor` emit zero
+gates (the two forms share the flat n-ary wire encoding). At the Python level
+they emit as `WireIdentity(dom, cod)` Bridge terms.
+
+### Curried Higher-Order Lambdas
+
+The full source language supports curried `λf_0. … λf_{n-1}. λp. …` with
+nested Apply via boundary splicing. The compiler β-reduces a chain of nested
+Applies in a single pass (`_peel_apply_chain`), so:
+```ocaml
+Apply (Apply (Apply (select_3, H_value), S_value), T_value)
+```
+fully reduces and instantiates `f_0 ↦ H, f_1 ↦ S, f_2 ↦ T` in one step,
+producing a compiled circuit equivalent to `control z_3 q [|H;S;T|]`.
+
 ### Qubit Encoding Isomorphism
 
 Convert between primitive qubit Q and encoded qubit I + I:

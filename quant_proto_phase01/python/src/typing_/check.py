@@ -12,6 +12,7 @@ from lang.terms import (
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR, UndistL, UndistR,
+    WireIdentity,
     Feedback,
     # Phase 0 gates
     H, S, CX,
@@ -74,6 +75,10 @@ def _free_var_width(t: Term, bound: frozenset = frozenset()) -> int:
         return (_free_var_width(t.scrut, bound)
                 + _free_var_width(t.left, bound | {t.x})
                 + _free_var_width(t.right, bound | {t.y}))
+    if isinstance(t, NPlusMap):
+        # Sum of free var widths across all branches. Per the o_n_plusmap
+        # convention each branch references its own subset of the shared context.
+        return sum(_free_var_width(b, bound) for b in t.branches)
     return 0  # Structural isos, gates, Id, etc.
 
 
@@ -138,6 +143,17 @@ def type_of(t: Term) -> DomCod:
         dom = Plus(Ten(t.a, t.b), Ten(t.a, t.c))
         cod = Ten(t.a, Plus(t.b, t.c))
         return (dom, cod)
+
+    if isinstance(t, WireIdentity):
+        # Wire-level identity between two types of equal width.
+        # Used for type-level coercions like n_dist/n_factor where the
+        # bit encoding doesn't change but the OCaml/Granthi type does.
+        if width(t.dom) != width(t.cod):
+            raise TypeCheckError(
+                f"WireIdentity: width mismatch dom={width(t.dom)} "
+                f"vs cod={width(t.cod)}"
+            )
+        return (t.dom, t.cod)
 
     if isinstance(t, Feedback):
         # Feedback_k(body) : A → B
@@ -362,11 +378,14 @@ def type_of(t: Term) -> DomCod:
         cod_types = []
         for i, (st, br) in enumerate(zip(t.summand_types, t.branches)):
             d, c = type_of(br)
+            # Allow wider domain if accounted for by free variables (open branch).
             if width(d) != width(st):
-                raise TypeCheckError(
-                    f"NPlusMap branch {i}: domain width {width(d)} "
-                    f"!= summand width {width(st)}"
-                )
+                fv_w = _free_var_width(br)
+                if width(d) != width(st) + fv_w:
+                    raise TypeCheckError(
+                        f"NPlusMap branch {i}: domain width {width(d)} "
+                        f"!= summand width {width(st)} (fv width {fv_w})"
+                    )
             cod_types.append(c)
         cod_sum = build_plus_tree(cod_types)
         return (dom_sum, cod_sum)

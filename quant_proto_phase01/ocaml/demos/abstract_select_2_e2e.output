@@ -1,0 +1,87 @@
+
+==========================================================================
+  ABSTRACT SELECT_2 (Full Source Language - oterm)
+==========================================================================
+
+Full pipeline: OCaml oterm -> Bridge -> Python compile -> Circuit
+
+
+==========================================================================
+  Part 1: Abstract select_2 Term
+==========================================================================
+Curried type (math):  (Q⊸Q) ⊸ (Q⊸Q) ⊸ (QBool⊗Q ⊸ QBool⊗Q)
+Tupled type (impl):   ((Q⊸Q) ⊗ ((Q⊸Q) ⊗ (QBool⊗Q))) ⊸ (QBool⊗Q)
+Definition:
+  select_2 := λinput. let (f_0, (f_1, p)) = input in
+    (dist_l ; [id_I⊗f_0 | id_I⊗f_1] ; undist_l)(p)
+
+Bridge JSON (abbreviated):
+  {"node": "Lam", "name": "input", "dom": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, "cod": {"node": "Q"}}, "right": {"node": "Ten", "left": {"node": "Arrow", "dom": {"node": "Q"}, ...
+
+
+==========================================================================
+  Part 2: Compile Abstract Lambda
+==========================================================================
+Width analysis:
+  Q⊸Q                                       = 2 qubits
+  QBool⊗Q                                    = 2 qubits
+  Input  (Q⊸Q)⊗((Q⊸Q)⊗(QBool⊗Q))            = 6 qubits
+  Output  QBool⊗Q                            = 2 qubits
+  Lambda value  width(input)+width(output)   = 8 qubits  (expected)
+
+8 qubits, 4 gates
+  X q[4]
+  QControlBox q[4, 5, 1]
+  X q[4]
+  QControlBox q[4, 5, 3]
+  perm: [2, 3, 0, 1, 6, 7, 4, 5]
+Abstract compilation SUCCESS!
+
+==========================================================================
+  Part 3: Instantiate with concrete H, S
+==========================================================================
+Build argument tuple (H_value, (S_value, Id(QBool⊗Q))) and
+Apply abstract select_2 to it via boundary splicing.
+
+6 qubits, 4 gates
+  X q[4]
+  CH q[4, 5]
+  X q[4]
+  CS q[4, 5]
+  perm: [4, 5, 2, 3, 0, 1]
+Instantiation SUCCESS!
+
+==========================================================================
+  Part 3.5: Closed structural check (sanity)
+==========================================================================
+closed_select (dist_l ; omap0(id⊗H, id⊗S) ; undist_l):
+2 qubits, 4 gates
+  X q[0]
+  CH q[0, 1]
+  X q[0]
+  CS q[0, 1]
+  perm: [0, 1]
+
+==========================================================================
+  Part 4: Verify against meta-level control z2 q [|H; S|]
+==========================================================================
+Partial trace over function-value wires should recover the
+2-qubit meta-level coherent control circuit.
+
+Meta control z2 q [|H; S|]:
+2 qubits, 4 gates
+  X q[0]
+  CH q[0, 1]
+  X q[0]
+  CS q[0, 1]
+  perm: [0, 1]
+  ✓ Tr_{f_0,f_1}[select_2(H,S)] = control z2 q [|H;S|] (fidelity=1.000000)
+
+==========================================================================
+  Summary
+==========================================================================
+
+  Tests: 3/3 passed
+
+  ALL TESTS PASSED
+

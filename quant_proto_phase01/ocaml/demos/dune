@@ -33,3 +33,27 @@
 (executable
  (name verify_nested_ctrl_e2e)
  (libraries qpl_surface str))
+
+(executable
+ (name abstract_select_2_e2e)
+ (libraries qpl_surface str))
+
+(executable
+ (name nested_apply_e2e)
+ (libraries qpl_surface str))
+
+(executable
+ (name nested_select_e2e)
+ (libraries qpl_surface str))
+
+(executable
+ (name n_plusmap_e2e)
+ (libraries qpl_surface str))
+
+(executable
+ (name curried_select_3_e2e)
+ (libraries qpl_surface str))
+
+(executable
+ (name curried_select_3_ndist_e2e)
+ (libraries qpl_surface str))

@@ -81,6 +81,8 @@ type term =
   (* Inverse distributivity *)
   | TUndistL of Rep.t * Rep.t * Rep.t
   | TUndistR of Rep.t * Rep.t * Rep.t
+  (* Wire-level identity between two types of equal width (n_dist/n_factor) *)
+  | TWireIdentity of Rep.t * Rep.t
   (* Single-qubit gates *)
   | TH of int
   | TS of int
@@ -171,6 +173,9 @@ let rec term_to_json = function
   | TUndistR (a, b, c) ->
     Printf.sprintf {|{"node": "UndistR", "a": %s, "b": %s, "c": %s}|}
       (type_to_json a) (type_to_json b) (type_to_json c)
+  | TWireIdentity (dom, cod) ->
+    Printf.sprintf {|{"node": "WireIdentity", "dom": %s, "cod": %s}|}
+      (type_to_json dom) (type_to_json cod)
   (* Single-qubit gates *)
   | TH i -> Printf.sprintf {|{"node": "H", "i": %d}|} i
   | TS i -> Printf.sprintf {|{"node": "S", "i": %d}|} i

@@ -336,6 +336,90 @@ let ctrl_gate = control bool q [| gate_h; gate_s |]
 
 On superposition inputs, both branches execute coherently (quantum control).
 
+### Higher-Order n-ary Dispatch (`o_n_plusmap`)
+
+For **higher-order** n-ary dispatch (branches reference outer-bound variables),
+use the oterm-level `o_n_plusmap` primitive. This is the n-ary analog of binary
+`oplusmap` — it produces the flat n-ary encoding directly and handles
+asymmetric Z_n (n ≠ power of 2) cleanly without nested-binary tag mismatches.
+
+```ocaml
+val o_n_plusmap : 'a ty array -> 'c ty -> ('g, 'c) oterm array
+              -> ('g, [`Lolli of 'sum_in * 'sum_out]) oterm
+```
+
+- `summand_types`: array of input summand types `[|a_0; ...; a_{n-1}|]`
+- `output_ty`: common output type `c` for all branches
+- `branches`: array of bare oterms, each producing a value of type `c`. All
+  branches share the OCaml context type `'g` — use `oshift` to pad branches
+  whose body references only a subset of `'g`'s variables.
+- Result: a Lolli value `(⊕^n a_i) ⊸ (⊕^n c)` with existential sum types.
+
+```ocaml
+(* Example: 3-branch select dispatch (Z_3, asymmetric) *)
+let pad b = oshift qq_ty (oshift qq_ty b) in
+let pm = o_n_plusmap [| ia; ia; ia |] ia
+  [| pad (apply_branch "f0");
+     pad (apply_branch "f1");
+     pad (apply_branch "f2"); |]
+```
+
+See `ocaml/demos/n_plusmap_e2e.ml` for a complete example.
+
+### n-ary Distributivity (`n_dist`, `n_factor`)
+
+To write the textbook curried dispatch formula explicitly:
+
+```
+select_{n,A}(f_0, …, f_{n-1})(p) = factor_n((⊕^n (id_b ⊗ f_i))(dist_n(p)))
+```
+
+use `n_dist` and `n_factor` — wire-level identity primitives that bridge the
+type-level distinction between `Z_n ⊗ A` and `⊕^n (b ⊗ A)`. Both forms share
+the same flat n-ary wire encoding (`log_n` tag bits + `width(A)` payload),
+so these primitives emit zero gates.
+
+```ocaml
+val n_dist   : 'a ty array -> 'b ty
+            -> (unit, [`Lolli of 'in_ty * 'out_ty]) prog
+val n_factor : 'a ty array -> 'b ty
+            -> (unit, [`Lolli of 'in_ty * 'out_ty]) prog
+```
+
+- `summand_types`: `[|s_0; …; s_{n-1}|]` for the n-ary sum's summands
+- `b_ty`: the data type tensored with each summand
+
+`n_dist` converts `(Plus s_0 (Plus s_1 …)) ⊗ b` → `Plus (s_0 ⊗ b) (Plus (s_1 ⊗ b) …)`.
+`n_factor` is its inverse. Both are identity at the wire level.
+
+See `ocaml/demos/curried_select_3_ndist_e2e.ml` for the textbook curried form.
+
+### Curried Higher-Order Dispatch (full source language)
+
+The full source language supports nested Apply on curried lambdas with full
+β-reduction. Use this when implementing the textbook curried form:
+
+```ocaml
+(* select_3 := λf_0. λf_1. λf_2. λp. n_factor (plusmap (n_dist p)) *)
+let abstract_select_3 =
+  let body =
+    let dist = oembed (n_dist [|one; one; one|] q) in
+    let factor = oembed (n_factor [|one; one; one|] q) in
+    let pipeline = oseq dist (oseq nary_plusmap factor split2) split1 in
+    oapp pipeline (ovar "p" z3a_ty) apply_split
+  in
+  olam "f0" qq_ty cod_0
+    (olam "f1" qq_ty cod_1
+       (olam "f2" qq_ty cod_2
+          (olam "p" z3a_ty z3a_ty body)))
+
+(* Apply with concrete gates via Bridge.TApply (3 nested Apply) *)
+let applied = TApply (TApply (TApply (emit_oterm abstract_select_3, h_value), s_value), t_value)
+```
+
+The Python compiler β-reduces nested Apply chains in one pass, so curried
+instantiation produces the same compiled circuit as the meta `control z_n`.
+
 ---
 
 ## Building and Running

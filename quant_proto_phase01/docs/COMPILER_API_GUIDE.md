@@ -332,6 +332,42 @@ from compile.to_pytket import compile
 result = compile(lam_apply_term)
 ```
 
+#### Nested Apply Chains (curried β-reduction)
+
+For curried application `Apply(Apply(...(Apply(Lam(x_1, Lam(x_2, ... Lam(x_n, body))), v_1)...), v_n)`,
+the compiler fully β-reduces the chain in one pass via `_peel_apply_chain`.
+This produces `body[v_1/x_1, ..., v_n/x_n]` and avoids mixing β-reduction
+with boundary-splicing at different levels (which would cause wire-layout
+mismatches).
+
+Bailout: if any inner Lam doesn't actually reference its bound variable
+(checked via `_contains_var`), the chain reduction stops to protect
+deferred-Lam semantics for terms like qswitch/select_2 that store
+function values in Pairs for later use.
+
+#### Deferred Lam Propagation through PlusMap Branches
+
+When a function value is bound by an outer `Apply(Lam(f, body), value)`,
+the compiler stores the value in `term_env[f]` and tracks its physical wire
+positions in `deferred_fns`. When an inner `PlusMap` or `NPlusMap` branch
+references `Var("f")`, the open-branch path:
+
+1. Detects free variables via `_ordered_free_vars`.
+2. Substitutes deferred Lam terms via `_substitute(branch, name, lam)`.
+3. Normalizes (`_normalize`) the substituted branch.
+4. Sub-compiles with a fresh env, then emits commands under multi-control.
+
+This mechanism handles arbitrarily nested PlusMap/NPlusMap without losing
+deferred values. It's the same code path for binary `PlusMap` and n-ary
+`NPlusMap` — making the two semantically equivalent for n=2.
+
+#### Wire-Level Identity (`WireIdentity`)
+
+For type coercions where the bit-level encoding is unchanged but the
+Granthi type interpretation differs (e.g., `n_dist` / `n_factor` for n-ary
+sums), the `WireIdentity(dom, cod)` Term compiles to zero gates. The type
+checker requires `width(dom) = width(cod)`.
+
 ---
 
 ## Involution Certification (exp_i)

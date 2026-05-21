@@ -1,0 +1,177 @@
+
+==========================================================================
+  N-ARY OPlusMap (select_3 via o_n_plusmap)
+==========================================================================
+
+Demonstrates the o_n_plusmap primitive on asymmetric Z_3.
+
+
+==========================================================================
+  Part 1: Compile abstract select_3 (Lam wraps n-ary plusmap)
+==========================================================================
+12 qubits, 11 gates
+  X q[6]
+  X q[7]
+  QControlBox q[6, 7, 8, 1]
+  X q[6]
+  X q[7]
+  X q[6]
+  QControlBox q[6, 7, 8, 3]
+  X q[6]
+  X q[7]
+  QControlBox q[6, 7, 8, 5]
+  X q[7]
+  perm: [4, 5, 2, 3, 0, 1, 9, 10, 11, 6, 7, 8]
+Abstract compilation SUCCESS!
+
+==========================================================================
+  Part 2: Instantiate with H, S, T concrete gates
+==========================================================================
+9 qubits, 11 gates
+  X q[6]
+  X q[7]
+  QControlBox q[6, 7, 8]
+  X q[6]
+  X q[7]
+  X q[6]
+  QControlBox q[6, 7, 8]
+  X q[6]
+  X q[7]
+  QControlBox q[6, 7, 8]
+  X q[7]
+  perm: [6, 7, 8, 4, 5, 2, 3, 0, 1]
+Instantiation SUCCESS!
+
+==========================================================================
+  Part 3: Verify against meta control z_3
+==========================================================================
+Meta control z_3 q [|H; S; T|]:
+3 qubits, 11 gates
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  X q[0]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[1]
+  perm: [0, 1, 2]
+  ✓ Tr_{f}[n-ary select_3(H,S,T)] = control z_3 [|H;S;T|] (fidelity=1.000000)
+
+==========================================================================
+  Part 4: select_5 via o_n_plusmap (asymmetric Z_5)
+==========================================================================
+
+==========================================================================
+  Part 4a: Compile abstract select_5
+==========================================================================
+18 qubits, 25 gates
+  X q[10]
+  X q[11]
+  X q[12]
+  QControlBox q[10, 11, 12, 13, 1]
+  X q[10]
+  X q[11]
+  X q[12]
+  X q[10]
+  X q[11]
+  QControlBox q[10, 11, 12, 13, 3]
+  X q[10]
+  X q[11]
+  X q[12]
+  X q[10]
+  QControlBox q[10, 11, 12, 13, 5]
+  X q[10]
+  X q[12]
+  X q[10]
+  QControlBox q[10, 11, 12, 13, 7]
+  X q[10]
+  X q[11]
+  X q[12]
+  QControlBox q[10, 11, 12, 13, 9]
+  X q[11]
+  X q[12]
+  perm: [8, 9, 6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 16, 17, 10, 11, 12, 13]
+Abstract select_5 compilation SUCCESS!
+
+==========================================================================
+  Part 4b: Instantiate with H, S, T, X, Y
+==========================================================================
+14 qubits, 25 gates
+  X q[10]
+  X q[11]
+  X q[12]
+  QControlBox q[10, 11, 12, 13]
+  X q[10]
+  X q[11]
+  X q[12]
+  X q[10]
+  X q[11]
+  QControlBox q[10, 11, 12, 13]
+  X q[10]
+  X q[11]
+  X q[12]
+  X q[10]
+  QControlBox q[10, 11, 12, 13]
+  X q[10]
+  X q[12]
+  X q[10]
+  QControlBox q[10, 11, 12, 13]
+  X q[10]
+  X q[11]
+  X q[12]
+  QControlBox q[10, 11, 12, 13]
+  X q[11]
+  X q[12]
+  perm: [10, 11, 12, 13, 8, 9, 6, 7, 4, 5, 2, 3, 0, 1]
+Instantiation SUCCESS!
+
+==========================================================================
+  Part 4c: Verify against meta control z_5
+==========================================================================
+Meta control z_5 q [|H; S; T; X; Y|]:
+4 qubits, 25 gates
+  X q[0]
+  X q[1]
+  X q[2]
+  QControlBox q[0, 1, 2, 3]
+  X q[0]
+  X q[1]
+  X q[2]
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2, 3]
+  X q[0]
+  X q[1]
+  X q[2]
+  X q[0]
+  QControlBox q[0, 1, 2, 3]
+  X q[0]
+  X q[2]
+  X q[0]
+  QControlBox q[0, 1, 2, 3]
+  X q[0]
+  X q[1]
+  X q[2]
+  QControlBox q[0, 1, 2, 3]
+  X q[1]
+  X q[2]
+  perm: [0, 1, 2, 3]
+
+  applied_5 = 14 qubits (5 × 2 function wires + 3 tag + 1 data).
+  Full-unitary partial-trace simulation requires 2^14 × 2^14 matrices.
+  ⊘ partial-trace simulation skipped: Circuit to simulate has too many qubits
+    (gate listings above show 25-gate structural match with meta;
+    programmatic full-unitary verification requires 2^14-size simulator)
+
+==========================================================================
+  Summary
+==========================================================================
+
+  Tests: 5/5 passed
+
+  ALL TESTS PASSED
+

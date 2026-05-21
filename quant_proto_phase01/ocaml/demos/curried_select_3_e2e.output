@@ -1,0 +1,81 @@
+
+==========================================================================
+  FULLY CURRIED select_3 (asymmetric Z_3 via o_n_plusmap)
+==========================================================================
+
+λf_0. λf_1. λf_2. λp. factor_3 ⊕(id⊗f_i) dist_3(p)
+
+
+==========================================================================
+  Part 1: Compile abstract select_3 (curried, 4 nested lambdas)
+==========================================================================
+15 qubits, 13 gates
+  X q[6]
+  X q[7]
+  QControlBox q[6, 7, 8, 1]
+  X q[6]
+  X q[7]
+  X q[6]
+  QControlBox q[6, 7, 8, 3]
+  X q[6]
+  X q[7]
+  QControlBox q[6, 7, 8, 5]
+  X q[7]
+  Unitary2qBox q[6, 7]
+  Unitary2qBox q[6, 7]
+  perm: [10, 11, 5, 9, 3, 4, 0, 1, 2, 6, 7, 8, 12, 13, 14]
+Abstract compilation SUCCESS!
+
+==========================================================================
+  Part 2: Instantiate via 3 nested Apply with H, S, T
+==========================================================================
+Apply(Apply(Apply(select_3, H), S), T):
+6 qubits, 13 gates
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  X q[0]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[1]
+  Unitary2qBox q[0, 1]
+  Unitary2qBox q[0, 1]
+  perm: [3, 4, 5, 0, 1, 2]
+Instantiation SUCCESS!
+
+==========================================================================
+  Part 3: Reference meta control z_3 (tag-encoding NOTE)
+==========================================================================
+Meta control z_3 q [|H; S; T|]:
+3 qubits, 11 gates
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  X q[0]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[1]
+  perm: [0, 1, 2]
+
+  Note: the curried select_3 above uses asymmetric-binary dist_l around
+  o_n_plusmap. The trailing Unitary2qBox gates implement tag-bit
+  rearrangement between the binary (I + (I+I)) encoding and the flat
+  n-ary encoding used by meta control. The two circuits are semantically
+  equivalent up to a tag permutation.
+
+==========================================================================
+  Summary
+==========================================================================
+
+  Tests: 2/2 passed
+
+  ALL TESTS PASSED
+

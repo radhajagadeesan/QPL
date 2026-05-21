@@ -1,0 +1,77 @@
+
+==========================================================================
+  NESTED PlusMap (select_4) SANITY CHECK
+==========================================================================
+
+Tests nested binary PlusMap with open branches —
+the (+)/⊕ analog of nested Apply (compose_n).
+Balanced binary: Z_4 = (I+I) + (I+I).
+
+
+==========================================================================
+  Part 1: select_4 abstract circuit (Z_4 = (I+I)+(I+I))
+==========================================================================
+Compile abstract select_4:
+14 qubits, 10 gates
+  X q[8]
+  CX q[8, 9]
+  QControlBox q[8, 9, 10, 1]
+  CX q[8, 9]
+  QControlBox q[8, 9, 10, 3]
+  X q[8]
+  CX q[8, 9]
+  QControlBox q[8, 9, 10, 5]
+  CX q[8, 9]
+  QControlBox q[8, 9, 10, 7]
+  perm: [6, 7, 4, 5, 2, 3, 0, 1, 11, 12, 13, 8, 9, 10]
+
+==========================================================================
+  Part 2: select_4(H, S, T, X) instantiated
+==========================================================================
+select_4(H, S, T, X):
+11 qubits, 10 gates
+  X q[8]
+  CX q[8, 9]
+  QControlBox q[8, 9, 10]
+  CX q[8, 9]
+  QControlBox q[8, 9, 10]
+  X q[8]
+  CX q[8, 9]
+  QControlBox q[8, 9, 10]
+  CX q[8, 9]
+  CCX q[8, 9, 10]
+  perm: [8, 9, 10, 6, 7, 4, 5, 2, 3, 0, 1]
+
+==========================================================================
+  Part 3: Meta control z_4 q [|H; S; T; X|]
+==========================================================================
+3 qubits, 12 gates
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  X q[0]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  perm: [0, 1, 2]
+
+==========================================================================
+  Part 4: Partial trace verification
+==========================================================================
+  ✓ Tr_{f_0..f_3}[select_4(H,S,T,X)] = control z_4 [|H;S;T;X|] (fidelity=1.000000)
+  ✓ select_4(X,T,H,X) = control z_4 [|X;T;H;X|] (fidelity=1.000000)
+  ✓ select_4(H,H,S,S) = control z_4 [|H;H;S;S|] (fidelity=1.000000)
+
+==========================================================================
+  Summary
+==========================================================================
+
+  Tests: 3/3 passed
+
+  ALL TESTS PASSED
+

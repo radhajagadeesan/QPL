@@ -13,6 +13,7 @@ from lang.terms import (
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR, UndistL, UndistR,
+    WireIdentity,
     Feedback,
     # Phase 0 gates
     H, S, CX,
@@ -238,6 +239,12 @@ def _internal_width(t: Term) -> int:
         return max(wA + wB, ctx_w + body_internal)
 
     if isinstance(t, Apply):
+        # Nested Apply chain fully β-reducible: compute width on the reduced form
+        # so we don't over-allocate for the abstract layout.
+        reduced = _peel_apply_chain(t, {})
+        if reduced is not None:
+            return _internal_width(reduced)
+
         # Apply needs f's internal width (which includes [A_slot | B_slot])
         # plus arg's internal width, but they overlap on A_slot
         f_dom, f_cod = type_of(t.f)
@@ -320,6 +327,8 @@ def _contains_var(term: Term, name: str) -> bool:
         return _contains_var(term.left, name) or _contains_var(term.right, name)
     if isinstance(term, PlusMap):
         return _contains_var(term.left, name) or _contains_var(term.right, name)
+    if isinstance(term, NPlusMap):
+        return any(_contains_var(b, name) for b in term.branches)
     return False
 
 
@@ -370,6 +379,9 @@ def _substitute(term: Term, name: str, replacement: Term) -> Term:
         return PlusMap(term.ty_left, term.ty_right,
                        _substitute(term.left, name, replacement),
                        _substitute(term.right, name, replacement))
+    if isinstance(term, NPlusMap):
+        new_branches = tuple(_substitute(b, name, replacement) for b in term.branches)
+        return NPlusMap(term.summand_types, new_branches)
     # Structural isos, gates, etc. — no sub-terms containing Var
     return term
 
@@ -412,6 +424,9 @@ def _normalize(term: Term) -> Term:
     if isinstance(term, PlusMap):
         return PlusMap(term.ty_left, term.ty_right,
                        _normalize(term.left), _normalize(term.right))
+    if isinstance(term, NPlusMap):
+        return NPlusMap(term.summand_types,
+                        tuple(_normalize(b) for b in term.branches))
     # Structural isos, gates, FunVar, Cup, Cap, etc. — leaves
     return term
 
@@ -567,6 +582,15 @@ def _ordered_free_vars(t: Term, bound: frozenset = frozenset()) -> list:
         rv = _ordered_free_vars(t.right, bound)
         seen = {name for name, _ in lv}
         return lv + [(n, ty) for n, ty in rv if n not in seen]
+    if isinstance(t, NPlusMap):
+        result = []
+        seen = set()
+        for branch in t.branches:
+            for name, ty in _ordered_free_vars(branch, bound):
+                if name not in seen:
+                    result.append((name, ty))
+                    seen.add(name)
+        return result
     if isinstance(t, TenTerm):
         lv = _ordered_free_vars(t.f, bound)
         rv = _ordered_free_vars(t.g, bound)
@@ -610,6 +634,52 @@ def _find_lam(f: Term, term_env: dict) -> 'Lam | None':
     return None
 
 
+def _peel_apply_chain(t: Term, term_env: dict) -> 'Term | None':
+    """Try to fully β-reduce a chain of nested Applies ending in a Lam-stack.
+
+    Pattern: Apply(Apply(...Apply(Lam(x_1, Lam(x_2, ... Lam(x_n, body))), v_1), v_2), ..., v_n)
+    Reduces to: body[v_1/x_1][v_2/x_2]...[v_n/x_n]
+
+    The outermost Lam variable x_1 receives the innermost Apply's argument v_1.
+    Returns the reduced body, or None if the chain cannot be fully reduced
+    (e.g., not enough Lams, or a Lam doesn't use its bound variable — falling
+    back protects deferred-value semantics for select_2/qswitch-style terms).
+    """
+    apply_chain = []
+    current = t
+    while isinstance(current, Apply):
+        apply_chain.append(current)
+        current = current.f
+
+    if len(apply_chain) < 2:
+        return None  # Single Apply — let existing single-Apply path handle it
+
+    base = current
+    if isinstance(base, Var) and base.name in term_env:
+        base = term_env[base.name]
+    if isinstance(base, Seq) and isinstance(base.g, Id):
+        base = base.f
+
+    if not isinstance(base, Lam):
+        return None
+
+    # apply_chain is outer→inner. The OUTERMOST Apply (apply_chain[0]) provides
+    # the argument for the INNERMOST Lam. So we iterate args inner→outer to
+    # match Lams outer→inner.
+    args_inner_to_outer = [ac.arg for ac in reversed(apply_chain)]
+
+    body = base
+    for arg in args_inner_to_outer:
+        if not isinstance(body, Lam):
+            return None
+        if not _contains_var(body.body, body.name):
+            # Lam doesn't use its binding — protect arg's gates by falling back.
+            return None
+        body = _substitute(body.body, body.name, arg)
+
+    return body
+
+
 def compile(term: Term, *, materialize: bool = False, explain: bool = False, env: Env = None) -> Compiled:
     # Check for Feedback - not currently supported
     if _contains_feedback(term):
@@ -637,6 +707,14 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
         n_cod = width(cod)
         # Ensure we have at least max(dom, cod) wires
         n = max(n, n_dom, n_cod)
+        # When env is supplied (sub-compile of open PlusMap branches), it may
+        # reference physical wire positions beyond the term's declared width.
+        # Make sure the circuit is large enough.
+        if env:
+            for phys_list in env.values():
+                for phys in phys_list:
+                    if phys + 1 > n:
+                        n = phys + 1
 
     circ = Circuit(n)
     p = identity(n)
@@ -909,6 +987,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
         if isinstance(t, Id):
             if explain:
                 log.append(f"Id (offset={offset})")
+            return
+        if isinstance(t, WireIdentity):
+            # Wire-level identity between two types of equal width: emit no gates.
+            # The Granthi type checker has already verified width(dom) = width(cod).
+            if explain:
+                log.append(f"WireIdentity (no gates, dom→cod type coercion)")
             return
         if isinstance(t, Seq):
             go(t.f, offset, env)
@@ -1340,11 +1424,19 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             right_dom, _ = type_of(t.right)
             right_w = width(right_dom)
 
-            # Check for open branches (free variables widen domain beyond declared type)
+            # Check for open branches (free variables widen domain beyond declared type).
+            # For value-style branches (apply_f_branch pattern), the type_of'd dom
+            # already includes the free var context, so left_w - payload_w gives ctx.
+            # For morphism-style branches (Seq, etc.), the dom is the morphism's
+            # declared input only — free vars don't appear there. Use the explicit
+            # free-var width sum (filtered by env membership, to avoid counting
+            # CaseExpr/PlusMap payload-bound vars that aren't in env) so both cases work.
             payload_left_w = width(t.ty_left)
             payload_right_w = width(t.ty_right)
-            ctx_left_w = left_w - payload_left_w
-            ctx_right_w = right_w - payload_right_w
+            fv_left_w = sum(width(ty_fv) for n, ty_fv in _ordered_free_vars(t.left) if n in env)
+            fv_right_w = sum(width(ty_fv) for n, ty_fv in _ordered_free_vars(t.right) if n in env)
+            ctx_left_w = max(left_w - payload_left_w, fv_left_w)
+            ctx_right_w = max(right_w - payload_right_w, fv_right_w)
 
             if ctx_left_w > 0 or ctx_right_w > 0:
                 # Open branches: compile with parent env for free variable routing
@@ -1368,7 +1460,21 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                             sub_env[name] = list(range(ctx_pos, ctx_pos + w_fv))
                             ctx_pos += w_fv
 
-                        branch_result = compile(branch, materialize=True, env=sub_env)
+                        # Substitute deferred Lam values for free vars (deferred Apply).
+                        # If a free var's parent physical wires are registered in
+                        # deferred_fns, replace Var(name) with the deferred Lam term so
+                        # the sub-compile β-reduces Apply(Var, ...) into concrete gates.
+                        branch_to_compile = branch
+                        if deferred_fns:
+                            for name, ty_fv in fv:
+                                if name in env:
+                                    key = tuple(env[name])
+                                    if key in deferred_fns:
+                                        branch_to_compile = _substitute(
+                                            branch_to_compile, name, deferred_fns[key])
+                            branch_to_compile = _normalize(branch_to_compile)
+
+                        branch_result = compile(branch_to_compile, materialize=True, env=sub_env)
                         cmds = _get_sub_cmds(branch_result.circuit)
 
                         if not cmds:
@@ -1564,7 +1670,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             return
 
         # NPlusMap: n-ary coherent sum eliminator
-        # Uses per-branch X-flip + multi-controlled gates + X-unflip
+        # Uses per-branch X-flip + multi-controlled gates + X-unflip.
+        # Open branches (with free vars referencing the outer env) get the
+        # same deferred-Lam propagation + wire-mapped emission as binary
+        # PlusMap. This is the single primitive that handles all n-ary
+        # dispatch — binary PlusMap, control, anticontrol, etc. all desugar
+        # to this path.
         if isinstance(t, NPlusMap):
             from lang.types import (Plus, flatten_plus, tag_width as tw_fn,
                                     payload_width, build_plus_tree)
@@ -1580,18 +1691,65 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             payload_base = offset + k
 
             for i, (st, br) in enumerate(zip(t.summand_types, t.branches)):
-                sub = compile(br, materialize=True)
-                sub_cmds = _get_sub_cmds(sub.circuit)
+                branch_pw = width(st)
+                # Check if branch is open: any free var present in outer env.
+                fv = _ordered_free_vars(br)
+                fv_in_env = [(name, ty_fv) for name, ty_fv in fv if name in env]
 
-                if not sub_cmds:
-                    continue  # Id branch, nothing to emit
+                if fv_in_env:
+                    # Open branch: build sub_env, substitute deferred Lams, compile.
+                    sub_env = {}
+                    ctx_pos = branch_pw
+                    for name, ty_fv in fv_in_env:
+                        w_fv = width(ty_fv)
+                        sub_env[name] = list(range(ctx_pos, ctx_pos + w_fv))
+                        ctx_pos += w_fv
 
-                def make_wire_map(pb=payload_base):
-                    def wire_map(w):
-                        return p.apply_new_to_old(pb + w)
-                    return wire_map
+                    branch_to_compile = br
+                    if deferred_fns:
+                        for name, ty_fv in fv_in_env:
+                            key = tuple(env[name])
+                            if key in deferred_fns:
+                                branch_to_compile = _substitute(
+                                    branch_to_compile, name, deferred_fns[key])
+                        branch_to_compile = _normalize(branch_to_compile)
 
-                _emit_nway_controlled(circ, tag_phys, i, sub_cmds, make_wire_map())
+                    sub = compile(branch_to_compile, materialize=True, env=sub_env)
+                    sub_cmds = _get_sub_cmds(sub.circuit)
+
+                    if not sub_cmds:
+                        continue
+
+                    ctx_parent_phys = []
+                    for name, ty_fv in fv_in_env:
+                        ctx_parent_phys.extend(env[name])
+
+                    def make_wire_map_open(_pw=branch_pw, _pb=payload_base,
+                                           _cpp=list(ctx_parent_phys)):
+                        def wire_map(w):
+                            if w < _pw:
+                                return p.apply_new_to_old(_pb + w)
+                            else:
+                                return _cpp[w - _pw]
+                        return wire_map
+
+                    _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
+                                          make_wire_map_open())
+                else:
+                    # Closed branch (or no relevant free vars in scope).
+                    sub = compile(br, materialize=True)
+                    sub_cmds = _get_sub_cmds(sub.circuit)
+
+                    if not sub_cmds:
+                        continue
+
+                    def make_wire_map(pb=payload_base):
+                        def wire_map(w):
+                            return p.apply_new_to_old(pb + w)
+                        return wire_map
+
+                    _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
+                                          make_wire_map())
 
             if explain:
                 log.append(f"NPlusMap(n={n_branches}, k={k}): "
@@ -1937,6 +2095,17 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             # arg : ... → A produces [A] on output
             # Apply connects (identifies) arg's A output with f's A_slot
             # Result is B_slot
+
+            # Multi-level β-reduction for nested Apply chains. Apply(Apply(Lam(x,
+            # Lam(y, body)), v1), v2) → body[v1/x, v2/y] without mixing β-reduce
+            # and boundary-splicing at different levels (which causes wire
+            # misalignment). Skipped when any inner Lam doesn't reference its
+            # variable, to preserve deferred semantics (qswitch / select_2).
+            reduced = _peel_apply_chain(t, term_env)
+            if reduced is not None:
+                go(_normalize(reduced), offset, env)
+                return
+
             f_dom, f_cod = type_of(t.f)
             if not isinstance(f_cod, Arrow):
                 raise TypeCheckError(f"Apply expects function type, got {f_cod}")

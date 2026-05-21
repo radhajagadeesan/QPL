@@ -154,6 +154,22 @@ class UndistR:
 # -- Feedback (Phase 3 GOI)
 
 @dataclass(frozen=True, slots=True)
+class WireIdentity:
+    """Wire-level identity between two types of equal width.
+
+    Used for type coercions where the wire encoding is identical but the
+    Granthi type-level interpretation differs — specifically, the n-ary
+    distributivity primitives [n_dist] and [n_factor] which convert between
+        Z_n ⊗ A  and  ⊕^n (b ⊗ A)
+    at the type level. Both forms have the same flat n-ary wire encoding
+    (log_n tag bits + width(A) payload), so the morphism is identity at the
+    wire level. Compiles to zero gates.
+    """
+    dom: Ty
+    cod: Ty
+
+
+@dataclass(frozen=True, slots=True)
 class Feedback:
     """Feedback_k(body) : explicit GOI feedback operator.
 

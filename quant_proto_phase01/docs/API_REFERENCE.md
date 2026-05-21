@@ -180,12 +180,46 @@ val omapn : _ ty array
 
 **Compilation:** Per-branch X-flip + multi-controlled gates + X-unflip on flat ⌈log₂(n)⌉ tag encoding.
 
+**Open branches (free variables):** NPlusMap branches may reference variables
+bound in the outer environment (free vars). The compiler detects these via
+`_ordered_free_vars`, sets up a sub-env mapping names to wire positions,
+substitutes deferred-Lam values from `term_env`, and emits the resulting
+sub-circuit gates under multi-control. This mirrors the binary `PlusMap`
+open-branch path — the deferred-Lam mechanism propagates through any depth
+of nested PlusMap/NPlusMap.
+
+**OCaml frontend (higher-order):** `o_n_plusmap : 'a ty array -> 'c ty -> ('g, 'c) oterm array -> Lolli oterm`.
+Branches share OCaml context `'g`; use `oshift` to pad branches that only
+reference a subset of the variables. See `ocaml/demos/n_plusmap_e2e.ml`.
+
 **Type helper:**
 ```python
 build_plus_tree(types: list[Ty]) -> Ty
 # Builds balanced binary Plus tree: build_plus_tree([A,B,C,D]) == Plus(Plus(A,B), Plus(C,D))
 # Inverse of flatten_plus
 ```
+
+### Wire-Level Identity (n-ary dist/factor)
+
+| Term | Type | Description |
+|------|------|-------------|
+| `WireIdentity(dom, cod)` | A → B (width-preserving) | Wire-level identity between two types of equal width |
+
+**Use case:** The n-ary distributivity primitives `n_dist` and `n_factor`
+(OCaml frontend) emit as `WireIdentity` at the Bridge level. They convert
+between `Z_n ⊗ A` and `⊕^n (b ⊗ A)` at the type level but are identity at
+the wire level (both forms share the flat n-ary encoding).
+
+**Type check:** Requires `width(dom) == width(cod)`. **Compile:** zero gates.
+
+**OCaml frontend equivalents:**
+```ocaml
+val n_dist   : 'a ty array -> 'b ty -> (unit, [`Lolli of 'in_ty * 'out_ty]) prog
+val n_factor : 'a ty array -> 'b ty -> (unit, [`Lolli of 'in_ty * 'out_ty]) prog
+```
+
+See `ocaml/demos/curried_select_3_ndist_e2e.ml` for the textbook curried
+`select_n` formula using these primitives.
 
 ### Phase-Weighted Bifunctors
 
