@@ -1,0 +1,41 @@
+# Virtual environments (Python)
+venv/
+ENV/
+env/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# OCaml build artifacts
+_build/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Local dev environment / scratch
+.claude/
+scratch/
+install_ocaml.sh
+tmp/
+CLAUDE.md
+
+# Private notes (kept local)
+RadhaMSG/
+RadhaMSGtoClaude/
+NSFDOCS/
+
+# Generated archives
+*.zip
+
+# Audit reports (local)
+audit-reports/
+
+# Windows Zone Identifier
+*:Zone.Identifier

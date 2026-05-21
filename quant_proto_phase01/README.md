@@ -23,7 +23,7 @@ distributivity) compile to zero gates, while computational content
 ### Requirements
 
 - Python 3.10+ with pytket (`pip install pytket`)
-- OCaml 5.x with opam (`opam install dune`)
+- OCaml 4.14 with opam (`opam install dune yojson`)
 
 ### Run Python tests
 
