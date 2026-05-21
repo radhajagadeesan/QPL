@@ -29,8 +29,11 @@ Research prototype. APIs and semantics are still evolving.
 
 ### Requirements
 
-- OCaml 4.14 with opam (`opam install dune yojson`)
-- Python 3.10+ with pytket (`pip install pytket`)
+- OCaml 4.14 with opam, dune, yojson
+- Python 3.10+ with numpy, pytest, pytket, pytket-pyzx
+
+Assumes an initialized opam switch. If you don't have one, run
+`opam switch create 4.14.2 && eval $(opam env)` before `opam install dune yojson`.
 
 ### Build and test the OCaml surface language
 
@@ -75,9 +78,11 @@ docs/             Documentation
 - [OCaml DSL Guide](docs/OCAML_DSL.md) — OCaml surface language
 - [Limitations](docs/LIMITATIONS.md) — known limitations
 
-## Author
+## Author / Citation
 
 Radha Jagadeesan — DePaul University — radha.jagadeesan@gmail.com
+
+Citation information forthcoming.
 
 ## License
 

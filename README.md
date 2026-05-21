@@ -34,6 +34,9 @@ The code currently lives under `quant_proto_phase01/` as a single project.
 
 ### OCaml surface language (primary user-facing layer)
 
+Assumes an initialized opam switch (OCaml 4.14 or compatible). If you don't
+have one, run `opam switch create 4.14.2 && eval $(opam env)` first.
+
 ```bash
 cd quant_proto_phase01/ocaml
 opam install dune yojson
@@ -60,7 +63,7 @@ PYTHONPATH=python/src pytest python/tests
 ## Requirements
 
 - OCaml 4.14 or compatible — opam, dune, yojson
-- Python 3.10+ — numpy, pytest, pytket
+- Python 3.10+ — numpy, pytest, pytket, pytket-pyzx
 
 ## Documentation
 
@@ -71,6 +74,12 @@ Start here:
 - [`quant_proto_phase01/docs/OCAML_DSL.md`](quant_proto_phase01/docs/OCAML_DSL.md)
 - [`quant_proto_phase01/docs/COMPILER_API_GUIDE.md`](quant_proto_phase01/docs/COMPILER_API_GUIDE.md)
 - [`quant_proto_phase01/docs/LIMITATIONS.md`](quant_proto_phase01/docs/LIMITATIONS.md)
+
+## Author / Citation
+
+Radha Jagadeesan — DePaul University — radha.jagadeesan@gmail.com
+
+Citation information forthcoming.
 
 ## License
 
