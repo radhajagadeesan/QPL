@@ -27,7 +27,7 @@ from lang.terms import (
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR, UndistL, UndistR,
-    WireIdentity,
+    WireIdentity, TagPerm,
     H, S, Sdg, T, Tdg, X, Y, Z,
     Rx, Ry, Rz, Phase,
     CX, CZ, CRz, CCX,
@@ -316,6 +316,10 @@ def parse_term(j: dict, ty_total: Ty = None, min_qubits: int = 1) -> Term:
     elif node == "WireIdentity":
         return WireIdentity(parse_type(j["dom"]), parse_type(j["cod"]))
 
+    # Wire-level basis-state permutation
+    elif node == "TagPerm":
+        return TagPerm(tuple(j["perm"]), parse_type(j["ty"]))
+
     # Single-qubit gates
     elif node == "H":
         return H(j["i"], ty_total)
@@ -471,15 +475,15 @@ def parse_term(j: dict, ty_total: Ty = None, min_qubits: int = 1) -> Term:
         raise ValueError(f"Unknown term node: {node}")
 
 
-def perm_to_json(p: WirePerm) -> dict:
-    """Convert a WirePerm to JSON."""
+def perm_to_json(p: TagPerm) -> dict:
+    """Convert a TagPerm to JSON."""
     return {
         "n": p.n,
         "new_to_old": p.new_to_old
     }
 
 
-def is_involution(p: WirePerm) -> bool:
+def is_involution(p: TagPerm) -> bool:
     """Check if p ∘ p = identity."""
     p_squared = compose(p, p)
     id_perm = identity(p.n)

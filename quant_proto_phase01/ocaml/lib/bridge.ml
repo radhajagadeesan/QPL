@@ -83,6 +83,8 @@ type term =
   | TUndistR of Rep.t * Rep.t * Rep.t
   (* Wire-level identity between two types of equal width (n_dist/n_factor) *)
   | TWireIdentity of Rep.t * Rep.t
+  (* Wire-level basis-state permutation (compiled via ToffoliBox) *)
+  | TTagPerm of int list * Rep.t
   (* Single-qubit gates *)
   | TH of int
   | TS of int
@@ -176,6 +178,10 @@ let rec term_to_json = function
   | TWireIdentity (dom, cod) ->
     Printf.sprintf {|{"node": "WireIdentity", "dom": %s, "cod": %s}|}
       (type_to_json dom) (type_to_json cod)
+  | TTagPerm (perm, ty) ->
+    let perm_str = String.concat ", " (List.map string_of_int perm) in
+    Printf.sprintf {|{"node": "TagPerm", "perm": [%s], "ty": %s}|}
+      perm_str (type_to_json ty)
   (* Single-qubit gates *)
   | TH i -> Printf.sprintf {|{"node": "H", "i": %d}|} i
   | TS i -> Printf.sprintf {|{"node": "S", "i": %d}|} i

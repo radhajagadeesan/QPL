@@ -13,7 +13,7 @@ from lang.terms import (
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR, UndistL, UndistR,
-    WireIdentity,
+    WireIdentity, TagPerm,
     Feedback,
     # Phase 0 gates
     H, S, CX,
@@ -280,6 +280,17 @@ def _internal_width(t: Term) -> int:
     if isinstance(t, Pair):
         return _internal_width(t.fst) + _internal_width(t.snd)
 
+    if isinstance(t, NPlusMap):
+        # n-ary outer dispatch: parent encoding is k_outer + max(payload).
+        # When summands are sums themselves, this differs from the flat
+        # encoding's width (which would use ceil(log_2(flat_leaves))).
+        import math
+        n_branches = len(t.summand_types)
+        k_outer = math.ceil(math.log2(n_branches)) if n_branches > 1 else 0
+        max_payload = max(type_width(st) for st in t.summand_types)
+        branch_internal = max(_internal_width(br) for br in t.branches)
+        return max(k_outer + max_payload, k_outer + branch_internal)
+
     # Default: use type widths
     dom, cod = type_of(t)
     return max(type_width(dom), type_width(cod))
@@ -466,8 +477,19 @@ def _emit_tag_perm_unitary(circ, p, tag_perm, k, offset, explain, log):
         box = Unitary3qBox(U)
         circ.add_unitary3qbox(box, tag_phys[0], tag_phys[1], tag_phys[2])
     else:
-        raise NotImplementedError(
-            f"tag_perm on {k} tag qubits (> 3) not yet supported")
+        # For k > 3: pytket has no built-in Unitary4qBox+, but tag_perm IS
+        # always a permutation matrix, so use ToffoliBox (synthesizes any
+        # bit-string permutation as a sequence of multiplexed rotations).
+        from pytket.circuit import ToffoliBox, ToffoliBoxSynthStrat
+        perm_pairs = []
+        for i in range(dim):
+            j = tag_perm[i] if i < n else i  # identity on unused states
+            # Big-endian bit-string: bit 0 is most-significant
+            inp = tuple(bool((i >> (k - 1 - b)) & 1) for b in range(k))
+            out = tuple(bool((j >> (k - 1 - b)) & 1) for b in range(k))
+            perm_pairs.append((inp, out))
+        box = ToffoliBox(perm_pairs, ToffoliBoxSynthStrat.Matching)
+        circ.add_toffolibox(box, tag_phys)
 
     if explain:
         log.append(f"TagPerm {tag_perm} on {k} qubits, phys={tag_phys}")
@@ -990,9 +1012,29 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             return
         if isinstance(t, WireIdentity):
             # Wire-level identity between two types of equal width: emit no gates.
-            # The Granthi type checker has already verified width(dom) = width(cod).
             if explain:
                 log.append(f"WireIdentity (no gates, dom→cod type coercion)")
+            return
+        if isinstance(t, TagPerm):
+            # Basis-state permutation: emit ToffoliBox at the term's width.
+            from lang.types import width as type_width
+            k = type_width(t.ty)
+            if k == 0:
+                return  # nothing to do for unit type
+            tag_phys = [p.apply_new_to_old(offset + i) for i in range(k)]
+            n = len(t.perm)
+            dim = 2 ** k
+            from pytket.circuit import ToffoliBox, ToffoliBoxSynthStrat
+            perm_pairs = []
+            for i in range(dim):
+                j = t.perm[i] if i < n else i
+                inp = tuple(bool((i >> (k - 1 - b)) & 1) for b in range(k))
+                out = tuple(bool((j >> (k - 1 - b)) & 1) for b in range(k))
+                perm_pairs.append((inp, out))
+            box = ToffoliBox(perm_pairs, ToffoliBoxSynthStrat.Matching)
+            circ.add_toffolibox(box, tag_phys)
+            if explain:
+                log.append(f"TagPerm: k={k}, perm={t.perm}")
             return
         if isinstance(t, Seq):
             go(t.f, offset, env)
@@ -1572,36 +1614,75 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 U_g = compile(t.right, materialize=True).circuit.get_unitary()
                 dim = 2 ** w
 
+                # Helper: copy n_blocks × n_blocks of size dim_pw blocks from U_src
+                # starting at block (0, 0) into U_dst starting at block (off, off).
+                # This copies the FULL used-states sub-block (including off-diagonal
+                # entries that carry cross-summand permutations).
+                def _splat(U_dst, U_src, n_blocks, off, dim_pw):
+                    for b1 in range(n_blocks):
+                        for b2 in range(n_blocks):
+                            d_rs1, d_re1 = (off + b1) * dim_pw, (off + b1 + 1) * dim_pw
+                            d_rs2, d_re2 = (off + b2) * dim_pw, (off + b2 + 1) * dim_pw
+                            s_rs1, s_re1 = b1 * dim_pw, (b1 + 1) * dim_pw
+                            s_rs2, s_re2 = b2 * dim_pw, (b2 + 1) * dim_pw
+                            U_dst[d_rs1:d_re1, d_rs2:d_re2] = U_src[s_rs1:s_re1, s_rs2:s_re2]
+
                 if n_left > half:
                     U_full = U_f.copy()
                     w_g = width(type_of(t.right)[0])
+                    # Zero out right-summand rows/cols, then splat U_g block.
                     for tr in range(n_right):
                         tf = n_left + tr
                         rs, re = tf * dim_pw, (tf + 1) * dim_pw
                         U_full[rs:re, :] = 0
                         U_full[:, rs:re] = 0
-                        if w_g == 0:
+                    if w_g == 0:
+                        for tr in range(n_right):
+                            tf = n_left + tr
+                            rs, re = tf * dim_pw, (tf + 1) * dim_pw
                             U_full[rs:re, rs:re] = np.eye(dim_pw)
-                        else:
-                            g_rs = tr * dim_pw
-                            U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
+                    else:
+                        _splat(U_full, U_g, n_right, n_left, dim_pw)
                 else:
                     U_full = np.eye(dim, dtype=complex)
                     w_f = width(type_of(t.left)[0])
-                    for tl in range(n_left):
-                        rs, re = tl * dim_pw, (tl + 1) * dim_pw
-                        if w_f == 0:
+                    if w_f == 0:
+                        for tl in range(n_left):
+                            rs, re = tl * dim_pw, (tl + 1) * dim_pw
                             U_full[rs:re, rs:re] = np.eye(dim_pw)
-                        else:
-                            f_rs = tl * dim_pw
-                            U_full[rs:re, rs:re] = U_f[f_rs:f_rs+dim_pw, f_rs:f_rs+dim_pw]
-                    for tr in range(n_right):
-                        tf = n_left + tr
-                        rs, re = tf * dim_pw, (tf + 1) * dim_pw
-                        g_rs = tr * dim_pw
-                        U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
+                    else:
+                        _splat(U_full, U_f, n_left, 0, dim_pw)
+                    _splat(U_full, U_g, n_right, n_left, dim_pw)
 
                 phys = [p.apply_new_to_old(offset + i) for i in range(w)]
+                # Check if U_full is a permutation matrix (each row & col has
+                # exactly one 1, all others 0). Common when summand payloads
+                # are width 0 (e.g., Z_n shifts).
+                def _is_perm_matrix(U):
+                    if U.shape[0] != U.shape[1]:
+                        return False
+                    n = U.shape[0]
+                    if not np.allclose(np.abs(U), np.eye(n)[np.argmax(np.abs(U), axis=0)].T,
+                                       atol=1e-10):
+                        # Fallback: check each row has one entry of magnitude 1 and rest 0
+                        for r in range(n):
+                            row = U[r]
+                            mags = np.abs(row)
+                            if not (np.sum(mags > 0.5) == 1 and np.allclose(mags[mags <= 0.5], 0)):
+                                return False
+                        for c in range(n):
+                            col = U[:, c]
+                            mags = np.abs(col)
+                            if not (np.sum(mags > 0.5) == 1 and np.allclose(mags[mags <= 0.5], 0)):
+                                return False
+                    # Also require all non-zero entries to be 1 (real, no phase).
+                    for r in range(n):
+                        for c in range(n):
+                            if np.abs(U[r, c]) > 0.5:
+                                if not np.allclose(U[r, c], 1.0, atol=1e-10):
+                                    return False
+                    return True
+
                 if w == 2:
                     from pytket.circuit import Unitary2qBox
                     box = Unitary2qBox(U_full)
@@ -1610,9 +1691,24 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     from pytket.circuit import Unitary3qBox
                     box = Unitary3qBox(U_full)
                     circ.add_unitary3qbox(box, phys[0], phys[1], phys[2])
+                elif _is_perm_matrix(U_full):
+                    # ToffoliBox for arbitrary permutation matrices on w qubits.
+                    from pytket.circuit import ToffoliBox, ToffoliBoxSynthStrat
+                    perm_pairs = []
+                    full_dim = 2 ** w
+                    for i in range(full_dim):
+                        # Find j such that U[j, i] = 1.
+                        col = U_full[:, i]
+                        j = int(np.argmax(np.abs(col)))
+                        inp = tuple(bool((i >> (w - 1 - b)) & 1) for b in range(w))
+                        out = tuple(bool((j >> (w - 1 - b)) & 1) for b in range(w))
+                        perm_pairs.append((inp, out))
+                    box = ToffoliBox(perm_pairs, ToffoliBoxSynthStrat.Matching)
+                    circ.add_toffolibox(box, phys)
                 else:
                     raise NotImplementedError(
-                        f"PlusMap full unitary for width {w} > 3 not yet supported")
+                        f"PlusMap full non-permutation unitary for width "
+                        f"{w} > 3 not yet supported")
 
                 if explain:
                     log.append(f"PlusMap(k={k}, Strategy B full unitary): "
@@ -1683,9 +1779,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
             n_branches = len(t.summand_types)
             assert n_branches >= 2
-            sum_ty = build_plus_tree(list(t.summand_types))
-            k = tw_fn(sum_ty)
-            pw = payload_width(sum_ty)
+            # Tag width is computed from number of branches (outer n-ary dispatch),
+            # NOT from a flattened sum_ty. Each summand type may itself be a sum,
+            # in which case its tag bits live inside the per-summand payload.
+            k = math.ceil(math.log2(n_branches)) if n_branches > 1 else 0
+            pw = max(width(st) for st in t.summand_types)
 
             tag_phys = [p.apply_new_to_old(offset + j) for j in range(k)]
             payload_base = offset + k
@@ -1812,6 +1910,15 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 U_g = compile(t.right, materialize=True).circuit.get_unitary()
                 dim = 2 ** w
 
+                def _splat_phased(U_dst, U_src, n_blocks, off, dim_pw):
+                    for b1 in range(n_blocks):
+                        for b2 in range(n_blocks):
+                            d_rs1, d_re1 = (off + b1) * dim_pw, (off + b1 + 1) * dim_pw
+                            d_rs2, d_re2 = (off + b2) * dim_pw, (off + b2 + 1) * dim_pw
+                            s_rs1, s_re1 = b1 * dim_pw, (b1 + 1) * dim_pw
+                            s_rs2, s_re2 = b2 * dim_pw, (b2 + 1) * dim_pw
+                            U_dst[d_rs1:d_re1, d_rs2:d_re2] = U_src[s_rs1:s_re1, s_rs2:s_re2]
+
                 if n_left > half:
                     U_full = U_f.copy()
                     w_g = width(type_of(t.right)[0])
@@ -1820,26 +1927,23 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                         rs, re = tf * dim_pw, (tf + 1) * dim_pw
                         U_full[rs:re, :] = 0
                         U_full[:, rs:re] = 0
-                        if w_g == 0:
+                    if w_g == 0:
+                        for tr in range(n_right):
+                            tf = n_left + tr
+                            rs, re = tf * dim_pw, (tf + 1) * dim_pw
                             U_full[rs:re, rs:re] = np.eye(dim_pw)
-                        else:
-                            g_rs = tr * dim_pw
-                            U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
+                    else:
+                        _splat_phased(U_full, U_g, n_right, n_left, dim_pw)
                 else:
                     U_full = np.eye(dim, dtype=complex)
                     w_f = width(type_of(t.left)[0])
-                    for tl in range(n_left):
-                        rs, re = tl * dim_pw, (tl + 1) * dim_pw
-                        if w_f == 0:
+                    if w_f == 0:
+                        for tl in range(n_left):
+                            rs, re = tl * dim_pw, (tl + 1) * dim_pw
                             U_full[rs:re, rs:re] = np.eye(dim_pw)
-                        else:
-                            f_rs = tl * dim_pw
-                            U_full[rs:re, rs:re] = U_f[f_rs:f_rs+dim_pw, f_rs:f_rs+dim_pw]
-                    for tr in range(n_right):
-                        tf = n_left + tr
-                        rs, re = tf * dim_pw, (tf + 1) * dim_pw
-                        g_rs = tr * dim_pw
-                        U_full[rs:re, rs:re] = U_g[g_rs:g_rs+dim_pw, g_rs:g_rs+dim_pw]
+                    else:
+                        _splat_phased(U_full, U_f, n_left, 0, dim_pw)
+                    _splat_phased(U_full, U_g, n_right, n_left, dim_pw)
 
                 # Apply phase e^{iθ} to all left tag blocks
                 phase = np.exp(1j * theta)

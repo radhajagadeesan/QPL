@@ -153,6 +153,15 @@ val n_dist : 'a ty array -> 'b ty
 val n_factor : 'a ty array -> 'b ty
             -> (unit, [`Lolli of 'in_ty * 'out_ty]) prog
 
+(** Wire-level basis-state permutation on a fixed-width type [ty].
+    Maps |i⟩ → |perm.(i)⟩ for i < len(perm); identity on unused states.
+    Compiled via pytket ToffoliBox.
+
+    This is a primitive (like [twist_plus] or [assoc_plus_l/r]) generalized
+    to arbitrary basis-state permutations. Use for group operations like
+    [neg_z_n] whose structural decomposition is verbose. *)
+val tag_perm : int array -> 'a ty -> (unit, [`Lolli of 'a * 'a]) prog
+
 (** {2 Unitary Constants (Closed Endomorphisms)} *)
 
 (** Primitive gates are closed endomorphisms: [Prog(∅, A ⊸ A)] *)

@@ -125,6 +125,11 @@ type (_, _) prog =
   | NFactor : 'a ty array * 'b ty
            -> (unit, [`Lolli of 'in_ty * 'out_ty]) prog
 
+  (* Wire-level basis-state permutation on a fixed-width type.
+     Maps |i⟩ → |perm[i]⟩. Compiled via pytket ToffoliBox. *)
+  | TagPerm : int array * 'a ty
+            -> (unit, [`Lolli of 'a * 'a]) prog
+
   (* Unitary constants (closed endomorphisms) *)
   | GateH : (unit, [`Lolli of [`Q] * [`Q]]) prog
   | GateS : (unit, [`Lolli of [`Q] * [`Q]]) prog
@@ -211,6 +216,10 @@ let n_dist summand_tys b_ty = NDist (summand_tys, b_ty)
 
 (** n-ary inverse distributivity: ⊕^n (b ⊗ A) ⊸ Z_n ⊗ A. Wire-level identity. *)
 let n_factor summand_tys b_ty = NFactor (summand_tys, b_ty)
+
+(** Wire-level basis-state permutation: maps |i⟩ → |perm.(i)⟩.
+    Compiled via pytket ToffoliBox. *)
+let tag_perm perm ty = TagPerm (perm, ty)
 
 let gate_h = GateH
 let gate_s = GateS
@@ -400,6 +409,8 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
       let tensored = Array.map (fun s -> Rep.Tensor (s, b_rep)) summand_reps in
       let sum_tensored_rep = build_plus tensored 0 n in
       Bridge.TWireIdentity (sum_tensored_rep, Rep.Tensor (sum_rep, b_rep))
+  | TagPerm (perm, ty) ->
+      Bridge.TTagPerm (Array.to_list perm, ty_to_rep ty)
 
   | GateH -> Bridge.TH 0
   | GateS -> Bridge.TS 0

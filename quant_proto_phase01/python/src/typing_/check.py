@@ -12,7 +12,7 @@ from lang.terms import (
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR, UndistL, UndistR,
-    WireIdentity,
+    WireIdentity, TagPerm,
     Feedback,
     # Phase 0 gates
     H, S, CX,
@@ -146,14 +146,28 @@ def type_of(t: Term) -> DomCod:
 
     if isinstance(t, WireIdentity):
         # Wire-level identity between two types of equal width.
-        # Used for type-level coercions like n_dist/n_factor where the
-        # bit encoding doesn't change but the OCaml/Granthi type does.
         if width(t.dom) != width(t.cod):
             raise TypeCheckError(
                 f"WireIdentity: width mismatch dom={width(t.dom)} "
                 f"vs cod={width(t.cod)}"
             )
         return (t.dom, t.cod)
+
+    if isinstance(t, TagPerm):
+        # Permutation of basis states on a fixed-width type.
+        k = width(t.ty)
+        n = len(t.perm)
+        if n > 2 ** k:
+            raise TypeCheckError(
+                f"TagPerm: perm length {n} exceeds 2^width(ty)={2**k}"
+            )
+        # Validate it's a valid permutation of {0..n-1}.
+        seen = set(t.perm)
+        if len(seen) != n or not all(0 <= x < n for x in t.perm):
+            raise TypeCheckError(
+                f"TagPerm: not a valid permutation of 0..{n-1}: {t.perm}"
+            )
+        return (t.ty, t.ty)
 
     if isinstance(t, Feedback):
         # Feedback_k(body) : A → B

@@ -57,3 +57,7 @@
 (executable
  (name curried_select_3_ndist_e2e)
  (libraries qpl_surface str))
+
+(executable
+ (name zn_group_ops_e2e)
+ (libraries qpl_surface str))

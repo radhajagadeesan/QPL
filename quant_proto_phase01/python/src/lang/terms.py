@@ -170,6 +170,22 @@ class WireIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class TagPerm:
+    """Wire-level basis-state permutation on a fixed-width type.
+
+    Maps basis state |i⟩ to |perm[i]⟩ for i < n, identity on unused states.
+    Used as a general primitive for permutation morphisms on tagged sum
+    types (e.g., group operations like Z_n's neg/shift). Compiles via
+    pytket's ToffoliBox.
+
+    The width of [ty] determines the number of qubits (k = width(ty)),
+    and perm must be a length-n tuple where n ≤ 2^k.
+    """
+    perm: tuple
+    ty: Ty
+
+
+@dataclass(frozen=True, slots=True)
 class Feedback:
     """Feedback_k(body) : explicit GOI feedback operator.
 
