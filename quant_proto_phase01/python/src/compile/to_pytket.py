@@ -559,13 +559,24 @@ def _sub_wire_to_full(sub_wire, sub_tw, offset, k):
     """Map sub-circuit wire index to full-circuit logical wire index.
 
     Sub-circuit layout: [inner_tag₀..inner_tag_{tw-1} | payload₀..]
-    Full layout (big-endian): [MSB | inner_tag₀..inner_tag_{k-2} | payload₀..]
+    Full layout (big-endian): [MSB | (k-1 inner tag bits) | payload₀..]
     MSB is at offset (the control qubit).
-    Inner tag bits are at offset+1..offset+k-1.
-    Payload starts at offset+k.
+
+    The sub-circuit's tag bits must map to the LAST `sub_tw` inner tag bit
+    positions, not the FIRST. The leaves of an n-leaf summand are encoded
+    at basis states 0..n-1 in the sub-circuit, which corresponds to the
+    LOW-ORDER bits being free. In the full circuit's flat encoding (after
+    Strategy A's tag permutation P), the left summand's leaves occupy
+    positions 0..n_left-1, which use the LOW-ORDER inner tag bits — i.e.,
+    the LAST inner tag bits in big-endian ordering.
+
+    For sub_tw == k-1 (left summand fills the MSB=0 half), both first-bits
+    and last-bits orderings coincide, so this used to work for balanced
+    binary cases.
     """
     if sub_wire < sub_tw:
-        return offset + 1 + sub_wire  # inner tag bits (after MSB)
+        # Last sub_tw inner tag bits: q[offset + k - sub_tw .. offset + k - 1]
+        return offset + k - sub_tw + sub_wire
     else:
         return offset + k + (sub_wire - sub_tw)  # payload
 
@@ -966,29 +977,44 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             if k > 0 and tp != tuple(range(n_summands)):
                 _emit_tag_perm_unitary(circ, p, tp, k, offset, explain, log)
 
-    def _emit_controlled_branch(ctrl_q, sub_cmds, wire_map_fn, anti=False):
+    def _emit_controlled_branch(ctrl_q, sub_cmds, wire_map_fn, anti=False,
+                                extra_anti_qubits=None):
         """Emit each gate controlled on ctrl_q, with wires mapped by wire_map_fn.
 
         Args:
-            ctrl_q: Physical qubit for control
+            ctrl_q: Physical qubit for primary control
             sub_cmds: Commands from the sub-circuit
             wire_map_fn: Function mapping sub-circuit wire index to physical qubit
-            anti: If True, wrap with X gates for anti-control
+            anti: If True, wrap with X gates for anti-control on ctrl_q
+            extra_anti_qubits: Additional physical qubits to anti-control (for
+                Strategy A asymmetric splits where the sub-circuit doesn't use
+                all k-1 inner tag bits — the unused bits must be anti-controlled
+                to restrict the wrapped operation to valid leaf positions only).
         """
         from pytket.circuit import QControlBox
+        extras = extra_anti_qubits or []
+        # X-flip all anti-controls (primary + extras) so the underlying multi-
+        # control sees them as positive.
         if anti:
             circ.X(ctrl_q)
+        for q in extras:
+            circ.X(q)
+        all_ctrls = [ctrl_q] + list(extras)
+        n_ctrls = len(all_ctrls)
         for cmd in sub_cmds:
             phys_qubits = [wire_map_fn(q.index[0]) for q in cmd.qubits]
             ctrl_op = _CTRL_GATE_MAP.get(cmd.op.type)
-            if ctrl_op is not None:
-                circ.add_gate(ctrl_op, cmd.op.params, [ctrl_q] + phys_qubits)
+            if ctrl_op is not None and n_ctrls == 1:
+                circ.add_gate(ctrl_op, cmd.op.params, all_ctrls + phys_qubits)
             elif cmd.op.type in (OpType.CnX, OpType.CCX):
-                # CnX/CCX: n-ary controlled X; just prepend one more control
-                circ.add_gate(OpType.CnX, [], [ctrl_q] + phys_qubits)
+                # CnX/CCX: n-ary controlled X; prepend ALL extra controls.
+                circ.add_gate(OpType.CnX, [], all_ctrls + phys_qubits)
             else:
-                qcb = QControlBox(cmd.op, 1)
-                circ.add_qcontrolbox(qcb, [ctrl_q] + phys_qubits)
+                qcb = QControlBox(cmd.op, n_ctrls)
+                circ.add_qcontrolbox(qcb, all_ctrls + phys_qubits)
+        # X-unflip
+        for q in extras:
+            circ.X(q)
         if anti:
             circ.X(ctrl_q)
 
@@ -1740,17 +1766,32 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             if not is_identity_P:
                 _emit_tag_perm_unitary(circ, p, P_tup, k, offset, explain, log)
 
-            # Step 2: PlusMap_bit controlled on MSB
+            # Step 2: PlusMap_bit controlled on MSB.
+            # When the sub-branch's tag width is less than k-1, the inner tag
+            # bits NOT used by the sub-branch must be anti-controlled to
+            # restrict the wrapped operation to valid leaf positions only
+            # (the "extra" filler positions of the MSB half would otherwise
+            # be incorrectly modified).
             msb_phys = p.apply_new_to_old(offset)
 
             if left_cmds:
                 left_wm = lambda w, stw=tw_left: p.apply_new_to_old(
                     _sub_wire_to_full(w, stw, offset, k))
-                _emit_controlled_branch(msb_phys, left_cmds, left_wm, anti=True)
+                # Extra anti-control qubits: q[1..k-1-tw_left] (the inner tag
+                # bits before the sub-circuit's bits, which are at the end).
+                n_extra_left = k - 1 - tw_left
+                extras_left = [p.apply_new_to_old(offset + 1 + i)
+                               for i in range(n_extra_left)] if n_extra_left > 0 else None
+                _emit_controlled_branch(msb_phys, left_cmds, left_wm,
+                                        anti=True, extra_anti_qubits=extras_left)
             if right_cmds:
                 right_wm = lambda w, stw=tw_right: p.apply_new_to_old(
                     _sub_wire_to_full(w, stw, offset, k))
-                _emit_controlled_branch(msb_phys, right_cmds, right_wm)
+                n_extra_right = k - 1 - tw_right
+                extras_right = [p.apply_new_to_old(offset + 1 + i)
+                                for i in range(n_extra_right)] if n_extra_right > 0 else None
+                _emit_controlled_branch(msb_phys, right_cmds, right_wm,
+                                        extra_anti_qubits=extras_right)
 
             # Step 3: Emit P⁻¹ if non-identity
             if not is_identity_P:
