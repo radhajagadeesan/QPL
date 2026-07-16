@@ -11,7 +11,7 @@ import pytest
 import math
 from pytket.circuit import OpType
 
-from lang.types import Q, Ten, Plus, width
+from lang.types import Q, Ten, Plus, Arrow, width
 from lang.terms import (
     TwistTen, TwistPlus, AssocTenL, AssocTenR, Seq, Id,
     ExpSwap, ExpInvolution, H, CX,
@@ -126,6 +126,13 @@ class TestExpInvolutionBasics:
         body_dom, body_cod = type_of(body)
         assert dom == body_dom
         assert cod == body_cod
+
+    def test_exp_involution_rejects_arrow_body(self):
+        """ExpInvolution body type must be first-order — no Arrow types."""
+        body = TwistTen(Q(), Q())
+        higher_ty = Arrow(Q(), Q())
+        with pytest.raises(ValueError, match="first-order"):
+            ExpInvolution(theta=0.5, body=body, ty_total=higher_ty)
 
 
 class TestExpInvolutionCompilation:

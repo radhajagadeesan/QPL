@@ -37,5 +37,11 @@ NSFDOCS/
 # Audit reports (local)
 audit-reports/
 
+# Paper source (not shipped in public repo or AE tarball)
+compiler_new.tex
+
+# AE artifact runtime output (populated by artifact/reproduce.sh)
+quant_proto_phase01/artifact/results/
+
 # Windows Zone Identifier
 *:Zone.Identifier

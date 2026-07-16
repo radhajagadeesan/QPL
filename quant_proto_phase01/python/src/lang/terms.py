@@ -18,7 +18,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Union
 
-from lang.types import Ty, Ten, Plus, Q
+from lang.types import Ty, Ten, Plus, Q, Dual, Arrow, Unit
+
+
+def _contains_arrow(ty: Ty) -> bool:
+    """True if ty tree contains any Arrow node."""
+    if isinstance(ty, Arrow):
+        return True
+    if isinstance(ty, (Ten, Plus)):
+        return _contains_arrow(ty.left) or _contains_arrow(ty.right)
+    if isinstance(ty, Dual):
+        return _contains_arrow(ty.ty)
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,6 +593,11 @@ class ExpInvolution:
     def __post_init__(self):
         if self.ty_total is None:
             object.__setattr__(self, 'ty_total', Ten(Q(), Q()))
+        if _contains_arrow(self.ty_total):
+            raise ValueError(
+                f"ExpInvolution body type must be first-order (no Arrow "
+                f"constructors); got ty_total={self.ty_total!r}"
+            )
 
 
 # -- Tensor introduction and elimination (for full source language)

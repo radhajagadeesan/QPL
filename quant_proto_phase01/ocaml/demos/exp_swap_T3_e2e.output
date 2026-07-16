@@ -1,0 +1,82 @@
+
+==========================================================================
+  exp_i on branch-swaps of T = Q + (Q + Q)
+==========================================================================
+
+T has 3 leaf summands of width 1 -> width(T) = 2 tag + 1 payload = 3 qubits.
+
+==========================================================================
+  Part 1: swap_12 and swap_23 (raw involutions)
+==========================================================================
+
+swap_12 = assoc_r ; (twist+id) ; assoc_l:
+3 qubits, 3 gates
+  X q[0]
+  CX q[0, 1]
+  X q[0]
+  perm: [0, 1, 2]
+  circuit_size = 3
+
+swap_23 = id + twist (omap0):
+3 qubits, 3 gates
+  Unitary2qBox q[0, 1]
+  CX q[0, 1]
+  Unitary2qBox q[0, 1]
+  perm: [0, 1, 2]
+  circuit_size = 3
+
+==========================================================================
+  Part 2: E12(pi/4) and E23(pi/4)
+==========================================================================
+
+E12(pi/4) = exp_i(pi/4, swap_12):
+3 qubits, 1 gates
+  Unitary3qBox q[0, 1, 2]
+  perm: [0, 1, 2]
+  circuit_size = 1
+
+E23(pi/4) = exp_i(pi/4, swap_23):
+3 qubits, 1 gates
+  Unitary3qBox q[0, 1, 2]
+  perm: [0, 1, 2]
+  circuit_size = 1
+
+==========================================================================
+  Part 3: Composition law  E(pi/4);E(pi/4) = E(pi/2)
+==========================================================================
+
+E12(pi/2) [direct]:
+3 qubits, 1 gates
+  Unitary3qBox q[0, 1, 2]
+  perm: [0, 1, 2]
+  circuit_size = 1
+
+E23(pi/2) [direct]:
+3 qubits, 1 gates
+  Unitary3qBox q[0, 1, 2]
+  perm: [0, 1, 2]
+  circuit_size = 1
+
+E12(pi/4);E12(pi/4)  =  E12(pi/2):
+  EQUAL (fidelity=1.000000)
+
+E23(pi/4);E23(pi/4)  =  E23(pi/2):
+  EQUAL (fidelity=1.000000)
+
+==========================================================================
+  Part 4: E12 and E23 do NOT commute
+==========================================================================
+  (swap_12 and swap_23 generate S_3; their exponentials
+   inherit the non-abelian structure.)
+
+E12(pi/4);E23(pi/4)  =/=  E23(pi/4);E12(pi/4):
+  NOT EQUAL as expected (fidelity=0.812500)
+
+==========================================================================
+  Summary
+==========================================================================
+
+  Tests: 7/7 passed
+
+  ALL TESTS PASSED
+

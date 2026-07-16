@@ -81,6 +81,13 @@ Radha Jagadeesan — DePaul University — radha.jagadeesan@gmail.com
 
 Citation information forthcoming.
 
+## Reporting Bugs
+
+Please report bugs, unexpected compiler behavior, or documentation issues via
+[GitHub Issues](https://github.com/radhajagadeesan/QPL/issues). A minimal
+reproducer (an OCaml term, a Bridge JSON dump, or a short Python test that
+exhibits the problem) is very helpful.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

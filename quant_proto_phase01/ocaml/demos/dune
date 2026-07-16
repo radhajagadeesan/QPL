@@ -61,3 +61,10 @@
 (executable
  (name zn_group_ops_e2e)
  (libraries qpl_surface str))
+(executable (name dump_abstract_qswitch) (libraries qpl_surface str))
+(executable (name dump_select_5_inst) (libraries qpl_surface str))
+
+(executable
+ (name exp_swap_T3_e2e)
+ (libraries qpl_surface str))
+(executable (name test_first_order) (libraries qpl_surface str))

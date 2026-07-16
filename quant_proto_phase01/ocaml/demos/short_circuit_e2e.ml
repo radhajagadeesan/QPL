@@ -21,16 +21,20 @@
         - Routes witness based on first boolean
         - Applies ctrl_W(toggle_W, id_W) to (b1 ⊗ w)
 
-    Quantum Extension:
-      phase_W := omap_{-1}(id_I, id_Bool) : W → W
-        - Applies -1 phase to I branch (short-circuit occurred)
-        - Identity phase to Bool branch (evaluation path)
+    Quantum Extension (phase folded into the controlled ⊕-Map):
+      routeW^q := dist_l⁻¹ ;
+                  ⊕-map( -1 · (id_I ⊗ toggle_W),
+                          1 · (id_I ⊗ id_W) ) ;
+                  dist_l
+              : Bool ⊗ W → Bool ⊗ W
+        - When b1 = 0 (left summand): apply id_I ⊗ toggle_W, branch picks up -1
+        - When b1 = 1 (right summand): apply id_I ⊗ id_W with phase +1
 
-      kick := λp. let (bb, w) = p in bb ⊗ (phase_W w)
-
-      and_sc_quant := and_sc ; kick
-        - Structural routing followed by phase marking
-        - Creates interference between short-circuit and evaluation paths
+      and_sc_q := route_in ; (routeW^q ⊗ id_Bool) ; route_out
+        - Same wiring as and_sc, with routeW replaced by routeW^q.
+        - The -1 phase is conditioned on the short-circuit predicate (b1 = 0)
+          itself, not on the witness's final state, so it carries the
+          information "short-circuit happened" directly into the amplitude.
 *)
 
 open Qpl_surface
@@ -158,75 +162,56 @@ let and_sc =
 
 
 (* ========================================================================= *)
-(* Quantum Extension: Phase Marking                                          *)
+(* Quantum Extension: phase inside the controlled ⊕-Map                      *)
 (* ========================================================================= *)
 
-(** phase_W : W -> W
-
-    Applies -1 phase to the I branch (short-circuit path),
-    identity (+1 phase) to the Bool branch (evaluation path).
-
-    DESIGN NOTE: The spec writes this as omap_{-1}(id_I, id_Bool), which is
-    a phase-weighted bifunctor. In the source DSL, we express this as:
-
-      phase_w = omap0 one bool_ty (phase (-1) one) (id bool_ty)
-
-    However, `phase z ty` on Unit type (0 qubits) currently emits identity
-    since global phase is unobservable in isolation. The phase becomes
-    meaningful only in controlled context (PlusMap), but this requires
-    additional infrastructure to propagate phase through the bifunctor.
-
-    For the demo, we provide both:
-    1. phase_w_source - the intended source-level expression
-    2. phase_w_bridge - direct Bridge implementation that works correctly
-
-    In our encoding, W = I + Bool has 2 tag qubits (3 variants):
-      Tag 00 = inl(unit)      <- short-circuit path
-      Tag 01 = inr(inl(unit))
-      Tag 10 = inr(inr(unit))
-
-    To apply -1 phase specifically to |00⟩:
-      X[0]; X[1]; CZ[0,1]; X[1]; X[0]
-
-    This works because:
-    - X[0]; X[1] maps |00⟩ → |11⟩
-    - CZ applies -1 phase to |11⟩
-    - X[1]; X[0] maps back |11⟩ → |00⟩
-    - Net effect: -1 phase on |00⟩ only, identity on other states
-*)
-
-(** Source-level phase_W using phased_omap0.
-
-    This is the correct source-level implementation:
-      phase_w = phased_omap0 (-1) one bool_ty (id one) (id bool_ty)
-
-    The phased_omap0 combinator applies phase z = e^{iθ} to the left branch
-    (when tag=0), using controlled-phase gates on the tag qubit(s).
-*)
 let neg_one = Complex.neg Complex.one
 
-let phase_w : (unit, [`Lolli of [`Plus of [`One] * [`Plus of [`One] * [`One]]]
-                               * [`Plus of [`One] * [`Plus of [`One] * [`One]]]]) prog =
-  phased_omap0 neg_one one bool_ty (id one) (id bool_ty)
+(** route_w_q : Bool ⊗ W → Bool ⊗ W
 
-(** kick : (Bool ⊗ Bool) ⊗ W -> (Bool ⊗ Bool) ⊗ W
+    Spec form:
+      route_w_q := dist_l⁻¹ ; ⊕-map( -1 · (id_I ⊗ toggle_W) , 1 · (id_I ⊗ id_W) ) ; dist_l
 
-    Source-level: applies id to (Bool ⊗ Bool) and phase_W to W.
-    This is simply: kick = id_BB ⊗ phase_W = par0 (id bb_ty) phase_w
+    Same wiring as ctrl_W(toggle_W, id_W), but the controlled ⊕-Map has a
+    branch-local -1 phase coefficient on the LEFT (b1 = 0) summand. When the
+    first boolean is 0, the witness is toggled *and* the branch picks up a -1;
+    when the first boolean is 1, the witness passes through with phase +1.
+
+    The -1 phase is conditioned on the short-circuit *predicate* (b1 = 0),
+    not on the witness's tag, so it directly encodes "short-circuit happened"
+    in the amplitude of the b1 = 0 branch.
 *)
-let kick = par0 (id bb_ty) phase_w
+let route_w_q =
+  let iw = one ** w_ty in
+  let left_branch  = par0 (id one) toggle_w   in   (* tag=0: phase -1, id ⊗ toggle *)
+  let right_branch = par0 (id one) (id w_ty)  in   (* tag=1: phase +1, id ⊗ id     *)
+  let phased_branches =
+    phased_omap0 neg_one iw iw left_branch right_branch in
+  seq0 (dist_l one one w_ty)
+       (seq0 phased_branches (undist_l one one w_ty))
 
 
-(** and_sc_quant : (Bool ⊗ Bool) ⊗ W -> (Bool ⊗ Bool) ⊗ W
+(** and_sc_q : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
 
-    Source-level quantum short-circuit conjunction:
-    and_sc_quant = and_sc ; kick
-
-    When run on superposition inputs, the -1 phase on the short-circuit
-    branch creates interference between paths where short-circuit occurred
-    and paths where it did not.
+    Same surrounding routing as and_sc, but the inner controlled op is
+    route_w_q (phase baked into the ⊕-Map) instead of ctrl_W(toggle, id).
 *)
-let and_sc_quant = seq0 and_sc kick
+let and_sc_q =
+  let b = bool_ty in
+  let w = w_ty in
+  let route_in_1 = assoc_tensor_l b b w in
+  let route_in_2 = par0 (id b) (twist_tensor b w) in
+  let route_in_3 = assoc_tensor_r b w b in
+  let route_in   = seq0 route_in_1 (seq0 route_in_2 route_in_3) in
+
+  let apply_ctrl = par0 route_w_q (id b) in
+
+  let route_out_1 = assoc_tensor_l b w b in
+  let route_out_2 = par0 (id b) (twist_tensor w b) in
+  let route_out_3 = assoc_tensor_r b b w in
+  let route_out   = seq0 route_out_1 (seq0 route_out_2 route_out_3) in
+
+  seq0 route_in (seq0 apply_ctrl route_out)
 
 
 (* ========================================================================= *)
@@ -374,81 +359,53 @@ Short-circuit conjunction composes:
   compile_and_report "and_sc ; and_sc" (emit and_sc_twice);
 
   (* ======================================================================= *)
-  banner "PART 7: Quantum Extension (Phase Marking)";
+  banner "PART 7: Quantum Extension (phase inside the controlled ⊕-Map)";
 
   print_endline "
-Quantum phase marking creates interference between paths:
+The classical and_sc above is purely structural — it routes the witness
+based on b1 but emits no phase. The quantum extension folds a -1 phase
+directly into the controlled ⊕-Map of routeW:
 
-  phase_W : W → W
-    Applies -1 phase to inl branch (short-circuit occurred)
-    Identity phase to inr branch (evaluation path)
+  routeW^q := dist_l⁻¹ ;
+              ⊕-map( -1 · (id_I ⊗ toggle_W),
+                      1 · (id_I ⊗ id_W) ) ;
+              dist_l
+           : Bool ⊗ W → Bool ⊗ W
 
-  Spec notation: omap_{-1}(id_I, id_Bool) - phase-weighted bifunctor
+  - When b1 = 0 (left summand): apply id_I ⊗ toggle_W AND the branch picks
+    up a -1 phase. The toggle and the phase fire together.
+  - When b1 = 1 (right summand): apply id_I ⊗ id_W with phase +1 (no phase).
 
-  Source-level expression:
-    phase_w = omap0 one bool_ty (phase (-1) one) (id bool_ty)
+  and_sc_q := route_in ; (routeW^q ⊗ id_Bool) ; route_out
+           : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
 
-  Note: phase on Unit type (0 qubits) currently emits identity since
-  global phase is unobservable in isolation. Proper support requires
-  propagating phase through PlusMap as controlled-phase on tag qubits.
+  - Same surrounding routing as and_sc; routeW is simply replaced by routeW^q.
 
-  Working implementation for W with 2 tag qubits:
-    Tag 00 = inl(unit) <- short-circuit path
-    Tag 01 = inr(inl(unit))
-    Tag 10 = inr(inr(unit))
+What does this DO semantically?
 
-  Circuit: X[0]; X[1]; CZ[0,1]; X[1]; X[0]
-    - X gates map |00⟩ → |11⟩
-    - CZ applies -1 to |11⟩
-    - X gates map back
-    - Net effect: -1 phase on |00⟩ only
+  The -1 phase is conditioned on the short-circuit *predicate itself*
+  (b1 = 0), via the ⊕-Map's branch coefficient — not on a derived property
+  of the witness wire. On any basis input with b1 = 0, the output amplitude
+  acquires a -1; on any input with b1 = 1, the amplitude is +1.
+
+  Net rule: -1 iff b1 = 0  (\"short-circuit happened\").
+
+  Interference on superposition. With b1 in |+⟩ = (|0⟩+|1⟩)/√2:
+
+      |0⟩|b2⟩|w⟩  ↦  -|0⟩|b2⟩|toggle(w)⟩    (b1 = 0: phase -1, toggle fires)
+      |1⟩|b2⟩|w⟩  ↦   |1⟩|b2⟩|w⟩            (b1 = 1: phase +1, identity)
+
+  The relative phase between the two branches is -1/+1. Invisible in the
+  computational basis, but a Hadamard on b1 turns it into a population
+  flip — a measurable signature that short-circuit occurred, without
+  collapsing the b1 superposition.
 ";
 
-  print_endline "\n--- Source-level phase_W (using phased_omap0) ---\n";
-  Printf.printf "phase_w = phased_omap0 neg_one one bool_ty (id one) (id bool_ty)\n";
-  Printf.printf "  Bridge: %s\n" (Bridge.term_to_json (emit phase_w));
-  (match Bridge.compile_show (emit phase_w) with
-   | Bridge.CompileOk _ -> ()
-   | Bridge.CompileError err ->
-       Printf.printf "  ✗ FAILED: %s\n" err);
+  print_endline "\n--- routeW^q ---\n";
+  compile_and_report "routeW^q (phased ⊕-Map sandwich)" (emit route_w_q);
 
-  print_endline "
-kick : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
-  Source-level: kick = par0 (id bb_ty) phase_w
-  Applies phase_W to witness wire, preserves booleans
-";
-
-  print_endline "\n--- Source-level kick ---\n";
-  Printf.printf "kick = par0 (id bb_ty) phase_w\n";
-  (match Bridge.compile_show (emit kick) with
-   | Bridge.CompileOk _ -> ()
-   | Bridge.CompileError err ->
-       Printf.printf "  ✗ FAILED: %s\n" err);
-
-  print_endline "
-and_sc_quant : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
-  Source-level: and_sc_quant = seq0 and_sc kick
-  Structural routing followed by phase marking
-";
-
-  print_endline "\n--- Source-level and_sc_quant ---\n";
-  Printf.printf "and_sc_quant = seq0 and_sc kick\n";
-  (match Bridge.compile_show (emit and_sc_quant) with
-   | Bridge.CompileOk _ -> ()
-   | Bridge.CompileError err ->
-       Printf.printf "  ✗ FAILED: %s\n" err);
-
-  print_endline "
-QUANTUM SEMANTICS
------------------
-When run on superposition input |+⟩ ⊗ |b2⟩ ⊗ |w⟩:
-
-  |0⟩|b2⟩|w⟩  →  |0⟩|b2⟩|toggle(w)⟩  →  -|0⟩|b2⟩|toggle(w)⟩  (phase -1)
-  |1⟩|b2⟩|w⟩  →  |1⟩|b2⟩|w⟩          →   |1⟩|b2⟩|w⟩          (phase +1)
-
-The -1 phase on the short-circuit path creates interference,
-encoding control-flow history in the quantum state.
-";
+  print_endline "\n--- and_sc_q (uses routeW^q in place of routeW) ---\n";
+  compile_and_report "and_sc_q" (emit and_sc_q);
 
   (* ======================================================================= *)
   banner "PART 8: N-ary Phased Control (phased_control)";
@@ -525,20 +482,18 @@ Verifying key algebraic properties by comparing compiled unitaries:
   verify_eq "and_sc ; and_sc = id (involution)"
     (emit and_sc_twice) (emit (id bbw_ty));
 
-  (* 4. phase_W ; phase_W = id_W (phase -1 squared = +1) *)
-  let phase_w_twice = seq0 phase_w phase_w in
-  verify_eq "phase_W ; phase_W = id_W (phase squared)"
-    (emit phase_w_twice) (emit (id w_ty));
+  (* 4. routeW^q is an involution: routeW^q ; routeW^q = id_{Bool⊗W}
+        Left branch squared: (-1·toggle)² = (+1)·toggle² = id.
+        Right branch squared: (+1·id)² = id. *)
+  let bw_ty2 = bool_ty ** w_ty in
+  let route_q_twice = seq0 route_w_q route_w_q in
+  verify_eq "routeW^q ; routeW^q = id_{Bool⊗W} (phased involution)"
+    (emit route_q_twice) (emit (id bw_ty2));
 
-  (* 5. kick ; kick = id (phase squared on witness) *)
-  let kick_twice = seq0 kick kick in
-  verify_eq "kick ; kick = id (phase squared on witness)"
-    (emit kick_twice) (emit (id bbw_ty));
-
-  (* 6. and_sc_quant ; and_sc_quant = id (full operation squared) *)
-  let quant_twice = seq0 and_sc_quant and_sc_quant in
-  verify_eq "and_sc_quant ; and_sc_quant = id (full involution)"
-    (emit quant_twice) (emit (id bbw_ty));
+  (* 5. and_sc_q ; and_sc_q = id (full involution at the quantum extension) *)
+  let q_twice = seq0 and_sc_q and_sc_q in
+  verify_eq "and_sc_q ; and_sc_q = id (full involution)"
+    (emit q_twice) (emit (id bbw_ty));
 
   Printf.printf "\nVerification: %d/%d passed\n" !verifications_passed !verifications_run;
 
@@ -549,29 +504,30 @@ Verifying key algebraic properties by comparing compiled unitaries:
 Demonstrated short-circuit conjunction in Linear DSL:
 
 1. TYPE STRUCTURE
-   Bool = I + I (2-element, 1 qubit)
-   W = I + Bool (3-element witness, 2 qubits)
+   Bool = I + I            (2-element, 1 qubit)
+   W    = I + Bool         (3-element witness, 2 qubits)
 
-2. STRUCTURAL OPERATIONS
-   toggle_W = id_I ⊕ twist_Bool : W → W         (3 gates)
-   ctrl_W(M_0, M_1) : Bool ⊗ W → Bool ⊗ W      (coherent control)
-   and_sc : (Bool ⊗ Bool) ⊗ W → ...            (5 gates)
+2. STRUCTURAL (CLASSICAL) OPERATIONS
+   toggle_W : W → W                            id_I ⊕ twist_Bool
+   ctrl_W(M_0, M_1) : Bool ⊗ W → Bool ⊗ W     coherent control
+   and_sc : (Bool ⊗ Bool) ⊗ W → ...            structural routing only
 
-3. QUANTUM PHASE MARKING
-   phase_W : W → W                              (7 gates)
-     Applies -1 phase to inl branch (tag 00)
+3. QUANTUM SHORT-CIRCUIT CONJUNCTION
+   routeW^q : Bool ⊗ W → Bool ⊗ W
+     dist_l⁻¹ ; ⊕-map( -1 · (id_I ⊗ toggle_W),
+                        1 · (id_I ⊗ id_W) ) ; dist_l
+     -1 phase fires on the LEFT (b1 = 0) branch of the ⊕-Map,
+     together with the witness toggle. No separate post-step.
 
-   kick : (Bool ⊗ Bool) ⊗ W → ...              (7 gates)
-     Applies phase_W to witness wires
+   and_sc_q : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
+     route_in ; (routeW^q ⊗ id_Bool) ; route_out
+     Same wiring as and_sc, routeW replaced by routeW^q.
 
-4. QUANTUM SHORT-CIRCUIT CONJUNCTION
-   and_sc_quant = and_sc ; kick                 (12 gates total)
-     Structural routing + phase marking
-     Creates interference between execution paths
-
-Key insight: Classical short-circuit logic lifts to quantum
-coherent control. Phase marking encodes control-flow history
-in interference patterns.
+Key insight: by conditioning the -1 phase on the short-circuit
+predicate (b1 = 0) directly — inside the controlled ⊕-Map —
+the amplitude itself carries the information \"short-circuit happened\".
+Under a superposition of b1, this produces measurable interference
+(via a Hadamard on b1) between the short-circuit and evaluation paths.
 ";
 
   banner "DEMO COMPLETE";
