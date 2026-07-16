@@ -23,9 +23,11 @@ RUN apt-get update && \
 USER opam
 WORKDIR /home/opam
 # The base image already has an opam switch. Ensure dune is present at a
-# version compatible with (lang dune 3.0).
+# version compatible with (lang dune 3.0). Do not pin the patch version --
+# whatever the opam repository resolves for OCaml 4.14 is fine, and pinning
+# too tightly risks unsolvable constraints between opam runs.
 RUN opam update && \
-    opam install -y dune.3.14.0
+    opam install -y dune
 
 # --- Python venv with pytket ----------------------------------------------
 # Kept in /home/opam/venv, activated implicitly by prepending to PATH.
