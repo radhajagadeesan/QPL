@@ -33,6 +33,7 @@ NSFDOCS/
 
 # Generated archives
 *.zip
+dist/
 
 # Audit reports (local)
 audit-reports/
