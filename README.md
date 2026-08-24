@@ -21,6 +21,26 @@ Research prototype. APIs and semantics are still evolving.
 - Emits pytket circuits through a Python backend
 - Includes executable demos and regression tests
 
+## Using Granthi
+
+**Granthi's user-facing front-end is the OCaml surface language.** Programs
+should be written in OCaml, elaborated to the bridge IR, and passed to the
+Python backend for compilation to circuits — the pipeline is
+`OCaml → Bridge → Python`.
+
+> ⚠️ **Do not author terms directly against the Python term IR.**
+> The Python layer (`python/src/lang/terms.py`, `python/src/compile/`) is a
+> low-level compilation backend. It checks widths and domain/codomain matching
+> but **does not** enforce linearity, and it will silently accept and
+> miscompile terms that violate the OCaml surface's linear type discipline.
+> Authoring higher-order or coherent-case programs directly at this layer can
+> produce circuits that typecheck but do not implement any well-defined
+> semantics. See [`docs/LIMITATIONS.md`](quant_proto_phase01/docs/LIMITATIONS.md#4-python-linearity-checking--language-design)
+> for details.
+
+Use `quant_proto_phase01/ocaml/` as the entry point. Every user-facing demo
+under `ocaml/demos/` illustrates the correct pattern.
+
 ## Repository Layout
 
 - `quant_proto_phase01/ocaml/` — OCaml surface language, elaborator, bridge, demos, tests

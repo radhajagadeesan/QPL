@@ -69,9 +69,43 @@ Reserved for future traced monoidal structure. Not a pytket limitation.
 
 ## 4. Python Linearity Checking — language design
 
-The Python core API does **not** enforce linearity. Variables can be duplicated (contraction) or discarded (weakening) without error. Ill-formed terms compile to incorrect circuits silently.
+> ⚠️ **The Python term IR is not a user-facing programming language.** It is a
+> low-level compilation backend intended to consume already-well-formed terms
+> emitted by the OCaml elaborator. Authoring terms directly at this layer
+> bypasses Granthi's type discipline. Use the OCaml surface language under
+> `ocaml/` as the entry point.
 
-**Workaround:** Use the OCaml surface language, which enforces linearity at elaboration time (runtime check) or via the Linear GADT module (compile-time enforcement).
+The Python core API does **not** enforce linearity. `typing_.check.type_of` /
+`assert_well_typed` verify widths and domain/codomain matching, but do not
+track variable usage. Consequently:
+
+- Variables can be duplicated (contraction) or discarded (weakening) without
+  error.
+- Ill-formed terms compile to incorrect circuits silently.
+- Higher-order case values whose branches are `Lam` values will typecheck and
+  compile without error, but `PlusMap` sees zero top-level gates in each
+  branch (the internal gates are hidden inside the Lam boundary) and lifts
+  nothing — the resulting circuit contains no coherent controlled operations
+  and does not implement the intended semantics of either the naïve
+  higher-order case rule or the corresponding Granthi Reading. Concrete
+  worked example and empirical demonstration:
+  `ocaml/demos/qif_cnot_verify_e2e.ml` (header comment).
+
+**Why this is safe by design at the OCaml layer.** Granthi's ⊕ is a routing
+interface, not a coproduct: the only sum-elimination rule in the formal system
+is ⊕-Map (`A ⊕ B ⊸ C ⊕ D`), which preserves the sum in the codomain. There
+is no case eliminator that collapses a coherent branch into a classically
+selected value. Combined with the wire encoding (which places the sum's tag
+and any tensor-paired payload on physically distinct wires), this makes the
+higher-order coherent-control pathology (e.g., the LICS-style "let (x' ⊗ f) =
+qif x then X else id in f x'" causal loop) structurally unreachable from OCaml
+source. The Python term IR is silent on these guarantees because it is not the
+enforcement point — the OCaml elaborator and the linear GADT are.
+
+**Workaround:** Use the OCaml surface language, which enforces linearity at
+elaboration time (runtime check) or via the Linear GADT module (compile-time
+enforcement). Every user-facing demo under `ocaml/demos/` follows this
+pattern.
 
 Not a pytket limitation.
 
