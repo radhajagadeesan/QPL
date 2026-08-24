@@ -1,0 +1,38 @@
+
+==========================================================================
+  QIF-AS-CNOT VERIFICATION
+==========================================================================
+
+  Term: let (f, x') = (qif x then X else I) in f x'
+  Elaborated: make_branch + case_hom (see qif_apply above)
+  Claim: this term is exactly CNOT with x as control, x' as target.
+
+==========================================================================
+  CHECK 1: verify_ctrl_unitary against mathematical ctrl^1(X)
+==========================================================================
+  PASS  qif_apply == ctrl^1(X)  fidelity=1.0000000000
+
+==========================================================================
+  CHECK 2: eq_circ against independent `ctrl gate_x` construction
+==========================================================================
+  PASS  qif_apply == ctrl q gate_x  fidelity=1.0000000000
+
+==========================================================================
+  TRUTH TABLE (derived from term semantics)
+==========================================================================
+
+  Notation: |x⟩ ⊗ |x'⟩ = |x, x'⟩   (x is the Bool tag; x' is Q)
+
+  |0, 0⟩ → case picks I  → I|0⟩ = |0⟩ → |0, 0⟩
+  |0, 1⟩ → case picks I  → I|1⟩ = |1⟩ → |0, 1⟩
+  |1, 0⟩ → case picks X  → X|0⟩ = |1⟩ → |1, 1⟩
+  |1, 1⟩ → case picks X  → X|1⟩ = |0⟩ → |1, 0⟩
+
+  That is the CNOT truth table with x = control, x' = target.
+  Check 1 above verified this via full 4x4 unitary equality
+  against the mathematically-constructed ctrl^1(X) matrix,
+  which covers every basis state (and every superposition).
+
+==========================================================================
+  DONE
+==========================================================================

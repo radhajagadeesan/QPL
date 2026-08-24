@@ -1,4 +1,8 @@
 (executable
+ (name qif_cnot_verify_e2e)
+ (libraries qpl_surface str))
+
+(executable
  (name algorithms_e2e)
  (libraries qpl_surface str))
 
