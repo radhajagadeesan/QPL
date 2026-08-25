@@ -37,7 +37,24 @@ morphisms), the compiler falls back to Strategy A or B:
 
 Strategy B requires total width w = k + payload_width ≤ 3.
 
-**What this blocks:** Opaque branches on deeply left-skewed sums with 6+ summands where the outer PlusMap has a 5/1 or worse split. This only affects direct Python API usage with opaque composed branches — the OCaml pipeline's elaborated terms are always decomposable.
+**What this blocks:**
+
+- Opaque branches on deeply left-skewed sums with 6+ summands where the
+  outer PlusMap has a 5/1 or worse split.
+- **Higher-order Apply/Lam chains inside PlusMap branches, when the total
+  width (tag + max payload) exceeds 3.** Compiled terms whose branches
+  contain `oapp`/`olam` cascades (e.g., `oapp (ovar "f") (ovar "h") ...`
+  where `f` is a Granthi λ-bound function value) present as opaque
+  branches to the auto-flatten pass; the fallback (Strategy A/B) then
+  hits the width-3 ceiling for any sum whose input summand exceeds
+  1-qubit payload. Concrete example:
+  `ocaml/demos/ctrl_ho_eta_e2e.ml` — the `oplusmap` there has summand
+  payload width 3 (`I ⊗ ((Q⊸Q) ⊗ Q)`) and hits this ceiling.
+- Earlier phrasing "OCaml pipeline's elaborated terms are always
+  decomposable" was too strong. Precise statement: **first-order
+  elaborated terms are always decomposable**; higher-order branches
+  (Apply chains under λ) are opaque to auto-flatten and share the
+  Python-API branch limit.
 
 **OCaml-side:** The `omap0`/`oplusmap0` smart constructors accept nested Plus summands
 (e.g., `W = I ⊕ Bool` where `Bool = I⊕I`). For flat n-ary sums, prefer `omapn`/`control`.
@@ -91,21 +108,62 @@ track variable usage. Consequently:
   worked example and empirical demonstration:
   `ocaml/demos/qif_cnot_verify_e2e.ml` (header comment).
 
-**Why this is safe by design at the OCaml layer.** Granthi's ⊕ is a routing
-interface, not a coproduct: the only sum-elimination rule in the formal system
-is ⊕-Map (`A ⊕ B ⊸ C ⊕ D`), which preserves the sum in the codomain. There
-is no case eliminator that collapses a coherent branch into a classically
-selected value. Combined with the wire encoding (which places the sum's tag
-and any tensor-paired payload on physically distinct wires), this makes the
-higher-order coherent-control pathology (e.g., the LICS-style "let (x' ⊗ f) =
-qif x then X else id in f x'" causal loop) structurally unreachable from OCaml
-source. The Python term IR is silent on these guarantees because it is not the
-enforcement point — the OCaml elaborator and the linear GADT are.
+**Why this is safe by design at the OCaml layer.** The OCaml surface enforces
+the **first-order sum-payload restriction** at the case sugars and the
+datatype `control` combinators. A type is first-order iff it contains no
+Lolli (⊸) anywhere; sum-typed payloads must be first-order. Function values
+may be consumed inside a branch, but not returned as a summand of a sum.
+This closes the LICS-style causal-loop pathology (e.g., "let (x' ⊗ f) =
+qif x then X else id in f x'") because the corresponding sum type
+`(Unit ⊗ (Q ⊸ Q)) ⊕ (Unit ⊗ (Q ⊸ Q))` fails `first_order` and is rejected.
 
-**Workaround:** Use the OCaml surface language, which enforces linearity at
-elaboration time (runtime check) or via the Linear GADT module (compile-time
-enforcement). Every user-facing demo under `ocaml/demos/` follows this
-pattern.
+Enforcement points:
+- **OCaml smart constructors:** `case_hom0`, `case_hom`, `ocase_hom0`,
+  `ocase_hom`, datatype `control`, datatype `phased_control`. These
+  raise `Invalid_argument` at the call site with a first-order error
+  message.
+- **Python defense-in-depth:** `_assert_first_order_sum_payloads` in
+  `python/src/compile/to_pytket.py` walks the compiled term and rejects
+  any sum-producing subterm (`PlusMap`, `NPlusMap`, `Case`,
+  `PhasedPlusMap`, `PhasedControl`) whose output type contains Lolli in
+  a sum payload. Catches Python-authored terms and any OCaml
+  construction that bypasses the guarded sugars.
+
+**Workaround for higher-order-looking code:** eta-expand at the sum-payload
+boundary. Where a naive term would put payload `(A ⊸ B)`, use its wire
+encoding `(A ⊗ B)` — same physical circuit, no Lolli in the sum. See
+`ocaml/demos/qswitch_eta_expansion_e2e.ml`.
+
+**Regression tests:** `ocaml/test/test_first_order_sum_payloads.ml` +
+`ocaml/demos/reader_qif_ocaml_attempt.ml`.
+
+---
+
+### 4a. OCaml — prefer case sugars over raw ⊕-Map primitives
+
+The first-order guard is attached to the case sugars (`case_hom`,
+`case_hom0`, `ocase_hom`, `ocase_hom0`) and the datatype `control` /
+`phased_control` combinators — where the sum-payload type is passed as
+an explicit `ty_c` argument. It is **not** attached to the raw ⊕-Map
+primitives `omap0`, `omap`, `omapn`, `oplusmap0`, `oplusmap`,
+`o_n_plusmap`, because the branch codomain types are GADT type
+variables — erased at runtime, so the smart constructor has no
+`Rep.t` value to inspect.
+
+Consequence: a user reaching directly for the raw ⊕-Map primitives with
+Lolli-carrying branches **will build a term that OCaml accepts** and
+that satisfies `emit` / `emit_oterm`. The term will then fail at
+`Bridge.compile` with the same first-order error, via the Python
+defense. The error is caught — just one pipeline stage later than the
+guarded sugars.
+
+**Recommendation:** use the case sugars and the datatype `control`
+combinators for all coherent branching. Reach for `omap0` / `oplusmap0`
+directly only when you are certain the branches are first-order or you
+are consciously accepting the deferred error site.
+
+**Workaround for legitimate higher-order-looking code:** same as above —
+eta-expand at the sum-payload boundary.
 
 Not a pytket limitation.
 

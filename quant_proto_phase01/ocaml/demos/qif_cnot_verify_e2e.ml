@@ -70,49 +70,66 @@
     unsound whenever A is higher-order.
 
     ------------------------
-    Why Reading B does not arise in Granthi (the type-system-level story)
+    Why Reading B does not arise in Granthi (soundness fix)
     ------------------------
 
-    IMPORTANT correction to an earlier version of this note: pure linearity
-    alone does NOT forbid Reading B. In the syntactic term
-    "let (x' ⊗ f) = case x of {L1 ↦ I | L0 ↦ X} in f x'", each variable
-    (x, x', f) appears exactly once, so a plain linear discipline is
-    satisfied. What actually prevents the pathology in Granthi is a
-    stronger design choice visible in Table 1 of the formal development:
+    Empirical background. Pure linearity ALONE does not forbid Reading B.
+    In the syntactic term
+       "let (x' ⊗ f) = case x of {L1 ↦ I | L0 ↦ X} in f x'"
+    each variable (x, x', f) appears exactly once, so a plain linear
+    discipline is satisfied. And ⊕-Map + undist_l can package a coherent
+    sum inside a tensor of shape Bool ⊗ (Q ⊸ Q), reaching the shape
+    Reading B needs — Granthi's OCaml surface will happily BUILD this
+    term via oplusmap0 + undist_l + oletpair + oapp (see
+    ocaml/demos/reader_qif_ocaml_attempt.ml, now a regression test).
 
-      ⊕ is a ROUTING INTERFACE, not a coproduct.
+    What actually rules out Reading B is a specific type-system fix
+    now enforced across the Granthi surfaces: the FIRST-ORDER
+    RESTRICTION on sum payloads.
 
-    Concretely (Table 1):
-      ⊕-I    : Γ1 ⊢ V1 : A    Γ2 ⊢ V2 : B    ⊢ [V1 | V2] : A ⊕ B
-      ⊕-Map  : Γ1 ⊢ f : A ⊸ C  Γ2 ⊢ g : B ⊸ D  ⊢ f ⊕ g : A ⊕ B ⊸ C ⊕ D
+      A type is first-order iff it contains no Lolli (⊸) anywhere.
+      Sum-typed payloads — the shared result of case_hom / ocase_hom,
+      the payload of datatype `control` — must be first-order.
+      Function values may be CONSUMED inside a branch (⊕-Map sources
+      can carry Lolli), but not RETURNED as a summand of a sum.
 
-    The only sum-elimination rule is ⊕-Map, and it PRESERVES the sum in
-    the codomain. There is no case-eliminator that collapses a coherent
-    branch into a classically-selected function value — precisely the
-    rule the paper's naïve (⋆) grants and Granthi denies.
+    Enforcement (see linear.ml : `first_order`, `assert_first_order`):
 
-    Structural repackaging via the quantum extension's dist/undist
-    isomorphisms can wrap a sum inside a tensor as Bool ⊗ C, so the
-    SHAPE of the reader's construction is reachable. But dist and undist
-    are pure wire rearrangement: the tag qubit and the branch payload
-    remain on physically distinct wires throughout. Consequently:
+      - Explicit OCaml guards on: case_hom0, case_hom, ocase_hom0,
+        ocase_hom, datatype control, datatype phased_control.
+      - Defense-in-depth Python check in
+        python/src/compile/to_pytket.py : _assert_first_order_sum_payloads,
+        which walks the compiled term and rejects any sum-producing
+        subterm (PlusMap, NPlusMap, Case, PhasedPlusMap, PhasedControl)
+        whose output type contains Lolli in a sum payload. This catches
+        constructions that go around the guarded sugars (e.g., raw
+        oplusmap0 + undist_l).
 
-      - The destructured (x', f) sit on different physical qubits.
-      - Apply f x' splices the tag qubit into f's input slot across
-        distinct wires — a wire operation, not a same-qubit gate.
-      - There is no control = target coincidence available at the
-        wire level; the causal-loop that Reading B's (⋆⋆) exhibits
-        under a coproduct-style case eliminator cannot arise here.
+    Under this restriction, the ⊕-Map inside Reading B has output
+        (Unit ⊗ (Q ⊸ Q)) ⊕ (Unit ⊗ (Q ⊸ Q))
+    whose summands contain Lolli. The construction is rejected —
+    either at OCaml smart-constructor time (case_hom / ocase_hom /
+    control call sites) or at compile time (defense-in-depth check).
+    The regression test ocaml/test/test_first_order_sum_payloads.ml
+    exercises both paths.
+
+    The workaround for legitimate higher-order-looking code: ETA-EXPAND
+    at the sum-payload boundary. Where a naive term would put payload
+    (A ⊸ B), use its wire encoding (A ⊗ B) instead — same physical
+    circuit, no Lolli in the sum. See ocaml/demos/qswitch_eta_expansion_e2e.ml
+    for a concrete QSwitch on "function-typed" payload rewritten as a
+    QSwitch on (Q ⊗ Q) — passes first-order, compiles to a real
+    coherent-controlled unitary.
 
     OCaml Linear GADT surface:
       Reading A — expressible (this demo). Sound.
-      Reading B — the linear GADT does not reject the syntactic shape by
-                  itself (linearity is satisfied). What prevents the
-                  pathology is the ⊕-as-routing-interface design above.
-                  Any construction built from ⊕-Map + dist/undist keeps
-                  the tag and payload on physically distinct wires, so
-                  the destructured "function" and "qubit" never coincide
-                  at the wire level.
+      Reading B — the linear GADT accepts the SHAPE by itself
+                  (linearity is satisfied), but the first-order guards
+                  on case_hom / ocase_hom / datatype control reject
+                  any attempt to use a Lolli-containing sum payload.
+                  Terms that route around the guarded sugars
+                  (e.g., direct oplusmap0 + undist_l) reach compilation
+                  and are caught by the Python defense-in-depth check.
 
     Python core (python/src/lang/terms.py):
       Reading A — expressible and correct.
@@ -162,15 +179,13 @@
                   warns about under 'Linearity Checking (Python)'.
 
     Bottom line: the paper's warning targets a naïve typing rule (⋆) that
-    provides a case eliminator producing 'qbit ⊗ A' from a coherent branch.
-    Granthi's formal development does not have such a rule — ⊕ is a routing
-    interface (Table 1), so the "classically-selected function value" that
-    (⋆) depends on is not produced by any rule. Granthi's construction of
-    Bool ⊗ endo via ⊕-Map + dist/undist is a wire-level rearrangement that
-    keeps the tag and payload on distinct physical qubits, so the causal
-    loop the paper flags does not manifest. The demo below verifies the
-    canonical Reading A elaboration against the mathematical ctrl^1(X)
-    ground truth with fidelity 1.0.
+    would type Reading B as a valid term. Granthi's fix is the first-order
+    restriction on sum payloads (enforced at the OCaml case sugars and
+    datatype control, with a Python-side defense-in-depth backstop).
+    Reading B is not derivable; higher-order-looking constructions remain
+    accessible via eta-expansion at the sum-payload boundary. The demo
+    below verifies the canonical Reading A elaboration against the
+    mathematical ctrl^1(X) ground truth with fidelity 1.0.
     ------------------------------------------------------------------------
 *)
 

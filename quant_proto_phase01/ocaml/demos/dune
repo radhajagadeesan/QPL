@@ -3,6 +3,22 @@
  (libraries qpl_surface str))
 
 (executable
+ (name reader_qif_ocaml_attempt)
+ (libraries qpl_surface))
+
+(executable
+ (name qswitch_eta_expansion_e2e)
+ (libraries qpl_surface str))
+
+(executable
+ (name qswitch_eta_endoQ_e2e)
+ (libraries qpl_surface str))
+
+(executable
+ (name ctrl_ho_eta_e2e)
+ (libraries qpl_surface str))
+
+(executable
  (name algorithms_e2e)
  (libraries qpl_surface str))
 

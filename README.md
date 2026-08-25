@@ -38,8 +38,22 @@ Python backend for compilation to circuits — the pipeline is
 > semantics. See [`docs/LIMITATIONS.md`](quant_proto_phase01/docs/LIMITATIONS.md#4-python-linearity-checking--language-design)
 > for details.
 
+> ⚠️ **Within the OCaml surface, prefer the case sugars over raw ⊕-Map primitives.**
+> Case analysis and coherent branching should be written via `case_hom`,
+> `case_hom0`, `ocase_hom`, `ocase_hom0`, or the datatype `control` /
+> `phased_control` combinators. These carry the soundness guard for the
+> first-order sum-payload restriction (see
+> [`docs/LIMITATIONS.md`](quant_proto_phase01/docs/LIMITATIONS.md#4-python-linearity-checking--language-design)),
+> so ill-formed uses fail at the smart-constructor call site with a clear
+> error. Constructions that bypass the sugars — raw `omap0`, `omap`, `omapn`,
+> `oplusmap0`, `oplusmap`, `o_n_plusmap` — will build without error but
+> will fail at `Bridge.compile` with the same first-order error (from the
+> Python defense-in-depth check). The error is caught, just one pipeline
+> stage later than ideal.
+
 Use `quant_proto_phase01/ocaml/` as the entry point. Every user-facing demo
-under `ocaml/demos/` illustrates the correct pattern.
+under `ocaml/demos/` illustrates the correct pattern (case sugars and
+datatype `control`, not raw ⊕-Map).
 
 ## Repository Layout
 

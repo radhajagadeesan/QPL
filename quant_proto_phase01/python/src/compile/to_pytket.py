@@ -43,7 +43,7 @@ from lang.terms import (
     # Qubit encoding isomorphism
     EncodeQubit, DecodeQubit,
 )
-from lang.types import width, Arrow, Unit
+from lang.types import width, Arrow, Unit, Plus, Ten, pretty as _pretty_ty
 
 # Type alias for compilation environment
 # Maps variable names to (start, width) wire ranges in the logical layout
@@ -713,6 +713,123 @@ def _peel_apply_chain(t: Term, term_env: dict) -> 'Term | None':
     return body
 
 
+def _contains_lolli(ty) -> bool:
+    """True iff the type has an Arrow (Lolli) anywhere."""
+    if isinstance(ty, Arrow):
+        return True
+    if isinstance(ty, Ten):
+        return _contains_lolli(ty.left) or _contains_lolli(ty.right)
+    if isinstance(ty, Plus):
+        return _contains_lolli(ty.left) or _contains_lolli(ty.right)
+    return False
+
+
+def _first_order(ty) -> bool:
+    return not _contains_lolli(ty)
+
+
+def _assert_first_order_sum_payloads(term: Term) -> None:
+    """Defense-in-depth soundness check.
+
+    The OCaml surface's case sugars and datatype `control` combinator
+    already enforce that sum-typed payloads are first-order — no Lolli
+    (Arrow) may appear inside the target type of ⊕-Map / case / ⊕-I / control.
+
+    This function reasserts that invariant on the compiled term itself,
+    catching any term whose sum-producing construct emits a Plus type
+    containing an Arrow anywhere. It fires only if a guard is missing
+    upstream (i.e., a future OCaml refactor loses a check, or a term is
+    authored directly at the Python term IR bypassing the OCaml surface).
+
+    Traverses `type_of` at each sum-producing subterm (PlusMap, NPlusMap,
+    Case, PhasedPlusMap, PhasedControl) and rejects if any output summand
+    is not first-order.
+    """
+    def _check_sum_output(t: Term, site: str) -> None:
+        _, cod = type_of(t)
+        if isinstance(cod, Plus) and _contains_lolli(cod):
+            raise TypeCheckError(
+                f"{site}: sum payloads must be first-order (contain no Lolli).\n"
+                f"Function values may be consumed inside a branch, but not "
+                f"returned on a summand.\n"
+                f"Offending output type: {_pretty_ty(cod)}\n"
+                f"(This is the defense-in-depth check in to_pytket.py — the "
+                f"OCaml surface's case sugars and datatype `control` should "
+                f"have already caught this. If you're seeing this from OCaml "
+                f"source, please report it as a missing guard.)"
+            )
+        # Also catch Case (whose cod is a Plus of the branch cods) and
+        # anything whose cod contains a Plus-of-Lolli anywhere.
+        if _plus_with_lolli_anywhere(cod):
+            raise TypeCheckError(
+                f"{site}: nested sum with Lolli payload detected.\n"
+                f"Offending output type: {_pretty_ty(cod)}"
+            )
+
+    def _walk(t: Term) -> None:
+        # Check this node if it produces a sum.
+        if isinstance(t, PlusMap):
+            _check_sum_output(t, "PlusMap")
+        elif isinstance(t, NPlusMap):
+            _check_sum_output(t, "NPlusMap")
+        elif isinstance(t, Case):
+            _check_sum_output(t, "Case")
+        elif isinstance(t, PhasedPlusMap):
+            _check_sum_output(t, "PhasedPlusMap")
+        elif isinstance(t, PhasedControl):
+            _check_sum_output(t, "PhasedControl")
+        # Recurse into subterms.
+        for child in _subterms(t):
+            _walk(child)
+
+    _walk(term)
+
+
+def _plus_with_lolli_anywhere(ty) -> bool:
+    """True iff ty contains a Plus whose summands contain an Arrow."""
+    if isinstance(ty, Plus):
+        if _contains_lolli(ty.left) or _contains_lolli(ty.right):
+            return True
+        return _plus_with_lolli_anywhere(ty.left) or _plus_with_lolli_anywhere(ty.right)
+    if isinstance(ty, Ten):
+        return _plus_with_lolli_anywhere(ty.left) or _plus_with_lolli_anywhere(ty.right)
+    if isinstance(ty, Arrow):
+        return _plus_with_lolli_anywhere(ty.dom) or _plus_with_lolli_anywhere(ty.cod)
+    return False
+
+
+def _subterms(t: Term):
+    """Yield the immediate subterms of t."""
+    if isinstance(t, Seq):
+        yield t.f; yield t.g
+    elif isinstance(t, TenTerm):
+        yield t.f; yield t.g
+    elif isinstance(t, Pair):
+        yield t.fst; yield t.snd
+    elif isinstance(t, LetPair):
+        yield t.pair; yield t.body
+    elif isinstance(t, Lam):
+        yield t.body
+    elif isinstance(t, Apply):
+        yield t.f; yield t.arg
+    elif isinstance(t, Case):
+        yield t.left; yield t.right
+    elif isinstance(t, CaseExpr):
+        yield t.scrut; yield t.left; yield t.right
+    elif isinstance(t, PlusMap):
+        yield t.left; yield t.right
+    elif isinstance(t, PhasedPlusMap):
+        yield t.left; yield t.right
+    elif isinstance(t, NPlusMap):
+        for b in t.branches:
+            yield b
+    elif isinstance(t, Ctrl):
+        yield t.body
+    elif isinstance(t, ExpInvolution):
+        yield t.body
+    # Otherwise no subterms.
+
+
 def compile(term: Term, *, materialize: bool = False, explain: bool = False, env: Env = None) -> Compiled:
     # Check for Feedback - not currently supported
     if _contains_feedback(term):
@@ -726,6 +843,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
     term = _normalize(term)
 
     assert_well_typed(term)
+
+    _assert_first_order_sum_payloads(term)
 
     dom, cod = type_of(term)
 

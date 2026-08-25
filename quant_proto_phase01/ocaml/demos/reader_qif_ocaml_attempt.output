@@ -1,0 +1,8 @@
+READER'S TERM BUILT IN OCAML SURFACE (typecheck passed).
+
+Now attempting to elaborate + compile through Bridge:
+
+3 qubits, 0 gates
+  perm: [1, 2, 0]
+
+Compiled successfully. Circuit size: 0 gates.

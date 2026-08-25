@@ -1,0 +1,62 @@
+
+==========================================================================
+  GENERIC QSwitch — same combinator, every first-order payload A
+==========================================================================
+
+  qswitch_generic A f g : Bool ⊗ A ⊸ Bool ⊗ A
+
+  A ranges over first-order payloads. f, g : A ⊸ A can be
+  arbitrary endomorphisms; they are implicitly eta-expanded
+  into wire-level operations on the A payload by case_hom.
+
+==========================================================================
+  PART 1: A = Q  (classical single-qubit)
+==========================================================================
+
+  PASS  qswitch_generic Q              id id = id  fidelity=1.000000
+  PASS  qswitch_generic Q              f f = id_Bool ⊗ (f;f)  fidelity=1.000000
+
+==========================================================================
+  PART 2: A = Q ⊗ Q  (multi-qubit)
+==========================================================================
+
+  PASS  qswitch_generic (Q ⊗ Q)       id id = id  fidelity=1.000000
+  PASS  qswitch_generic (Q ⊗ Q)       f f = id_Bool ⊗ (f;f)  fidelity=1.000000
+
+==========================================================================
+  PART 3: A = Bool  (sum-typed payload)
+==========================================================================
+
+  PASS  qswitch_generic Bool           id id = id  fidelity=1.000000
+  PASS  qswitch_generic Bool           f f = id_Bool ⊗ (f;f)  fidelity=1.000000
+
+==========================================================================
+  PART 4: A = Bool ⊗ Q  (mixed)
+==========================================================================
+
+  PASS  qswitch_generic (Bool ⊗ Q)    id id = id  fidelity=1.000000
+  PASS  qswitch_generic (Bool ⊗ Q)    f f = id_Bool ⊗ (f;f)  fidelity=1.000000
+
+==========================================================================
+  PART 5: sample compilation — qswitch_generic (Q ⊗ Q) CX SWAP
+==========================================================================
+3 qubits, 6 gates
+  X q[0]
+  CCX q[0, 2, 1]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  CCX q[0, 1, 2]
+  QControlBox q[0, 1, 2]
+  perm: [0, 1, 2]
+
+  Compiled successfully. Circuit size: 6 gates.
+
+==========================================================================
+  SUMMARY
+==========================================================================
+
+  qswitch_generic works UNCHANGED at every first-order payload A.
+  The combinator is Q-agnostic; the payload only needs to satisfy
+  first_order (no Lolli anywhere). f and g are eta-expanded as
+  operations on A's wires by case_hom — the payload never sees
+  a function value, so the first-order guard is trivially met.

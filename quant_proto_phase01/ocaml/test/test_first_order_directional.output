@@ -1,0 +1,45 @@
+
+==============================================================
+  Directional-guard certification tests
+==============================================================
+
+==========================================================================
+  Test 4: datatype control at function-type payload
+==========================================================================
+  PASS [OCaml] control dt endo_ty rejected
+
+==========================================================================
+  Test 2: qswitch_bad — case_hom whose result is a function type
+==========================================================================
+  PASS [OCaml] case_hom with ty_c = endo (function type) rejected
+
+==========================================================================
+  Test 3: directional guard — high-order INSIDE ok, first-order target
+==========================================================================
+  PASS [compile] case_hom one one q q [id-branches]
+  PASS [compile] case_hom one one (Q ⊗ Q) (Q ⊗ Q) — nested first-order payload
+
+  NOTE on brief §2 (full ctrl_ho with raw split ⊕-map):
+  The full ctrl_ho construction requires the open oplusmap primitive
+  with explicit split witnesses combining (∅) and ({f}) contexts.
+  This exercises the SPLIT ⊕-Map's context-splitting rule (Table 1).
+  The current OCaml smart constructors (case_hom / control) do not
+  guard sources or ambient Γ, so higher-order oplusmap sources also
+  reach compilation unhindered — the Python defense checks target only.
+  A dedicated compile-time regression for the full ctrl_ho pipeline
+  is left as future work — the shape is documented in the brief.
+
+==========================================================================
+  Test 6: [X | I] direct ⊕-I of function values
+==========================================================================
+  PASS [compile] omap0 with target = Plus(endo, endo) — Lolli in summands rejected
+
+==========================================================================
+  Test D: depth-2 nesting — deeper first-order payload
+==========================================================================
+  PASS [compile] case_hom one one deep deep — Γ = C = Q ⊗ (Q ⊗ Q)
+
+============================
+  Passed: 6
+  Failed: 0
+============================

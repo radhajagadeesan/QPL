@@ -48,6 +48,35 @@ let ( -@ ) a b = Rep.Lolli (a, b)  (* Linear implication A ⊸ B *)
 
 let ty_to_rep (ty : 'a ty) : Rep.t = ty
 
+(* ========== First-order predicate (soundness fix) ==========
+
+   A type is first-order iff it contains no Lolli (⊸) anywhere.
+
+   Used to guard sum-payload sites: ⊕-Map targets, case shared result
+   types, and datatype control payloads must be first-order.
+
+   Higher-order values (Lolli-typed things) are perfectly fine as
+   Lolli hom-arguments and results — they just cannot appear as the
+   payload of a sum. See docs/LIMITATIONS.md §4 and the soundness
+   remark in the paper.
+*)
+let rec first_order (t : Rep.t) : bool =
+  match t with
+  | Rep.Var _ -> true
+  | Rep.Unit -> true
+  | Rep.Tensor (a, b) -> first_order a && first_order b
+  | Rep.Plus   (a, b) -> first_order a && first_order b
+  | Rep.Lolli  (_, _) -> false
+
+let assert_first_order ~site (t : Rep.t) : unit =
+  if not (first_order t) then
+    invalid_arg
+      (Printf.sprintf
+         "%s: sum payloads must be first-order (contain no Lolli).\n\
+          Function values may be consumed inside a branch, but not returned on a summand.\n\
+          Offending type: %s"
+         site (Rep.to_string t))
+
 (** Generate I^{⊕k} = I ⊕ (I ⊕ (... ⊕ I)) with k copies of I.
     - i_sum 1 = I
     - i_sum 2 = I ⊕ I
@@ -316,6 +345,7 @@ let case_hom0 (ty_a : 'a ty) (ty_b : 'b ty) (ty_c : 'c ty)
     (f : (unit, [`Lolli of 'a * [`Tensor of 'a * 'c]]) prog)
     (g : (unit, [`Lolli of 'b * [`Tensor of 'b * 'c]]) prog)
     : (unit, [`Lolli of [`Plus of 'a * 'b] * [`Tensor of [`Plus of 'a * 'b] * 'c]]) prog =
+  assert_first_order ~site:"case_hom0" ty_c;
   seq0 (omap0 ty_a ty_b f g) (undist_l ty_a ty_b ty_c)
 
 (* Homogeneous case with shared context:
@@ -327,6 +357,7 @@ let case_hom (ty_a : 'a ty) (ty_b : 'b ty) (ty_g : 'g ty) (ty_c : 'c ty)
     (g : (unit, [`Lolli of [`Tensor of 'g * 'b] * [`Tensor of 'b * 'c]]) prog)
     : (unit, [`Lolli of [`Tensor of 'g * [`Plus of 'a * 'b]]
                         * [`Tensor of [`Plus of 'a * 'b] * 'c]]) prog =
+  assert_first_order ~site:"case_hom" ty_c;
   seq0 (seq0 (dist_r ty_g ty_a ty_b) (omap0 (ty_g ** ty_a) (ty_g ** ty_b) f g))
        (undist_l ty_a ty_b ty_c)
 
@@ -555,6 +586,7 @@ let oletpair0 x y ty_x ty_y pair body = OLetPair (x, y, ty_x, ty_y, pair, body, 
     Branches f: A→A⊗C, g: B→B⊗C (closed oterms).
     Desugars to: oplusmap0(f,g) ; undist_l *)
 let ocase_hom0 ty_a ty_b ty_c left right =
+  assert_first_order ~site:"ocase_hom0" ty_c;
   oseq0 (oplusmap0 ty_a ty_b left right)
         (oembed (undist_l ty_a ty_b ty_c))
 
@@ -563,6 +595,7 @@ let ocase_hom0 ty_a ty_b ty_c left right =
     Branches f: G⊗A→A⊗C, g: G⊗B→B⊗C (closed oterms).
     Desugars to: dist_r(G,A,B) ; oplusmap0(f,g) ; undist_l(A,B,C) *)
 let ocase_hom ty_a ty_b ty_g ty_c left right =
+  assert_first_order ~site:"ocase_hom" ty_c;
   oseq0 (oembed (dist_r ty_g ty_a ty_b))
         (oseq0 (oplusmap0 (ty_g ** ty_a) (ty_g ** ty_b) left right)
                (oembed (undist_l ty_a ty_b ty_c)))
@@ -752,6 +785,8 @@ let op (dt : datatype_desc) (name : string) : (unit, [`Lolli of 'a * 'b]) prog =
 let control (dt : datatype_desc) (a_ty : 'a ty)
             (branches : (unit, [`Lolli of 'a * 'a]) prog array)
             : (unit, [`Lolli of [`Tensor of 'b * 'a] * [`Tensor of 'b * 'a]]) prog =
+  assert_first_order
+    ~site:(Printf.sprintf "control (datatype %s)" dt.name) a_ty;
   if Array.length branches <> dt.arity then
     failwith (Printf.sprintf "Datatype %s: control requires %d branches, got %d"
                 dt.name dt.arity (Array.length branches));
@@ -772,6 +807,8 @@ let control (dt : datatype_desc) (a_ty : 'a ty)
 let phased_control (dt : datatype_desc) (phases : Complex.t array) (a_ty : 'a ty)
                    (_branches : (unit, [`Lolli of 'a * 'a]) prog array)
                    : (unit, [`Lolli of [`Tensor of 'b * 'a] * [`Tensor of 'b * 'a]]) prog =
+  assert_first_order
+    ~site:(Printf.sprintf "phased_control (datatype %s)" dt.name) a_ty;
   (* Validate arity *)
   if Array.length phases <> dt.arity then
     failwith (Printf.sprintf "Datatype %s: phased_control requires %d phases, got %d"

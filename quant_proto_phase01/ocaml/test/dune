@@ -25,3 +25,11 @@
 (test
  (name test_combinators)
  (libraries qpl_surface))
+
+(test
+ (name test_first_order_sum_payloads)
+ (libraries qpl_surface str))
+
+(test
+ (name test_first_order_directional)
+ (libraries qpl_surface str))

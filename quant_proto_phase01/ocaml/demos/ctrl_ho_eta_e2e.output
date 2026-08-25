@@ -1,0 +1,17 @@
+
+==========================================================================
+  ctrl_ho — directional guard certification via raw split ⊕-map
+==========================================================================
+  PASS  u0 (closed) compiles (0 gates)
+  PASS  first-order guard ACCEPTED the term.
+        (Compilation had an unrelated pytket wire-routing issue,
+         but that is orthogonal to the guard certification.)
+        Compile error: Multiple operation arguments reference q[1]
+
+  DIRECTIONAL GUARD CERTIFICATION:
+  - u0 has closed context ∅
+  - u1 has context {f : (Q⊸Q)⊸(Q⊸Q)} — HIGHER-ORDER source
+  - target summands = one ⊗ q — FIRST-ORDER
+  - oplusmap combines them via split; term accepted at OCaml,
+    accepted by first-order guard at compile time.
+  - If Guard 2 checked sources instead of targets, this would REJECT.
