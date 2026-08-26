@@ -150,52 +150,69 @@ and_sc ; and_sc:
   perm: [0, 1, 2, 3]
 
 ==========================================================================
-  PART 7: Quantum Extension (phase inside the controlled ⊕-Map)
+  PART 7: Quantum Extension (phase kickback via unphased inverse route)
 ==========================================================================
 
 The classical and_sc above is purely structural — it routes the witness
-based on b1 but emits no phase. The quantum extension folds a -1 phase
-directly into the controlled ⊕-Map of routeW:
+based on b1 but emits no phase. The quantum extension builds a phase-only
+operator on b1 by composing a phased route with its unphased inverse:
 
   routeW^q := dist_l⁻¹ ;
               ⊕-map( -1 · (id_I ⊗ toggle_W),
                       1 · (id_I ⊗ id_W) ) ;
-              dist_l
-           : Bool ⊗ W → Bool ⊗ W
+              dist_l                              -- phased route
 
-  - When b1 = 0 (left summand): apply id_I ⊗ toggle_W AND the branch picks
-    up a -1 phase. The toggle and the phase fire together.
-  - When b1 = 1 (right summand): apply id_I ⊗ id_W with phase +1 (no phase).
+  routeW_kickback := routeW^q ; ctrl_W(toggle_W, id_W)
+                                                  -- ⋯ then unphased inverse
 
-  and_sc_q := route_in ; (routeW^q ⊗ id_Bool) ; route_out
+  and_sc_q := route_in ; (routeW_kickback ⊗ id_Bool) ; route_out
            : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
 
-  - Same surrounding routing as and_sc; routeW is simply replaced by routeW^q.
+Why the composition rather than routeW^q alone?
 
-What does this DO semantically?
+  Applied alone, routeW^q entangles the witness with b1: the b1 = 0
+  branch outputs |toggle(w)⟩ on the witness, the b1 = 1 branch outputs
+  |w⟩. On a superposition of b1 the two branches live on orthogonal
+  witness states, and no Hadamard on b1 alone can recover interference —
+  the witness has classically recorded which branch fired.
 
-  The -1 phase is conditioned on the short-circuit *predicate itself*
-  (b1 = 0), via the ⊕-Map's branch coefficient — not on a derived property
-  of the witness wire. On any basis input with b1 = 0, the output amplitude
-  acquires a -1; on any input with b1 = 1, the amplitude is +1.
+  Composing with the unphased inverse routing ctrl_W(toggle_W, id_W) is a
+  standard phase-kickback trick: since toggle_W is an involution
+  (toggle² = id), a second application on the b1 = 0 branch coherently
+  undoes the witness modification while leaving the branch-local -1 phase
+  untouched.
 
-  Net rule: -1 iff b1 = 0  ("short-circuit happened").
+  Net action of routeW_kickback on basis states:
+
+      |0⟩|w⟩  ↦  -|0⟩|w⟩         (branch-local phase -1, witness restored)
+      |1⟩|w⟩  ↦   |1⟩|w⟩         (identity)
+
+  i.e. routeW_kickback = (-Z_{b1}) ⊗ id_W.
 
   Interference on superposition. With b1 in |+⟩ = (|0⟩+|1⟩)/√2:
 
-      |0⟩|b2⟩|w⟩  ↦  -|0⟩|b2⟩|toggle(w)⟩    (b1 = 0: phase -1, toggle fires)
-      |1⟩|b2⟩|w⟩  ↦   |1⟩|b2⟩|w⟩            (b1 = 1: phase +1, identity)
+      routeW_kickback (|+⟩|w⟩) = -|-⟩|w⟩
+      H_{b1} applied            = -|1⟩|w⟩
 
-  The relative phase between the two branches is -1/+1. Invisible in the
-  computational basis, but a Hadamard on b1 turns it into a population
-  flip — a measurable signature that short-circuit occurred, without
-  collapsing the b1 superposition.
+  The unphased route–unroute analog (ctrl_W(toggle,id) applied twice) is
+  the identity, so the same starting state maps under it to |+⟩|w⟩ ↦ |0⟩|w⟩
+  after H_{b1}. The Hadamard outcome genuinely switches from 0 (no
+  short-circuit branch) to 1 (short-circuit branch phased), while the
+  witness is restored and disentangled.
+
+Structural note on W:
+  W = E ⊕ QBool where E is the first-order "empty" summand (unit) and
+  QBool records the intermediate route. The kickback pattern requires the
+  QBool action to be an involution (toggle_W² = id_W): a toggle-sensitive
+  witness records the intermediate route, and the coherent inverse then
+  removes that record. Not every possible witness-modifying combinator has
+  this property — the involution is what makes disentanglement clean.
 
 
---- routeW^q ---
+--- routeW^q (phased ⊕-Map sandwich) ---
 
 
-routeW^q (phased ⊕-Map sandwich):
+routeW^q (raw phased route):
 3 qubits, 8 gates
   X q[0]
   QControlBox q[0, 1, 2]
@@ -207,11 +224,31 @@ routeW^q (phased ⊕-Map sandwich):
   X q[0]
   perm: [0, 1, 2]
 
---- and_sc_q (uses routeW^q in place of routeW) ---
+--- routeW_kickback (phased route ; unphased inverse) ---
+
+
+routeW_kickback:
+3 qubits, 13 gates
+  X q[0]
+  QControlBox q[0, 1, 2]
+  CCX q[0, 1, 2]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[0]
+  U1 q[0]
+  X q[0]
+  X q[0]
+  QControlBox q[0, 1, 2]
+  CCX q[0, 1, 2]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  perm: [0, 1, 2]
+
+--- and_sc_q (uses routeW_kickback in place of routeW) ---
 
 
 and_sc_q:
-4 qubits, 8 gates
+4 qubits, 13 gates
   X q[0]
   QControlBox q[0, 2, 3]
   CCX q[0, 2, 3]
@@ -219,6 +256,11 @@ and_sc_q:
   X q[0]
   X q[0]
   U1 q[0]
+  X q[0]
+  X q[0]
+  QControlBox q[0, 2, 3]
+  CCX q[0, 2, 3]
+  QControlBox q[0, 2, 3]
   X q[0]
   perm: [0, 1, 2, 3]
 
@@ -276,9 +318,11 @@ Verifying key algebraic properties by comparing compiled unitaries:
   ✓ ctrl_W(id, id) = id_{Bool⊗W} (trivial control) (fidelity=1.000000)
   ✓ and_sc ; and_sc = id (involution) (fidelity=1.000000)
   ✓ routeW^q ; routeW^q = id_{Bool⊗W} (phased involution) (fidelity=1.000000)
+  ✓ routeW_kickback = (-Z_{b1}) ⊗ id_W (witness disentangled) (fidelity=1.000000)
+  ✓ routeW_kickback ; routeW_kickback = id_{Bool⊗W} (kickback involution) (fidelity=1.000000)
   ✓ and_sc_q ; and_sc_q = id (full involution) (fidelity=1.000000)
 
-Verification: 5/5 passed
+Verification: 7/7 passed
 
 ==========================================================================
   SUMMARY
@@ -296,21 +340,26 @@ Demonstrated short-circuit conjunction in Linear DSL:
    and_sc : (Bool ⊗ Bool) ⊗ W → ...            structural routing only
 
 3. QUANTUM SHORT-CIRCUIT CONJUNCTION
-   routeW^q : Bool ⊗ W → Bool ⊗ W
+   routeW^q : Bool ⊗ W → Bool ⊗ W       (raw phased route — entangles w with b1)
      dist_l⁻¹ ; ⊕-map( -1 · (id_I ⊗ toggle_W),
                         1 · (id_I ⊗ id_W) ) ; dist_l
-     -1 phase fires on the LEFT (b1 = 0) branch of the ⊕-Map,
-     together with the witness toggle. No separate post-step.
+
+   routeW_kickback : Bool ⊗ W → Bool ⊗ W  (phase-only, witness disentangled)
+     routeW^q ; ctrl_W(toggle_W, id_W)
+     Since toggle_W is an involution, the second application coherently undoes
+     the witness modification, leaving  (-Z_{b1}) ⊗ id_W.
 
    and_sc_q : (Bool ⊗ Bool) ⊗ W → (Bool ⊗ Bool) ⊗ W
-     route_in ; (routeW^q ⊗ id_Bool) ; route_out
-     Same wiring as and_sc, routeW replaced by routeW^q.
+     route_in ; (routeW_kickback ⊗ id_Bool) ; route_out
+     Same wiring as and_sc, routeW replaced by routeW_kickback.
 
-Key insight: by conditioning the -1 phase on the short-circuit
-predicate (b1 = 0) directly — inside the controlled ⊕-Map —
-the amplitude itself carries the information "short-circuit happened".
-Under a superposition of b1, this produces measurable interference
-(via a Hadamard on b1) between the short-circuit and evaluation paths.
+Key insight: the phase-kickback pattern (phased branch action + unphased
+inverse branch action) requires the branch action to be an involution.
+When it is, the witness temporarily records the intermediate route, then
+the inverse coherently removes that record — leaving a pure phase on the
+control (b1) available for interference. A Hadamard on b1 turns this into
+a measurable computational-basis outcome distinction between the
+short-circuit and evaluation paths, with no residual entanglement.
 
 
 ==========================================================================

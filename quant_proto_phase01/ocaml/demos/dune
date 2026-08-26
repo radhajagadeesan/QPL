@@ -19,6 +19,14 @@
  (libraries qpl_surface str))
 
 (executable
+ (name dist_unequal_width_probe)
+ (libraries qpl_surface))
+
+(executable
+ (name qs2_dummy_sim_e2e)
+ (libraries qpl_surface str))
+
+(executable
  (name algorithms_e2e)
  (libraries qpl_surface str))
 

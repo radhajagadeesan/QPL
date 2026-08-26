@@ -116,7 +116,4 @@ a soundness issue. The demo reports both outcomes explicitly.
 ### Attribution
 
 Special thanks to **Kengo Hirata** for the concrete report and the
-derivation tree that made the exact rule to fix precise. The
-directional-guard property (targets only, sources unrestricted) —
-which preserves the η-expansion workaround — was preserved on
-Hirata's advice.
+derivation tree that made the exact rule to fix precise.

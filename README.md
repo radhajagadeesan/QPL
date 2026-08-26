@@ -113,7 +113,23 @@ Start here:
 
 Radha Jagadeesan — DePaul University — radha.jagadeesan@gmail.com
 
-Citation information forthcoming.
+To appear at **OOPSLA 2026**:
+
+> Radha Jagadeesan. *Granthi: Higher-Order Quantum Programming via
+> Unitary Wiring.* Proceedings of the ACM on Programming Languages
+> (PACMPL), OOPSLA 2026. To appear.
+
+BibTeX (final citation info will be updated once the proceedings are published):
+
+```bibtex
+@article{Jagadeesan2026Granthi,
+  author  = {Radha Jagadeesan},
+  title   = {Granthi: Higher-Order Quantum Programming via Unitary Wiring},
+  journal = {Proc. ACM Program. Lang.},
+  year    = {2026},
+  note    = {OOPSLA 2026, to appear},
+}
+```
 
 ## Reporting Bugs
 

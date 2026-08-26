@@ -1,0 +1,88 @@
+
+==========================================================================
+  QS_n DUMMY-REGISTER SIMULATOR  (concrete n = 2, A = Q)
+==========================================================================
+
+Builds the fixed-order dummy-register simulator of QS_n at n = 2,
+concrete f_1 = X, f_2 = H. Type:
+  (Bool ⊗ Bool) ⊗ (Q ⊗ (Q ⊗ Q))  ⟶  (Bool ⊗ Bool) ⊗ (Q ⊗ (Q ⊗ Q))
+
+  Control  (C_1, C_2) : Bool ⊗ Bool     (2 tag qubits)
+  Regs     T ⊗ (D_1 ⊗ D_2) : Q ⊗ (Q⊗Q)  (target + 2 dummies, 3 qubits)
+  Total    5 qubits.
+
+  Circuit: R(C_1) ; F ; R(C_1) ; R(C_2) ; F ; R(C_2)
+  with routing rearrangements between rounds (0-gate wire perms).
+  R(c) is a coherent controlled-SWAP of T with D_c (via case_hom).
+  F applies X to D_1 and H to D_2 in parallel (leaves T alone).
+
+==========================================================================
+  PART 1: Structural building blocks compile
+==========================================================================
+
+swap_T_D1  (structural wire perm):
+  compiled successfully (gate count: 0)
+
+swap_T_D2  (structural wire perm):
+  compiled successfully (gate count: 0)
+
+R(c)  (coherent controlled-SWAP):
+  compiled successfully (gate count: 4)
+
+F  (parallel X⊗H on dummies):
+  compiled successfully (gate count: 2)
+
+round(c)  = R(c) ; F ; R(c):
+  compiled successfully (gate count: 10)
+
+qs2_sim  (full two-round pipeline):
+  compiled successfully (gate count: 20)
+
+==========================================================================
+  PART 2: Structural involutions
+==========================================================================
+
+  ✓ R ; R  =  id_{Bool ⊗ Regs}  (controlled-SWAP squared) (fidelity=1.000000)
+  ✓ round ; round  =  id  (each round is an involution: X² = H² = I) (fidelity=1.000000)
+
+==========================================================================
+  PART 3: Clean-garbage lemma (dummies factor out)
+==========================================================================
+
+The defining semantic claim of the dummy-register construction:
+on every basis (c_1, c_2), the dummies pick up f_i^{n-1} independent
+of π. For n = 2, f_1 = X, f_2 = H:
+
+  (c_1, c_2) = (0, 0):  identity on Regs   (X² = H² = I on doubly-hit)
+  (c_1, c_2) = (0, 1):  target ← H·X ψ,   D_1 ← X a_1,  D_2 ← H a_2
+  (c_1, c_2) = (1, 0):  target ← X·H ψ,   D_1 ← X a_1,  D_2 ← H a_2
+  (c_1, c_2) = (1, 1):  identity on Regs
+
+  qs2_ref encodes this specification as a nested case on (c_1, c_2).
+  If the dummies genuinely factor out (i.e., they carry no π-dependent
+  information), qs2_sim MUST equal qs2_ref as a full 5-qubit unitary.
+
+
+qs2_ref  (nested-case specification):
+  compiled successfully (gate count: 12)
+  ✓ qs2_sim  =  qs2_ref  (clean-garbage lemma; π-independent dummies) (fidelity=1.000000)
+
+==========================================================================
+  SUMMARY
+==========================================================================
+
+  Verifications: 3/3 passed
+
+Demonstrated: the QS_2 higher-order n-switch is faithfully
+simulated by a first-order dummy-register circuit with n² = 4
+oracle calls. Under η-expansion of the target, the whole term
+is first-order (no sum type carries a function payload), so the
+soundness restriction is respected. The dummies genuinely factor
+out — proved as a unitary equality between the operational
+circuit (qs2_sim) and the semantic reference (qs2_ref).
+
+The fully-parametric form (each f_i as an abstract function value)
+is obtained by wrapping qs2_sim's shape in an outer olam over four
+(Q ⊸ Q) function slots and replacing each concrete gate site with
+an oapp of the corresponding slot. See qswitch_eta_endoQ_e2e.ml
+for the destructuring / split-witness pattern.

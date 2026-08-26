@@ -1,0 +1,11 @@
+
+===============================================================
+  dist_l at UNEQUAL widths — layout-normalization probe
+===============================================================
+  Type: (Q ⊕ (Q⊗Q)) ⊗ Q  →  (Q⊗Q) ⊕ ((Q⊗Q)⊗Q)
+  Widths: w_A=1, w_B=2, w_C=1
+
+-- Default compile (non-materialized) --
+4 qubits, 0 gates
+  perm: [0, 1, 2, 3]
+  gate count: 0
