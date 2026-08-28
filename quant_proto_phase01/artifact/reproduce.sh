@@ -69,6 +69,20 @@ fi
 echo "  ok"
 echo ""
 
+# Run the OCaml test suite (soundness-guard regression tests, structural
+# conformance, exp_i certification). This is the reproduction check for the
+# first-order sum-payload restriction shipped in v0.2.
+echo "[preflight] dune runtest"
+if ! (cd ocaml && dune runtest --force) 2>&1 | tee "$RESULTS/_dune_test.log" >/dev/null; then
+    printf '  %-4s  %-32s  %s\n' "-" "dune runtest" "FAIL"
+    echo "  see $RESULTS/_dune_test.log for details"
+    fail=$((fail + 1))
+else
+    printf '  %-4s  %-32s  %s\n' "-" "dune runtest" "PASS"
+    pass=$((pass + 1))
+fi
+echo ""
+
 # One row per demo.
 printf '  %-4s  %-32s  %s\n' "SEC" "DEMO" "OUTCOME"
 hr

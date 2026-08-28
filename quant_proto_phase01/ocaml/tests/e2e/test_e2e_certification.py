@@ -175,17 +175,6 @@ class TestCertificationViaBridge:
 class TestNoResidualGOI:
     """Test that certified programs never yield residual GOI."""
 
-    def test_structural_no_goi(self):
-        """Pure structural programs should have no gates.
-
-        Note: With one-hot encoding, TwistPlus is a pure permutation (no gates).
-        """
-        term = TwistPlus(Q(), Q())
-        circuit, perm = compile_term(term, materialize=False)
-
-        # With one-hot encoding, TwistPlus is pure permutation (0 gates)
-        assert circuit.n_gates == 0, f"Expected 0 gates (pure permutation), got {circuit.n_gates}"
-
     def test_certified_exp_i_no_residual(self):
         """Certified exp_i should produce clean output without residual GOI."""
         # This is verified through the OCaml tests

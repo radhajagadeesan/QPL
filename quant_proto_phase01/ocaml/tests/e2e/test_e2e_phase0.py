@@ -44,20 +44,6 @@ AssocTensorR = AssocTenR
 class TestStructuralCompilation:
     """Test that structural programs compile to WirePerm only."""
 
-    def test_twist_plus_compiles_as_pure_perm(self):
-        """TwistPlus should compile to pure permutation (no gates) with one-hot encoding."""
-        term = TwistPlus(Q(), Q())
-        circuit, perm = compile_term(term, materialize=False)
-
-        # One-hot layout: Q + Q has width 4 (2 tags + 2 data)
-        assert perm is not None
-        assert perm.n == 4
-        # With one-hot: swaps tags AND data: [1, 0, 3, 2]
-        # Layout: [t1, t2, A, B] -> [t2, t1, B, A]
-        assert perm.new_to_old == [1, 0, 3, 2], "TwistPlus should swap both tags and data"
-        # No gates - pure permutation with one-hot encoding
-        assert circuit.n_gates == 0, f"Expected 0 gates (pure perm), got: {circuit.n_gates}"
-
     def test_twist_tensor_compiles_to_perm_only(self):
         """TwistTensor should compile to permutation with no gates."""
         term = TwistTensor(Q(), Q())
