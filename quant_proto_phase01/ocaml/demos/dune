@@ -27,6 +27,10 @@
  (libraries qpl_surface str))
 
 (executable
+ (name qs3_dummy_sim_e2e)
+ (libraries qpl_surface str))
+
+(executable
  (name algorithms_e2e)
  (libraries qpl_surface str))
 
