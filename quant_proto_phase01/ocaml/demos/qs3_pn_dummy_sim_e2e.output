@@ -1,0 +1,82 @@
+
+==========================================================================
+  QS_3 dummy-register simulator  (P_3 = ℂ[S_3] control, log-tree dispatch)
+==========================================================================
+
+  Control    P_3 = ℂ[S_3]   arity-8 padded datatype, 3 tag qubits
+             (6 real S_3 slots + 2 |id⟩ duplicates for power-of-2 arity)
+  Regs       T ⊗ D_1 ⊗ D_2 ⊗ D_3   4 qubits
+  Total      3 + 4 = 7 qubits
+
+  Six permutations of S_3 each occupy one summand:
+    id      : π = (1, 2, 3)    swap_23 : π = (1, 3, 2)
+    swap_12 : π = (2, 1, 3)    cyc_123 : π = (2, 3, 1)
+    swap_13 : π = (3, 2, 1)    cyc_132 : π = (3, 1, 2)
+
+  R_k(π)  = coherent SWAP(T, D_{π(k)}) via `control` on S_3
+           (dispatch via log-depth binary tree over 3 tag qubits)
+  F       = id_T ⊗ X on D_1 ⊗ H on D_2 ⊗ Z on D_3   (F² = I)
+  round_k = R_k ; (id_S3 ⊗ F) ; R_k                 (round_k² = id)
+  qs3_sim = round_1 ; round_2 ; round_3            (n = 3 rounds)
+
+  Total oracle calls: n² = 9  (each f_i applied n = 3 times).
+  Total circuit depth (algorithmic): n·log n = 3·log 6 ≈ 8.
+
+==========================================================================
+  PART 1: Building blocks compile
+==========================================================================
+
+R_1(π) (control on S_3, log-tree over 3 tag qubits):
+  compiled successfully (gate count: 32)
+
+R_2(π):
+  compiled successfully (gate count: 32)
+
+R_3(π):
+  compiled successfully (gate count: 32)
+
+F  (id ⊗ X ⊗ H ⊗ Z):
+  compiled successfully (gate count: 3)
+
+round_1 = R_1 ; F ; R_1:
+  compiled successfully (gate count: 67)
+
+qs3_sim  (all three rounds):
+  compiled successfully (gate count: 201)
+
+qs3_ref  (semantic reference: control-composed target):
+  compiled successfully (gate count: 48)
+
+==========================================================================
+  PART 2: Structural involutions
+==========================================================================
+
+  ✓ R_1 ; R_1 = id  (branch-SWAP involution, round 1 table) (fidelity=1.000000)
+  ✓ R_2 ; R_2 = id (fidelity=1.000000)
+  ✓ R_3 ; R_3 = id (fidelity=1.000000)
+  ✓ round_1 ; round_1 = id  (uses F² = I from X² = H² = Z² = I) (fidelity=1.000000)
+
+==========================================================================
+  PART 3: Clean-garbage lemma — qs3_sim = qs3_ref
+==========================================================================
+
+  The critical semantic claim: on every |π⟩ ∈ P_3, qs3_sim's action
+  on the target is f_{π(3)} ∘ f_{π(2)} ∘ f_{π(1)} and the dummies
+  return to their initial state (because f_i² = I here).
+  Equivalently: qs3_sim = qs3_ref where qs3_ref applies the composed
+  target unitary per π directly (via `control` on S_3), leaving dummies
+  untouched. Full 7-qubit unitary equality:
+
+  ✓ qs3_sim  =  qs3_ref  (clean-garbage lemma across all 6 permutations) (fidelity=1.000000)
+
+==========================================================================
+  SUMMARY
+==========================================================================
+
+  Verifications: 5/5 passed
+
+  QS_3 fixed-order simulator with P_3 = ℂ[S_3] as direct control,
+  Araújo–Costa–Brukner controlled-SWAP/ancilla construction.
+  6 summands = 6 permutations of S_3, dispatched by `control` via
+  log-depth binary tree on 3 tag qubits. Clean-garbage lemma verified
+  by full 7-qubit unitary equality against a target-only reference.
