@@ -810,6 +810,11 @@ def _assert_first_order_sum_payloads(term: Term) -> None:
             _check_sum_output(t, "NPlusMap")
         elif isinstance(t, Case):
             _check_sum_output(t, "Case")
+        elif isinstance(t, CaseExpr):
+            # CaseExpr is desugared to Seq(scrut, Case(...)) at compile time,
+            # but the first-order guard runs BEFORE desugaring — check here
+            # too so the ordinary OCaml case path cannot bypass the restriction.
+            _check_sum_output(t, "CaseExpr")
         elif isinstance(t, PhasedPlusMap):
             _check_sum_output(t, "PhasedPlusMap")
         elif isinstance(t, PhasedControl):

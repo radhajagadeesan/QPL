@@ -321,7 +321,40 @@ this entry.
 
 ---
 
-## Summary
+## 10. ~~CaseExpr bypass of first-order guard~~ — FIXED (ART-1)
+
+**Status: FIXED.** Regression tests:
+`python/tests/test_case_expr_first_order_guard.py` (2/2 passed).
+
+Prior to the fix, `_assert_first_order_sum_payloads` in
+`python/src/compile/to_pytket.py` recognized `Case` but not `CaseExpr`.
+Since `CaseExpr` is desugared to `Seq(scrut, Case(...))` AT compile
+time and the first-order guard runs BEFORE desugaring, the ordinary
+OCaml case path (which emits `CaseExpr` on the wire per
+`bridge.ml:254`, JSON node name `"CaseExpr"`) could reach compile
+through the guard without ever tripping the outer-node inspection.
+Recursion into subterms was already correct
+(`_subterms(CaseExpr)` yields `scrut`, `left`, `right`); the missing
+piece was the outer-node check.
+
+**Fix:** one arm added to `_walk` inside
+`_assert_first_order_sum_payloads`:
+
+```python
+elif isinstance(t, CaseExpr):
+    _check_sum_output(t, "CaseExpr")
+```
+
+Two end-to-end regression tests in `test_case_expr_first_order_guard.py`:
+- **Negative:** a `CaseExpr` whose branches return `Q ⊸ Q` (i.e., output
+  summands would contain `Lolli`) is rejected with a "first-order"
+  error via `TypeCheckError`.
+- **Positive:** a `CaseExpr` that CONSUMES higher-order resources in
+  scope but RETURNS first-order summand values is accepted (the
+  first-order guard does not fire — other errors may occur but not
+  this one, verified in-test).
+
+No formal-paper change needed.
 
 | Limitation | Root cause | Fix path |
 |:---|:---:|:---|
@@ -335,6 +368,7 @@ this entry.
 | ~~7. Phased ⊕-Map / phased control (ART-3, ART-4a, ART-4b)~~ | ~~phased-emitter code path~~ | **FIXED** — big-endian `_emit_exact_tag_phase` helper + OCaml `control ; PhasedCtrl` composition |
 | 8. Coherent ⊕-introduction (`Sum_αβ`) — ART-5 | source-language primitive absent from surface | Design deferred; see `docs/SUM_INTRODUCTION_DESIGN.md` |
 | 9. Legacy `EncodeQubit` / `DecodeQubit` — ART-7 | pre-log-tag one-hot encoding | Excluded via `LEGACY` docstring markers; not reachable from OCaml surface |
+| ~~10. CaseExpr bypass of first-order guard~~ — ART-1 | ~~missing CaseExpr arm in `_walk`~~ | **FIXED** — CaseExpr arm added; regression tests in `test_case_expr_first_order_guard.py` |
 
 **What works without limitation:**
 
