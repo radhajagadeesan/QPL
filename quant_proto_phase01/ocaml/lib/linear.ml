@@ -448,21 +448,16 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
   | GateCX -> Bridge.TCX (0, 1)
   | GateRz theta -> Bridge.TRz (theta, 0)
 
-  (* Scalar phase: for Unit type (0 qubits), emit Id (phase tracked separately).
-     For Q type, emit Rz which approximates global phase up to basis-dependent factor.
-     Note: True global phase support in controlled contexts requires PlusMap-level handling. *)
+  (* Scalar phase z·I on ty: emitted as a first-class TGlobalPhase term at
+     every width. The Python emitter uses pytket's circ.add_phase to track
+     the scalar without touching any wire; inside controlled contexts, the
+     accumulated branch phase is extracted after sub-compile and promoted
+     to an exact-tag relative phase on the tag qubits. Previously this
+     path emitted Rz on width-1 payloads (a per-wire relative phase,
+     not the scalar zI advertised by `phase z ty`) and dropped the
+     phase entirely for widths 0 and ≥ 2. *)
   | Phase (theta, ty) ->
-      let w = Rep.wire_count ty in
-      if w = 0 then
-        (* Unit type: no qubits, emit identity. Phase is lost in isolation
-           but becomes controlled-phase in PlusMap context via tag qubits. *)
-        Bridge.TId ty
-      else if w = 1 then
-        (* Single qubit: emit Rz(theta) as approximation *)
-        Bridge.TRz (theta, 0)
-      else
-        (* Multi-qubit: emit Id (phase is global, unobservable in isolation) *)
-        Bridge.TId ty
+      Bridge.TGlobalPhase (theta, ty)
 
   | ExpI (theta, body) -> Bridge.TExpInvolution (theta, emit_any body)
   | Id ty -> Bridge.TId ty

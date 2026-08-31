@@ -67,6 +67,9 @@ let rec type_to_json = function
 type term =
   (* Structural combinators *)
   | TId of Rep.t
+  (* Scalar phase: multiply amplitudes by z = e^{iθ}, semantics is z · I on ty.
+     NOT to be confused with TRz / TPhase (per-wire relative phase gates). *)
+  | TGlobalPhase of float * Rep.t
   | TSeq of term * term
   | TTenTerm of term * term
   | TTwistTen of Rep.t * Rep.t
@@ -137,6 +140,9 @@ let rec term_to_json = function
   (* Structural combinators *)
   | TId ty ->
     Printf.sprintf {|{"node": "Id", "ty": %s}|} (type_to_json ty)
+  | TGlobalPhase (theta, ty) ->
+    Printf.sprintf {|{"node": "GlobalPhase", "theta": %f, "ty": %s}|}
+      theta (type_to_json ty)
   | TSeq (f, g) ->
     Printf.sprintf {|{"node": "Seq", "f": %s, "g": %s}|}
       (term_to_json f) (term_to_json g)

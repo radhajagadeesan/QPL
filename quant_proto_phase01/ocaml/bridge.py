@@ -23,7 +23,7 @@ sys.path.insert(0, str(src_path))
 
 from lang.types import Q, Ten, Plus, Unit, Arrow, Ty, width
 from lang.terms import (
-    Term, Id, Seq, TenTerm,
+    Term, Id, Seq, TenTerm, GlobalPhase,
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR, UndistL, UndistR,
@@ -266,6 +266,9 @@ def parse_term(j: dict, ty_total: Ty = None, min_qubits: int = 1) -> Term:
     # Structural combinators
     if node == "Id":
         return Id(parse_type(j["ty"]))
+
+    elif node == "GlobalPhase":
+        return GlobalPhase(float(j["theta"]), parse_type(j["ty"]))
 
     elif node == "Seq":
         # Each child of Seq gets its own ty_total inferred from local content,

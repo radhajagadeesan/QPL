@@ -42,6 +42,7 @@ from lang.terms import (
     Ctrl,
     # Qubit encoding isomorphism
     EncodeQubit, DecodeQubit,
+    GlobalPhase,
 )
 from lang.types import width, Arrow, Unit, Plus, Ten, pretty as _pretty_ty
 
@@ -1196,6 +1197,19 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             if explain:
                 log.append(f"Id (offset={offset})")
             return
+        if isinstance(t, GlobalPhase):
+            # Scalar z·I on ty: track via pytket's circuit.phase (in half-turns).
+            # pytket's get_unitary() respects add_phase, so the scalar factor
+            # appears correctly in the compiled unitary. When this term appears
+            # inside a controlled context (as a branch of PlusMap / Case /
+            # PhasedPlusMap), the enclosing branch-compile site is responsible
+            # for reading the accumulated sub-circuit .phase and promoting it
+            # to an exact-tag relative phase on the tag qubits.
+            import math as _math
+            circ.add_phase(t.theta / _math.pi)
+            if explain:
+                log.append(f"GlobalPhase(θ={t.theta:.4f}) at offset {offset}")
+            return
         if isinstance(t, WireIdentity):
             # Wire-level identity between two types of equal width: emit no gates.
             if explain:
@@ -1750,24 +1764,32 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             # reconstruct the branch input value and inject it so _normalize
             # can β-reduce Apply(Var("f"), ...) terms inside the branch.
             def _compile_branch_with_deferred(branch, branch_w, payload_base_off):
+                """Returns (cmds, phase_ht). phase_ht is the branch's accumulated
+                global phase in half-turns (from any GlobalPhase inside the
+                branch), which the caller must promote to an exact-tag relative
+                phase on the tag qubits — otherwise the scalar becomes an
+                observable relative branch operation that is silently dropped."""
                 if branch_w == 0:
-                    return []
+                    # Still compile so we can extract any accumulated global
+                    # phase from a GlobalPhase term inside the branch.
+                    sub = compile(branch, materialize=True)
+                    return [], float(sub.circuit.phase)
                 if deferred_fns:
-                    # Get parent physical wires for this branch's payload
                     parent_phys = [p.apply_new_to_old(payload_base_off + i)
                                    for i in range(branch_w)]
-                    # Get the branch's domain type for reconstruction
                     br_dom, _ = type_of(branch)
                     input_val = _reconstruct_value(parent_phys, br_dom, deferred_fns)
                     if input_val is not None and not isinstance(input_val, Id):
                         modified = _inject_input_value(branch, input_val)
                         modified = _normalize(modified)
-                        return _get_sub_cmds(compile(modified, materialize=True).circuit)
-                return _get_sub_cmds(compile(branch, materialize=True).circuit)
+                        sub = compile(modified, materialize=True)
+                        return _get_sub_cmds(sub.circuit), float(sub.circuit.phase)
+                sub = compile(branch, materialize=True)
+                return _get_sub_cmds(sub.circuit), float(sub.circuit.phase)
 
             payload_base_for_branches = offset + max(k, 1)
-            left_cmds = _compile_branch_with_deferred(t.left, left_w, payload_base_for_branches)
-            right_cmds = _compile_branch_with_deferred(t.right, right_w, payload_base_for_branches)
+            left_cmds, left_phase = _compile_branch_with_deferred(t.left, left_w, payload_base_for_branches)
+            right_cmds, right_phase = _compile_branch_with_deferred(t.right, right_w, payload_base_for_branches)
 
             if k <= 1:
                 # Simple binary case: 1 outer tag bit
@@ -1780,9 +1802,22 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 if right_cmds:
                     _emit_controlled_branch(tag_phys, right_cmds, wire_map)
 
+                # Promote each branch's accumulated global phase to an exact-tag
+                # relative phase on the tag qubit. Left branch fires at tag=0,
+                # right at tag=1. Without this, a GlobalPhase inside a branch
+                # (e.g., `phase (-1) A` as the left branch of `omap0 A B _ _`)
+                # would be silently dropped from the compiled circuit despite
+                # being an OBSERVABLE relative branch operation.
+                if abs(left_phase) > 1e-10:
+                    _emit_exact_tag_phase(circ, [tag_phys], 0, left_phase)
+                if abs(right_phase) > 1e-10:
+                    _emit_exact_tag_phase(circ, [tag_phys], 1, right_phase)
+
                 if explain:
                     log.append(f"PlusMap(k=1): {len(left_cmds)} left gates (anti-ctrl), "
-                               f"{len(right_cmds)} right gates (ctrl) at offset {offset}")
+                               f"{len(right_cmds)} right gates (ctrl); "
+                               f"left_phase_ht={left_phase:.4f}, "
+                               f"right_phase_ht={right_phase:.4f} at offset {offset}")
                 return
 
             # k >= 2: Strategy A — tag permutation sandwich
@@ -1952,6 +1987,19 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                                 for i in range(n_extra_right)] if n_extra_right > 0 else None
                 _emit_controlled_branch(msb_phys, right_cmds, right_wm,
                                         extra_anti_qubits=extras_right)
+
+            # Promote branch-accumulated global phases to exact-tag phases.
+            # After the P permutation, left summands occupy NEW tag values
+            # 0..n_left-1, and right summands occupy n_left..n_left+n_right-1.
+            # A GlobalPhase inside a branch must fire once per tag value the
+            # branch covers.
+            tag_qubits_all = [p.apply_new_to_old(offset + i) for i in range(k)]
+            if abs(left_phase) > 1e-10:
+                for tag_value in range(n_left):
+                    _emit_exact_tag_phase(circ, tag_qubits_all, tag_value, left_phase)
+            if abs(right_phase) > 1e-10:
+                for tag_value in range(n_right):
+                    _emit_exact_tag_phase(circ, tag_qubits_all, n_left + tag_value, right_phase)
 
             # Step 3: Emit P⁻¹ if non-identity
             if not is_identity_P:

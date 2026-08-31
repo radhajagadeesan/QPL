@@ -37,6 +37,25 @@ class Id:
     ty: Ty
 
 
+@dataclass(frozen=True, slots=True)
+class GlobalPhase:
+    """Scalar phase z = e^{iθ} applied uniformly: z · I on ty.
+
+    Semantic action: multiplies every amplitude by z. NOT a per-wire
+    relative phase (Rz/U1); those are the gate-level primitives Phase / Rz.
+
+    Standalone compilation: emit via pytket's `circ.add_phase(θ / π)`,
+    which tracks the scalar in the circuit's global-phase metadata and is
+    respected by `get_unitary()`. Inside controlled contexts (branch of
+    PlusMap / Case / PhasedPlusMap / etc.), the branch's accumulated
+    `.phase` must be extracted after sub-compile and promoted to an
+    exact-tag relative phase on the tag qubits, otherwise the scalar
+    becomes an observable relative branch phase that is silently dropped.
+    """
+    theta: float
+    ty: Ty
+
+
 class Seq:
     """Sequential composition of terms.
 
@@ -911,7 +930,7 @@ class DecodeQubit:
 
 
 Term = Union[
-    Id, Seq, TenTerm,
+    Id, GlobalPhase, Seq, TenTerm,
     TwistTen, AssocTenL, AssocTenR,
     TwistPlus, AssocPlusL, AssocPlusR,
     DistL, DistR, UndistL, UndistR,

@@ -41,6 +41,8 @@ from lang.terms import (
     Ctrl,
     # Qubit encoding isomorphism
     EncodeQubit, DecodeQubit,
+    # Scalar phase
+    GlobalPhase,
 )
 
 
@@ -85,6 +87,10 @@ def _free_var_width(t: Term, bound: frozenset = frozenset()) -> int:
 def type_of(t: Term) -> DomCod:
     """Return (dom, cod) for term t; raise TypeCheckError if ill-typed."""
     if isinstance(t, Id):
+        return (t.ty, t.ty)
+
+    if isinstance(t, GlobalPhase):
+        # Scalar z·I on ty: same input and output type.
         return (t.ty, t.ty)
 
     if isinstance(t, Seq):
