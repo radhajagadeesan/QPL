@@ -190,6 +190,28 @@ The compiler previously used `DecomposeBoxes()` to blow up compound gates (QCont
 
 ---
 
+## 6. Unequal-width distributivity: composition unsupported
+
+Composition across an unequal-width `DistL` is currently unsupported.
+The standalone distributor emits zero gates and an identity `WirePerm`,
+but that metadata cannot represent the tag-dependent location of a
+tensor spectator in the target payload. Consequently, distributivity
+naturality can fail under subsequent branch operations.
+
+The regression witness uses `A = Q`, `B = Q ⊗ Q`, and `C = Q`. The two
+sides of the distributivity-naturality square have full-unitary fidelity
+0.5; they disagree on all 4 tag-zero codewords and agree on the 8
+tag-one codewords. The tag-zero computation can also leave the valid
+codeword subspace. Unequal-width distributors and analogous nested-width
+cases should therefore not be relied upon until the layout-frame repair
+is complete.
+
+Compilation-strategy limitation (not a pytket limitation). Fix path is
+documented in `docs/LAYOUT_FRAME_REPAIR.md`; a failing regression
+witness lives at `ocaml/demos/dist_l_naturality_probe.{ml,output}`.
+
+---
+
 ## Summary
 
 | Limitation | Root cause | Fix path |
@@ -200,6 +222,7 @@ The compiler previously used `DecomposeBoxes()` to blow up compound gates (QCont
 | 3. Feedback not compiled | language design | Future work |
 | 4. No Python linearity checking | language design | Use OCaml pipeline |
 | ~~5. Iterated ctrl exponential blowup~~ | ~~compilation strategy~~ | **FIXED** — removed DecomposeBoxes, nested QControlBox |
+| 6. Unequal-width DistL composition | compilation strategy | Layout-frame repair (see `docs/LAYOUT_FRAME_REPAIR.md`) |
 
 **What works without limitation:**
 

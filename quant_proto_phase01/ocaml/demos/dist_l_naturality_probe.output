@@ -1,0 +1,81 @@
+
+==========================================================================
+  dist_l NATURALITY PROBE  (documentation of LIMITATIONS §6)
+==========================================================================
+
+  This probe DOCUMENTS the current-implementation behavior
+  described in docs/LIMITATIONS.md §6.  It does not assert
+  correctness; it reports what the compiler actually does.
+
+  P_L = (id_{A⊕B} ⊗ X_C) ; dist_l(A, B, C)
+  P_R = dist_l(A, B, C) ; [ (id_A ⊗ X_C) ⊕ (id_B ⊗ X_C) ]
+
+  Both : (A ⊕ B) ⊗ C  →  (A ⊗ C) ⊕ (B ⊗ C)
+  Wires: 4 (tag 1 + payload 2 + C 1);  4 (tag 1 + payload 3).
+  Valid codewords: 4 + 8 = 12 of 16 basis states.
+
+==========================================================================
+  PART 1: Compile P_L with materialize=False (symbolic wire perms)
+==========================================================================
+
+4 qubits, 1 gates
+  X q[3]
+  perm: [0, 1, 2, 3]
+
+==========================================================================
+  PART 2: Compile P_R with materialize=False (symbolic wire perms)
+==========================================================================
+
+4 qubits, 4 gates
+  X q[0]
+  CX q[0, 2]
+  X q[0]
+  CX q[0, 3]
+  perm: [0, 1, 2, 3]
+
+==========================================================================
+  PART 3: Compile P_L with materialize=True (SWAPs emitted)
+==========================================================================
+
+4 qubits, 1 gates
+  X q[3]
+  perm: [0, 1, 2, 3]
+
+==========================================================================
+  PART 4: Compile P_R with materialize=True (SWAPs emitted)
+==========================================================================
+
+4 qubits, 4 gates
+  X q[0]
+  CX q[0, 2]
+  X q[0]
+  CX q[0, 3]
+  perm: [0, 1, 2, 3]
+
+==========================================================================
+  PART 5: Observed unitary equality  (Bridge.eq_circ, materialize=True)
+==========================================================================
+
+  Bridge.eq_circ compiles both terms with materialize=True and
+  compares full 2^4 = 16-dim unitaries, including 12 valid
+  codewords + 4 padding basis states.
+
+  Observed: P_L ≠ P_R   (fidelity = 0.500000)
+
+  This is the current-implementation behavior documented in
+  docs/LIMITATIONS.md §6. Under the current WirePerm-based
+  layout state, the tag-dependent location of C in the target
+  payload cannot be represented; P_L unconditionally X's wire 3
+  (which is C only in the tag=1 branch), while P_R correctly
+  X's wire 2 in the tag=0 branch and wire 3 in the tag=1
+  branch via tag-conditioned dispatch. Repair architecture is
+  specified in docs/LAYOUT_FRAME_REPAIR.md.
+
+==========================================================================
+  END OF PROBE
+==========================================================================
+
+  This file exits 0 on both the documented behavior (fidelity 0.5)
+  and the post-repair behavior (fidelity 1.0). A change of behavior
+  is signalled by a diff against the committed .output file, not by
+  a test-runner failure.

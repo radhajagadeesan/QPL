@@ -491,10 +491,11 @@ def is_involution(p: TagPerm) -> bool:
 
 
 def handle_compile(request: dict) -> dict:
-    """Handle a compile request."""
+    """Handle a compile request. Optional 'materialize' key (bool, default False)."""
     try:
         term = parse_term(request["term"])
-        result = compile(term, materialize=False)
+        materialize_flag = bool(request.get("materialize", False))
+        result = compile(term, materialize=materialize_flag)
 
         resp = {
             "success": True,

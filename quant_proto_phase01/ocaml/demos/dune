@@ -23,6 +23,10 @@
  (libraries qpl_surface))
 
 (executable
+ (name dist_l_naturality_probe)
+ (libraries qpl_surface str))
+
+(executable
  (name qs2_dummy_sim_e2e)
  (libraries qpl_surface str))
 

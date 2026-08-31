@@ -393,6 +393,39 @@ let compile_show term =
     Printf.printf "Invalid response\n";
     CompileError ("Invalid response: " ^ String.sub response 0 (min 300 (String.length response)))
 
+(** Compile a term with materialize=True, print the circuit gates, and return the result.
+    materialize=True forces structural isomorphisms (twists, etc.) to emit real SWAP gates
+    rather than accumulate as symbolic wire permutations. Useful for backend-level testing. *)
+let compile_show_materialized term =
+  let term_json = term_to_json term in
+  let request = Printf.sprintf
+    {|{"type": "compile", "term": %s, "show_gates": true, "materialize": true}|}
+    term_json in
+
+  let response = call_bridge request in
+
+  match find_bool "success" response with
+  | Some true ->
+    (match find_string "circuit_text" response with
+     | Some text ->
+       let text = Str.global_replace (Str.regexp_string "\\n") "\n" text in
+       Printf.printf "%s\n" text
+     | None -> ());
+    (match parse_perm response, find_int "circuit_size" response with
+     | Some perm, Some size -> CompileOk (perm, size)
+     | _ -> CompileError "Failed to parse response")
+  | Some false ->
+    (match find_string "error" response with
+     | Some err ->
+       Printf.printf "Compile error: %s\n" err;
+       CompileError err
+     | None ->
+       Printf.printf "Unknown error\n";
+       CompileError "Unknown error")
+  | None ->
+    Printf.printf "Invalid response\n";
+    CompileError ("Invalid response: " ^ String.sub response 0 (min 300 (String.length response)))
+
 (** Check if a term compiles to an involutive permutation *)
 let check_involution term =
   let term_json = term_to_json term in
