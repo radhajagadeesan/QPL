@@ -212,6 +212,42 @@ witness lives at `ocaml/demos/dist_l_naturality_probe.{ml,output}`.
 
 ---
 
+## 7. Phased ⊕-Map / phased control: three confirmed bugs
+
+Diagnostic probe: `ocaml/demos/phased_map_probe_e2e.{ml,output}`.
+
+**ART-3 — Nested `phased_omap0` phases only one inner tag value.**
+`phased_omap0 z (A⊕B) C f g` at nested left summand `A⊕B` should apply
+phase `z` to all inputs whose outer tag is `left` — semantically the
+target diagonal on the 2-tag basis is `diag(z, z, 1, ?)`. The compiler
+instead emits `X q[0]; X q[1]; CU1(π) q[0,1]; X q[0]; X q[1]`, which is
+an anti-control-anti-control CU1 pattern that yields `diag(z, 1, 1, 1)`
+— phase `z` fires only at the single innermost-innermost tag basis
+state. Observed fidelity against the correct diagonal: 0.5.
+
+Related side observation: `omap0 A B (phase z A) (id B)` compiles to
+zero gates (identity), indicating branch-local phase via `phase` inside
+`omap0` is also lost — same code-path family, deferred to the same
+repair.
+
+**ART-4a — `phased_control` silently ignores its branches argument.**
+`phased_control desc phases A branches` compiles to bit-for-bit the
+same circuit for `branches = [id; id; …]` and for `branches = [X; H;
+Z; …]`. Only the `phases` array is honored; the `branches` array is
+dropped. Confirmed fidelity 1.0 between the all-id and nontrivial
+variants at arity 3.
+
+**ART-4b — `phased_control` and `control` disagree on tag ordering.**
+At arity 3 (2 tag qubits, 3 branches), `phased_control desc [z₁; z₂;
+z₃] q [id; id; id]` and `control desc q [phase z₁ q; phase z₂ q;
+phase z₃ q]` produce different unitaries (fidelity 0.25 = 1/4). The
+two APIs use different array-index → tag-basis-state conventions.
+
+**Status:** all three OPEN. They share the phased-emitter code path
+and should be repaired together.
+
+---
+
 ## Summary
 
 | Limitation | Root cause | Fix path |
@@ -223,6 +259,7 @@ witness lives at `ocaml/demos/dist_l_naturality_probe.{ml,output}`.
 | 4. No Python linearity checking | language design | Use OCaml pipeline |
 | ~~5. Iterated ctrl exponential blowup~~ | ~~compilation strategy~~ | **FIXED** — removed DecomposeBoxes, nested QControlBox |
 | 6. Unequal-width DistL composition | compilation strategy | Layout-frame repair (see `docs/LAYOUT_FRAME_REPAIR.md`) |
+| 7. Phased ⊕-Map / phased control (ART-3, ART-4a, ART-4b) | phased-emitter code path | Joint repair; probe: `demos/phased_map_probe_e2e` |
 
 **What works without limitation:**
 

@@ -27,6 +27,10 @@
  (libraries qpl_surface str))
 
 (executable
+ (name phased_map_probe_e2e)
+ (libraries qpl_surface str))
+
+(executable
  (name qs2_dummy_sim_e2e)
  (libraries qpl_surface str))
 

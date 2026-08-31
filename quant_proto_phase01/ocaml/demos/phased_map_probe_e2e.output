@@ -1,0 +1,132 @@
+
+==========================================================================
+  ART-3 PROBE: nested phased_omap0 phase support
+==========================================================================
+
+  Types:
+    X = one + one           (inner sum, 1 tag qubit)
+    Y = X + one = (one+one)+one   (nested outer sum, 2 tag qubits total)
+
+  Test term (under audit):
+    T = phased_omap0 (-1) X one (id X) (id one) : Y → Y
+    Should apply phase -1 whenever outer tag = 0, i.e. at BOTH
+    inner-tag values within the left summand.
+
+  Reference (built from orthogonal primitives — no phased_omap0):
+    R = omap0 X one (phase (-1) X) (id one) : Y → Y
+    `phase (-1) X` multiplies the whole X = one+one summand by -1,
+    then `omap0` places this on the outer left branch and id on
+    the outer right branch. Semantically the correct diagonal
+    diag(-1, -1, 1, ?).
+
+  test_term (phased_omap0):
+2 qubits, 5 gates
+  X q[0]
+  X q[1]
+  CU1 q[0, 1]
+  X q[0]
+  X q[1]
+  perm: [0, 1]
+    (gate count: 5)
+
+  ref_term  (omap0 + phase):
+2 qubits, 0 gates
+  perm: [0, 1]
+    (gate count: 0)
+
+  T = R  (nested-phase agreement):
+    NOT EQUAL   fidelity=0.500000
+
+  Second variant with z = +i (rules out sign-only coincidence):
+
+  T(+i) = R(+i):
+    NOT EQUAL   fidelity=0.790569
+
+  Control: flat (non-nested) phased_omap0 at Plus(one, one)
+  (if this fails, the bug is broader than 'nested' — it's a phase
+  bug on binary sums too):
+
+  flat_test (phased_omap0 -1 on Bool):
+1 qubits, 3 gates
+  X q[0]
+  U1 q[0]
+  X q[0]
+  perm: [0]
+    (gate count: 3)
+
+  flat_ref  (omap0 with phase -1 on left):
+1 qubits, 0 gates
+  perm: [0]
+    (gate count: 0)
+
+  flat_test = flat_ref (sanity, binary sum):
+    NOT EQUAL   fidelity=0.000000
+
+==========================================================================
+  ART-4a PROBE: does phased_control ignore its branches argument?
+==========================================================================
+
+  If phased_control silently ignores its branches argument, then
+  the compiled circuit should not depend on those branches. Test:
+    A = phased_control desc phases q [ id; id; id ]  ← all-id branches
+    B = phased_control desc phases q [ X; H; Z ]     ← nontrivial branches
+  If A = B, the branches are being dropped. If A ≠ B (fidelity < 1),
+  the branches DO affect the compiled circuit.
+
+  A (all-id) = B (nontrivial branches)   -- if EQUAL: branches ignored:
+    EQUAL       fidelity=1.000000
+
+==========================================================================
+  ART-4b PROBE: tag ordering agreement between phased_control and control
+==========================================================================
+
+  Compare phased_control's phase-array indexing to control's branch-array
+  indexing at the same arity. Test at arity 3 (2 tag qubits, 3 branches):
+    P = phased_control three [ z1; z2; z3 ] q [ id; id; id ]
+    C = control three q [ phase z1 q; phase z2 q; phase z3 q ]
+  Both should produce the same diagonal per tag basis state — if the
+  tag-index-to-basis-state mapping agrees. If P ≠ C, the two paths
+  disagree about which basis state array index i corresponds to.
+
+  P = C  (tag-ordering agreement between phased_control and control):
+    NOT EQUAL   fidelity=0.250000
+
+==========================================================================
+  FINDINGS SUMMARY
+==========================================================================
+
+  ART-3 (nested phased_omap0):  BUG CONFIRMED.
+    test_term compiled to 'X q[0]; X q[1]; CU1 q[0,1]; X q[0]; X q[1]'
+    = anti-control-anti-control CU1(π), which gives diag(-1, 1, 1, 1)
+    on the 2-tag basis. The correct diagonal is diag(-1, -1, 1, 1)
+    (phase -1 on BOTH inner-tag values within the left summand).
+    Observed fidelity 0.5 matches the reviewer's report of 'z applied
+    at only one tag value'.
+
+    Side observation: omap0 A one (phase z A) (id one) also fails to
+    track the branch-local phase (compiles to 0 gates = identity),
+    which is either a related bug in the phase-inside-omap0 pathway
+    or a case where 'phase' on a positive-wire-count type is treated
+    as a global phase and dropped. Deferred — same repair as ART-3.
+
+  ART-4a (phased_control ignores branches):  BUG CONFIRMED.
+    all-id branches with phases [-1, +i, 1] gives an identical unitary
+    to nontrivial branches [X, H, Z] with the same phases.
+    Fidelity 1.0 — the compiled circuit is bit-for-bit the same,
+    confirming the branches argument is silently dropped.
+
+  ART-4b (tag-index mapping disagreement):  BUG CONFIRMED.
+    phased_control [z1, z2, z3] with id branches and control
+    with [phase z1, phase z2, phase z3] branches disagree at 3 of 4
+    basis states (fidelity 0.25 = 1/4). The two APIs use different
+    array-index → tag-basis-state conventions at arity ≥ 3.
+
+  All three are OPEN in docs/LIMITATIONS.md-track; repair should
+  address them together since they share the phased-emitter code
+  path. This probe exits 0 on both observed and post-repair behavior;
+  the committed .output records the observed-buggy behavior for diff
+  tracking.
+
+==========================================================================
+  END OF PROBE
+==========================================================================
