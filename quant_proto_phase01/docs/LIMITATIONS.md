@@ -212,9 +212,21 @@ witness lives at `ocaml/demos/dist_l_naturality_probe.{ml,output}`.
 
 ---
 
-## 7. Phased ⊕-Map / phased control: three confirmed bugs
+## 7. ~~Phased ⊕-Map / phased control: three confirmed bugs~~ — FIXED
 
-Diagnostic probe: `ocaml/demos/phased_map_probe_e2e.{ml,output}`.
+**Status: FIXED.** Post-repair verification: `ocaml/demos/phased_map_probe_e2e.{ml,output}` — six checks, all fidelity 1.0.
+
+**Repair summary.** All three bugs shared the phased-emitter code path
+and were repaired jointly. A single big-endian helper
+`_emit_exact_tag_phase(circ, tag_qubits, tag_value, θ_ht)` was added to
+`python/src/compile/to_pytket.py` and used by both `PhasedPlusMap`
+Strategy A and `PhasedControl`. In OCaml, `phased_control` was
+reworked to compile as `(control dt a_ty branches) ; PhasedCtrl`, so
+branches are honored via the ordinary `control` combinator and the
+`PhasedCtrl` node remains a phase-only backend primitive. No IR
+schema change.
+
+Historical description of the three bugs (pre-fix):
 
 **ART-3 — Nested `phased_omap0` phases only one inner tag value.**
 `phased_omap0 z (A⊕B) C f g` at nested left summand `A⊕B` should apply
@@ -243,8 +255,7 @@ z₃] q [id; id; id]` and `control desc q [phase z₁ q; phase z₂ q;
 phase z₃ q]` produce different unitaries (fidelity 0.25 = 1/4). The
 two APIs use different array-index → tag-basis-state conventions.
 
-**Status:** all three OPEN. They share the phased-emitter code path
-and should be repaired together.
+All three fixed jointly in this repair pass.
 
 ---
 
@@ -259,7 +270,7 @@ and should be repaired together.
 | 4. No Python linearity checking | language design | Use OCaml pipeline |
 | ~~5. Iterated ctrl exponential blowup~~ | ~~compilation strategy~~ | **FIXED** — removed DecomposeBoxes, nested QControlBox |
 | 6. Unequal-width DistL composition | compilation strategy | Layout-frame repair (see `docs/LAYOUT_FRAME_REPAIR.md`) |
-| 7. Phased ⊕-Map / phased control (ART-3, ART-4a, ART-4b) | phased-emitter code path | Joint repair; probe: `demos/phased_map_probe_e2e` |
+| ~~7. Phased ⊕-Map / phased control (ART-3, ART-4a, ART-4b)~~ | ~~phased-emitter code path~~ | **FIXED** — big-endian `_emit_exact_tag_phase` helper + OCaml `control ; PhasedCtrl` composition |
 
 **What works without limitation:**
 

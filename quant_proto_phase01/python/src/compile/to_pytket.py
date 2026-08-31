@@ -442,6 +442,42 @@ def _normalize(term: Term) -> Term:
     return term
 
 
+def _emit_exact_tag_phase(circ, tag_qubits, tag_value, theta_ht):
+    """Emit an exact-tag phase gate: multiply amplitudes by e^{iπ·θ_ht} on
+    the specific basis state |tag_value⟩ of the tag register, identity elsewhere.
+
+    Uses the anti-control pattern: X-flip bits that are 0 in the big-endian
+    binary representation of tag_value, apply an all-controls-1 U1(θ_ht),
+    then unflip. Big-endian: bit j=0 is the MSB. Matches NPlusMap's
+    (branch_idx >> (k - 1 - j)) & 1 convention.
+
+    Sole entry point for exact-tag phase emission; PhasedPlusMap and
+    PhasedControl both call this so their tag conventions agree.
+    """
+    from pytket.circuit import QControlBox, Op
+    k = len(tag_qubits)
+
+    flips = [
+        j for j in range(k)
+        if ((tag_value >> (k - 1 - j)) & 1) == 0
+    ]
+
+    for j in flips:
+        circ.X(tag_qubits[j])
+
+    if k == 1:
+        circ.add_gate(OpType.U1, [theta_ht], [tag_qubits[0]])
+    elif k == 2:
+        circ.add_gate(OpType.CU1, [theta_ht],
+                      [tag_qubits[0], tag_qubits[1]])
+    else:
+        base = Op.create(OpType.U1, [theta_ht])
+        circ.add_qcontrolbox(QControlBox(base, k - 1), tag_qubits)
+
+    for j in reversed(flips):
+        circ.X(tag_qubits[j])
+
+
 def _emit_tag_perm_unitary(circ, p, tag_perm, k, offset, explain, log):
     """Emit a unitary implementing a summand-index permutation on the tag register.
 
@@ -2171,26 +2207,18 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     P_inv[P_tup[i]] = i
                 _emit_tag_perm_unitary(circ, p, tuple(P_inv), k, offset, explain, log)
 
-            # Phase application on left branch (tag ∈ left_set)
+            # Phase application on left branch (tag ∈ left_set).
+            # After Strategy A's tag permutation P, left summands occupy
+            # NEW tag values 0..n_left-1. Phase EACH of them; a single
+            # anti-control on the MSB is insufficient when n_left is not
+            # a full 2^(k-1) block (e.g., asymmetric n_left=3, n_right=1).
             sum_ty = Plus(t.ty_left, t.ty_right)
             total_tag_bits = tw_fn(sum_ty)
             half_turns = theta / math.pi
             tag_qubits = [p.apply_new_to_old(offset + i) for i in range(total_tag_bits)]
 
-            for tq in tag_qubits:
-                circ.X(tq)
-            if total_tag_bits == 1:
-                circ.add_gate(OpType.U1, [half_turns], [tag_qubits[0]])
-            elif total_tag_bits == 2:
-                circ.add_gate(OpType.CU1, [half_turns], [tag_qubits[0], tag_qubits[1]])
-            else:
-                # k >= 3: multi-controlled U1 via QControlBox
-                from pytket.circuit import QControlBox, Op
-                base_op = Op.create(OpType.U1, [half_turns])
-                qcb = QControlBox(base_op, total_tag_bits - 1)
-                circ.add_qcontrolbox(qcb, tag_qubits)
-            for tq in reversed(tag_qubits):
-                circ.X(tq)
+            for tag_value in range(n_left):
+                _emit_exact_tag_phase(circ, tag_qubits, tag_value, half_turns)
 
             if explain:
                 log.append(f"PhasedPlusMap(k={k}, θ={theta:.4f}, Strategy A): "
@@ -2209,44 +2237,19 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             # Convert radians to half-turns for pytket
             half_turns = [theta / math.pi for theta in phases]
 
-            # For each branch i, apply phase e^{iθᵢ} when tag = i
-            # Tag i has binary representation, we apply X to bits that are 0,
-            # then multi-controlled U1, then X to restore.
+            # Get the tag qubits once (same for every branch)
+            tag_qubits = [p.apply_new_to_old(offset + i) for i in range(n_tag_bits)]
+
+            # For each branch i, apply phase e^{iθᵢ} at tag basis state i,
+            # using the big-endian helper (matching NPlusMap's convention).
+            # This replaces the earlier little-endian expression and unifies
+            # the tag-indexing convention across NPlusMap/PhasedPlusMap/PhasedControl.
             for branch_idx in range(arity):
                 theta_ht = half_turns[branch_idx]
-
                 # Skip if phase is effectively 1 (theta ≈ 0 mod 2π)
                 if abs(theta_ht) < 1e-10 or abs(abs(theta_ht) - 2.0) < 1e-10:
                     continue
-
-                # Get the tag qubits
-                tag_qubits = [p.apply_new_to_old(offset + i) for i in range(n_tag_bits)]
-
-                # Determine which bits need X gates (bits that are 0 in branch_idx)
-                bits_to_flip = []
-                for bit_pos in range(n_tag_bits):
-                    if (branch_idx >> bit_pos) & 1 == 0:
-                        bits_to_flip.append(bit_pos)
-
-                # Apply X to flip the 0-bits to 1
-                for bit_pos in bits_to_flip:
-                    circ.X(tag_qubits[bit_pos])
-
-                # Apply multi-controlled U1 (all tag bits should now be 1)
-                if n_tag_bits == 1:
-                    circ.add_gate(OpType.U1, [theta_ht], [tag_qubits[0]])
-                elif n_tag_bits == 2:
-                    circ.add_gate(OpType.CU1, [theta_ht], [tag_qubits[0], tag_qubits[1]])
-                else:
-                    # k >= 3: multi-controlled U1 via QControlBox
-                    from pytket.circuit import QControlBox, Op
-                    base_op = Op.create(OpType.U1, [theta_ht])
-                    qcb = QControlBox(base_op, n_tag_bits - 1)
-                    circ.add_qcontrolbox(qcb, tag_qubits)
-
-                # Apply X to restore the 0-bits
-                for bit_pos in reversed(bits_to_flip):
-                    circ.X(tag_qubits[bit_pos])
+                _emit_exact_tag_phase(circ, tag_qubits, branch_idx, theta_ht)
 
             if explain:
                 non_trivial = sum(1 for ht in half_turns if abs(ht) >= 1e-10 and abs(abs(ht) - 2.0) >= 1e-10)

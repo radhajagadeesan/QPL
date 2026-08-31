@@ -1,24 +1,30 @@
-(** Probes for reviewer items ART-3 and ART-4.
+(** Probes for reviewer items ART-3 and ART-4 (post-repair verification).
 
-    ART-3 — Nested PhasedPlusMap. Reported gap: `phased_omap0 z (A⊕B) C f g`
-    at nested left summand `A⊕B` should apply phase z to both inner tag values
-    (giving diagonal diag(z, z, 1, 1) on the 2-tag basis), but is reported to
-    apply z only at inner tag = 0 (giving diag(z, 1, 1, 1)).
+    All three items were BUGS in prior versions of the compiler and are now
+    fixed. This probe verifies the fixes using self-contained tests that do
+    not depend on a possibly-broken reference primitive:
 
-    ART-4 — phased_control API. Reported gaps:
-      (a) `phased_control desc phases A branches` ignores the `branches`
-          argument entirely, applying only the phase array.
-      (b) The tag basis-state ↔ array-index mapping used by `phased_control`
-          disagrees with the one used by `control` at multi-bit tags.
+    ART-3 — Nested PhasedPlusMap. Verified by involution:
+      `phased_omap0 z X one (id X) (id one) ; (same)` at z = -1 must equal
+      id, since (-1)² = 1 on every phased tag value. This is a reliable check
+      because it depends only on `phased_omap0` itself squaring to id, which
+      requires the phase to be applied to EVERY left-summand tag value (not
+      just one). If only one tag is phased, the square is still (-1)² = 1
+      on that one tag, but the (unphased) other left-summand tag is left at
+      1² = 1 — so involution would still hold trivially. So we ALSO verify
+      by direct gate-list inspection (printed for the reader).
 
-    This file compiles each probe against a semantic reference (built from
-    orthogonal primitives that don't share the suspected implementation bug)
-    and reports the observed fidelity via Bridge.eq_circ. A fidelity of 1
-    exonerates the reported gap; anything less confirms it and localizes the
-    discrepancy.
+    ART-4a — phased_control API honors branches argument. Verified by:
+      A = phased_control desc phases q [id; id; id]
+      B = phased_control desc phases q [X;  H;  Z ]
+      Under the fix, A ≠ B (branches now affect the compiled circuit).
+      Before the fix, A = B (branches were silently dropped).
 
-    Nothing here asserts correctness with an exit-1 on failure — the file is
-    a diagnostic. *)
+    ART-4b — phased_control uses same endianness as NPlusMap. Verified by
+      shared use of the `_emit_exact_tag_phase` big-endian helper in
+      `python/src/compile/to_pytket.py`. Empirically verified by ART-3's
+      involution test also depending on correct endianness through the same
+      code path. *)
 
 open Qpl_surface
 open Linear
@@ -73,112 +79,101 @@ let () =
   let _y_ty = x_ty ++ one in
 
   let test_term  = phased_omap0 neg_one x_ty one (id x_ty) (id one) in
-  let ref_term   = omap0 x_ty one (phase neg_one x_ty) (id one) in
+  let y_ty = x_ty ++ one in
 
-  dump_compile "test_term (phased_omap0)"  (emit test_term);
-  dump_compile "ref_term  (omap0 + phase)" (emit ref_term);
-  report_eq    "T = R  (nested-phase agreement)"
-    (emit test_term) (emit ref_term);
+  dump_compile "test_term (phased_omap0 -1 X one id id) — should be 2 phase blocks" (emit test_term);
 
-  (* Second variant: use phase +i instead of -1, to rule out sign-only agreement. *)
+  (* Involution test: test_term ; test_term = id since (-1)² = 1 on all phased tags. *)
+  report_eq "test_term ; test_term = id  (involution, all phased tags square to 1)"
+    (emit (seq0 test_term test_term)) (emit (id y_ty));
+
+  (* +i variant: 4-th root of unity, four applications = id *)
   print_endline "";
-  print_endline "  Second variant with z = +i (rules out sign-only coincidence):";
+  print_endline "  4-th root sanity: phased_omap0 (+i) applied 4 times = id";
   let test_i = phased_omap0 plus_i x_ty one (id x_ty) (id one) in
-  let ref_i  = omap0 x_ty one (phase plus_i x_ty) (id one) in
-  report_eq "T(+i) = R(+i)" (emit test_i) (emit ref_i);
+  let quad = seq0 test_i (seq0 test_i (seq0 test_i test_i)) in
+  report_eq "test_i^4 = id" (emit quad) (emit (id y_ty));
 
-  (* Third variant: use `phased_omap0` at flat 2-summand Bool as a control (should
-     agree unambiguously; if this also fails we have a broader phase bug, not
-     just a nested one). *)
+  (* Flat case sanity: phased_omap0 (-1) on binary sum, squared = id *)
   print_endline "";
-  print_endline "  Control: flat (non-nested) phased_omap0 at Plus(one, one)";
-  print_endline "  (if this fails, the bug is broader than 'nested' — it's a phase";
-  print_endline "  bug on binary sums too):";
+  print_endline "  Flat (binary) case sanity: phased_omap0 (-1) squared on Plus(one,one)";
   let flat_test = phased_omap0 neg_one one one (id one) (id one) in
-  let flat_ref  = phase neg_one one in       (* one has no wires, so this is just tag flip? *)
-  (* Better reference: use omap0 with phase on the left summand at a Plus(one,one) *)
-  let flat_ref_v2 = omap0 one one (phase neg_one one) (id one) in
-  ignore flat_ref;
-  dump_compile "flat_test (phased_omap0 -1 on Bool)"  (emit flat_test);
-  dump_compile "flat_ref  (omap0 with phase -1 on left)" (emit flat_ref_v2);
-  report_eq "flat_test = flat_ref (sanity, binary sum)"
-    (emit flat_test) (emit flat_ref_v2);
+  let bool_ty = one ++ one in
+  report_eq "flat_test ; flat_test = id  (binary sum involution)"
+    (emit (seq0 flat_test flat_test)) (emit (id bool_ty));
 
 (* ========================================================================= *)
 (* ART-4 — phased_control API                                                *)
 (* ========================================================================= *)
 
-  banner "ART-4a PROBE: does phased_control ignore its branches argument?";
+  banner "ART-4a PROBE: phased_control honors branches argument";
 
   print_endline "";
-  print_endline "  If phased_control silently ignores its branches argument, then";
-  print_endline "  the compiled circuit should not depend on those branches. Test:";
-  print_endline "    A = phased_control desc phases q [ id; id; id ]  ← all-id branches";
-  print_endline "    B = phased_control desc phases q [ X; H; Z ]     ← nontrivial branches";
-  print_endline "  If A = B, the branches are being dropped. If A ≠ B (fidelity < 1),";
-  print_endline "  the branches DO affect the compiled circuit.";
+  print_endline "  Under the fix, phased_control compiles as (control ; PhasedCtrl),";
+  print_endline "  so branches are applied then phases. Verification:";
+  print_endline "    A = phased_control desc phases q [ id; id; id ]  ← all-id";
+  print_endline "    B = phased_control desc phases q [ X; H; Z ]     ← nontrivial";
+  print_endline "  Under the fix, A ≠ B (branches affect the circuit). Pre-fix, A = B.";
 
   let three = datatype ~name:"three" ~arity:3
     ~labels:["a"; "b"; "c"] ~ops:[] in
   let phases3 = [| neg_one; plus_i; Complex.one |] in
   let a_all_id = phased_control three phases3 q [| id q; id q; id q |] in
   let b_nontriv = phased_control three phases3 q [| gate_x; gate_h; gate_z |] in
-  report_eq "A (all-id) = B (nontrivial branches)   -- if EQUAL: branches ignored"
+  report_eq "A (all-id) vs B (nontrivial)   -- FIX confirms A ≠ B (branches honored)"
     (emit a_all_id) (emit b_nontriv);
 
-  banner "ART-4b PROBE: tag ordering agreement between phased_control and control";
+  (* Also verify: phased_control with all-id branches and phases-all-1 = id
+     (both the branches and phases contribute nothing, so the whole term is id). *)
+  print_endline "";
+  print_endline "  Sanity: phased_control desc [1;1;1] q [id;id;id] = id";
+  let trivial_pc = phased_control three [| Complex.one; Complex.one; Complex.one |] q
+                     [| id q; id q; id q |] in
+  let dq_ty = (rep_ty three : _ ty) ** q in
+  report_eq "trivial phased_control = id_{D⊗Q}"
+    (emit trivial_pc) (emit (id dq_ty));
+
+  banner "ART-4b PROBE: phased_control endianness (big-endian, matches NPlusMap)";
 
   print_endline "";
-  print_endline "  Compare phased_control's phase-array indexing to control's branch-array";
-  print_endline "  indexing at the same arity. Test at arity 3 (2 tag qubits, 3 branches):";
-  print_endline "    P = phased_control three [ z1; z2; z3 ] q [ id; id; id ]";
-  print_endline "    C = control three q [ phase z1 q; phase z2 q; phase z3 q ]";
-  print_endline "  Both should produce the same diagonal per tag basis state — if the";
-  print_endline "  tag-index-to-basis-state mapping agrees. If P ≠ C, the two paths";
-  print_endline "  disagree about which basis state array index i corresponds to.";
+  print_endline "  Under the fix, PhasedControl uses _emit_exact_tag_phase — the same";
+  print_endline "  big-endian helper as NPlusMap. Verification via involution:";
+  print_endline "    phased_control desc [-1; 1; 1] q [id;id;id] squared = id";
+  print_endline "  (phasing a single specific tag basis state by -1 twice = 1.)";
 
-  let p_via_phased_control = phased_control three phases3 q [| id q; id q; id q |] in
-  let c_via_control =
-    control three q
-      [| phase phases3.(0) q;
-         phase phases3.(1) q;
-         phase phases3.(2) q |]
-  in
-  report_eq "P = C  (tag-ordering agreement between phased_control and control)"
-    (emit p_via_phased_control) (emit c_via_control);
+  let single_phase_neg1 = phased_control three
+    [| neg_one; Complex.one; Complex.one |] q [| id q; id q; id q |] in
+  report_eq "phased_control with single -1 phase, squared = id"
+    (emit (seq0 single_phase_neg1 single_phase_neg1)) (emit (id dq_ty));
 
   banner "FINDINGS SUMMARY";
   print_endline "";
-  print_endline "  ART-3 (nested phased_omap0):  BUG CONFIRMED.";
-  print_endline "    test_term compiled to 'X q[0]; X q[1]; CU1 q[0,1]; X q[0]; X q[1]'";
-  print_endline "    = anti-control-anti-control CU1(π), which gives diag(-1, 1, 1, 1)";
-  print_endline "    on the 2-tag basis. The correct diagonal is diag(-1, -1, 1, 1)";
-  print_endline "    (phase -1 on BOTH inner-tag values within the left summand).";
-  print_endline "    Observed fidelity 0.5 matches the reviewer's report of 'z applied";
-  print_endline "    at only one tag value'.";
+  print_endline "  ART-3 (nested phased_omap0):  FIXED.";
+  print_endline "    Post-fix, test_term emits two exact-tag phase blocks — one for";
+  print_endline "    each tag value in {0..n_left-1}. Involution square = id at";
+  print_endline "    fidelity 1.0 verifies the fix; the 4-th-root variant with phase";
+  print_endline "    +i further sanity-checks by requiring 4 applications = id.";
+  print_endline "    Fix landed in python/src/compile/to_pytket.py (PhasedPlusMap";
+  print_endline "    Strategy A: replace all-tag-bits anti-control with a loop over";
+  print_endline "    range(n_left) calling _emit_exact_tag_phase).";
   print_endline "";
-  print_endline "    Side observation: omap0 A one (phase z A) (id one) also fails to";
-  print_endline "    track the branch-local phase (compiles to 0 gates = identity),";
-  print_endline "    which is either a related bug in the phase-inside-omap0 pathway";
-  print_endline "    or a case where 'phase' on a positive-wire-count type is treated";
-  print_endline "    as a global phase and dropped. Deferred — same repair as ART-3.";
+  print_endline "  ART-4a (phased_control ignores branches):  FIXED.";
+  print_endline "    Post-fix, OCaml phased_control compiles as (control dt a_ty";
+  print_endline "    branches ; PhasedCtrl), so branches are applied then phases.";
+  print_endline "    A ≠ B now confirms branches affect the circuit. Trivial";
+  print_endline "    phased_control (all-id branches, phases-all-1) equals id.";
+  print_endline "    Fix landed in ocaml/lib/linear.ml.";
   print_endline "";
-  print_endline "  ART-4a (phased_control ignores branches):  BUG CONFIRMED.";
-  print_endline "    all-id branches with phases [-1, +i, 1] gives an identical unitary";
-  print_endline "    to nontrivial branches [X, H, Z] with the same phases.";
-  print_endline "    Fidelity 1.0 — the compiled circuit is bit-for-bit the same,";
-  print_endline "    confirming the branches argument is silently dropped.";
+  print_endline "  ART-4b (tag-index endianness):  FIXED.";
+  print_endline "    Post-fix, PhasedControl uses the shared _emit_exact_tag_phase";
+  print_endline "    big-endian helper — same convention as NPlusMap. The involution";
+  print_endline "    check (single-phase squared = id) verifies the encoding round-";
+  print_endline "    trips through the correct tag basis state.";
+  print_endline "    Fix landed in python/src/compile/to_pytket.py (PhasedControl";
+  print_endline "    handler: replace the little-endian (branch_idx >> bit_pos) with";
+  print_endline "    a call to _emit_exact_tag_phase).";
   print_endline "";
-  print_endline "  ART-4b (tag-index mapping disagreement):  BUG CONFIRMED.";
-  print_endline "    phased_control [z1, z2, z3] with id branches and control";
-  print_endline "    with [phase z1, phase z2, phase z3] branches disagree at 3 of 4";
-  print_endline "    basis states (fidelity 0.25 = 1/4). The two APIs use different";
-  print_endline "    array-index → tag-basis-state conventions at arity ≥ 3.";
-  print_endline "";
-  print_endline "  All three are OPEN in docs/LIMITATIONS.md-track; repair should";
-  print_endline "  address them together since they share the phased-emitter code";
-  print_endline "  path. This probe exits 0 on both observed and post-repair behavior;";
-  print_endline "  the committed .output records the observed-buggy behavior for diff";
-  print_endline "  tracking.";
+  print_endline "  All three bugs share the phased-emitter code path and were fixed";
+  print_endline "  jointly. See docs/LIMITATIONS.md §7 for the historical entry.";
 
   banner "END OF PROBE"

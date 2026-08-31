@@ -803,9 +803,12 @@ let control (dt : datatype_desc) (a_ty : 'a ty)
 
 
 (** Phase-weighted coherent control over n-ary datatype.
-    Applies phase zᵢ to branch i using efficient log₂(k) tag encoding. *)
+    Applies phase zᵢ AND branch operation branches[i] to branch i.
+    Compiles as (control dt a_ty branches) ; (phase-only node), so the
+    branches are actually executed and then the phases are applied.
+    Uses efficient log₂(k) tag encoding for the phase step. *)
 let phased_control (dt : datatype_desc) (phases : Complex.t array) (a_ty : 'a ty)
-                   (_branches : (unit, [`Lolli of 'a * 'a]) prog array)
+                   (branches : (unit, [`Lolli of 'a * 'a]) prog array)
                    : (unit, [`Lolli of [`Tensor of 'b * 'a] * [`Tensor of 'b * 'a]]) prog =
   assert_first_order
     ~site:(Printf.sprintf "phased_control (datatype %s)" dt.name) a_ty;
@@ -824,12 +827,18 @@ let phased_control (dt : datatype_desc) (phases : Complex.t array) (a_ty : 'a ty
       Complex.arg z
   ) phases in
 
-  (* For arity 1, no control needed - just apply phase to the single branch *)
-  if dt.arity = 1 then
-    (* phase on the whole tensor D ⊗ A *)
-    let theta = angles.(0) in
-    let da = Rep.Tensor (dt.rep, a_ty) in
-    Phase (theta, da)
-  else
-    (* Emit as PhasedCtrl for backend to handle *)
-    PhasedCtrl (dt.name, dt.arity, angles, dt.rep, a_ty)
+  (* Branch action: apply each branch operation via the ordinary `control` combinator.
+     `control` validates the branch-array length against dt.arity too. *)
+  let branch_action = control dt a_ty branches in
+
+  (* Phase action: phase-only node (per-branch phase after branches have fired). *)
+  let phase_action =
+    if dt.arity = 1 then
+      let theta = angles.(0) in
+      let da = Rep.Tensor (dt.rep, a_ty) in
+      Phase (theta, da)
+    else
+      PhasedCtrl (dt.name, dt.arity, angles, dt.rep, a_ty)
+  in
+
+  seq0 branch_action phase_action
