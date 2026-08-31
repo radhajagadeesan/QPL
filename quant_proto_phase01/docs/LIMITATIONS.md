@@ -259,6 +259,39 @@ All three fixed jointly in this repair pass.
 
 ---
 
+## 8. Coherent ⊕-introduction (`Sum_αβ`) — not exposed as an artifact primitive
+
+The formal source calculus contains a coherent ⊕-introduction rule
+
+$$
+\dfrac{\Gamma_1 \vdash W_1 : A \qquad \Gamma_2 \vdash W_2 : B}
+      {\Gamma_1, \Gamma_2 \vdash [W_1 \mid W_2] : A \oplus B}
+$$
+
+that produces an `A ⊕ B` value with a freshly-allocated tag qubit
+prepped to `α|0⟩ + β|1⟩`, distinct from `Map_αβ(R_1, R_2) : (A ⊕ B) ⊸
+(C ⊕ D)` (which transforms an already-tagged sum). The artifact ships
+the Map family end-to-end (`PlusMap`, `NPlusMap`, `PhasedPlusMap`,
+`case_hom`, `datatype control`, additive iso families) but does not
+expose a first-class coherent ⊕-introduction constructor.
+
+The natural derivation `Sum = Map at source I` is not usable in the
+current DSL: while `val one : [`One] ty` exists at the type level,
+there is no term-level introduction for a value of type `one`
+(no `unit_intro`, no `star`, no `(unit, [`One]) prog` primitive), so
+the state-prep morphisms `R_1 : (unit, one ⊸ A) prog` that `omap0 one
+one _ _` would need cannot be constructed. Sum is genuinely a missing
+primitive, not merely absent sugar.
+
+The repair plan — add `Sum` to the DSL by copying the `Map` emitter
+with the source side blank (no input tag, no input payload; fresh
+output tag ancilla prepped to `α|0⟩+β|1⟩`) — is documented in
+`docs/SUM_INTRODUCTION_DESIGN.md`.
+
+**Status:** OPEN. Implementation deferred; design agreed.
+
+---
+
 ## Summary
 
 | Limitation | Root cause | Fix path |
@@ -271,6 +304,7 @@ All three fixed jointly in this repair pass.
 | ~~5. Iterated ctrl exponential blowup~~ | ~~compilation strategy~~ | **FIXED** — removed DecomposeBoxes, nested QControlBox |
 | 6. Unequal-width DistL composition | compilation strategy | Layout-frame repair (see `docs/LAYOUT_FRAME_REPAIR.md`) |
 | ~~7. Phased ⊕-Map / phased control (ART-3, ART-4a, ART-4b)~~ | ~~phased-emitter code path~~ | **FIXED** — big-endian `_emit_exact_tag_phase` helper + OCaml `control ; PhasedCtrl` composition |
+| 8. Coherent ⊕-introduction (`Sum_αβ`) — ART-5 | source-language primitive absent from surface | Design deferred; see `docs/SUM_INTRODUCTION_DESIGN.md` |
 
 **What works without limitation:**
 
