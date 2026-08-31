@@ -58,11 +58,6 @@ type ('g, 'a) prog
     [var : Prog(x:A, A)] *)
 val var : ('a * unit, 'a) prog
 
-(** Weaken: use a term in an extended context.
-    If [p : Prog(Γ, A)] then [weaken p : Prog(x:B, Γ, A)].
-    The new variable x is unused (but must be consumed elsewhere). *)
-val weaken : ('g, 'a) prog -> ('b * 'g, 'a) prog
-
 (** {2 Tensor} *)
 
 (** Tensor introduction: [pair e1 e2 : Prog(Γ1 ⊎ Γ2, A ⊗ B)]

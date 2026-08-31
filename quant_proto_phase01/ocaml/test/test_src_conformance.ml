@@ -49,7 +49,7 @@ let test_section_1 () =
 
   (* T1: Variable typing - ACCEPT *)
   print_endline "T1: Variable typing";
-  (* In Linear GADT, variables are accessed via 'var' and 'weaken' *)
+  (* In Linear GADT, variables are accessed via 'var' (weakening not exposed) *)
   let _x_id : ([`Q] * unit, [`Q]) prog = var in
   check "x : Q is well-typed (var combinator)" true;
 
@@ -122,7 +122,8 @@ let test_section_1 () =
   (* T10: REJECT let (x,y)=t in x - unused y *)
   print_endline "\nT10: REJECT let (x,y)=t in x - unused y";
   note "COMPILE-TIME GUARANTEE: Both pattern variables must be used.";
-  note "letpair var (weaken var) would leave y unused in the body.";
+  note "There is no `weaken` in the public interface, so a body that drops y";
+  note "cannot be written; the ('a * ('b * 'g2), C) prog signature forces both.";
   note "The type ('a * ('b * 'g2), C) prog requires both 'a and 'b consumed.";
   check "Unused y prevented by OCaml type system" true;
 

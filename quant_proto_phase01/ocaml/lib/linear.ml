@@ -97,7 +97,6 @@ let rec i_sum k =
 type (_, _) prog =
   (* Variables *)
   | Var : ('a * unit, 'a) prog
-  | Weaken : ('g, 'a) prog -> ('b * 'g, 'a) prog
 
   (* Tensor *)
   | Pair : ('g1, 'a) prog * ('g2, 'b) prog -> ('g1 * 'g2, [`Tensor of 'a * 'b]) prog
@@ -214,8 +213,6 @@ type (_, _) prog =
 (* ========== Smart Constructors ========== *)
 
 let var = Var
-
-let weaken p = Weaken p
 
 let pair e1 e2 = Pair (e1, e2)
 
@@ -389,7 +386,6 @@ let case_het (ty_a : 'a ty) (ty_b : 'b ty) (ty_g : 'g ty)
    Variables are emitted as identity (they represent wire positions). *)
 let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
   | Var -> Bridge.TId (Rep.var 0)
-  | Weaken p -> emit_any p
 
   | Pair (e1, e2) -> Bridge.TTenTerm (emit_any e1, emit_any e2)
   | LetPair (e1, body) -> Bridge.TSeq (emit_any e1, emit_any body)
