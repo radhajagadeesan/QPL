@@ -169,27 +169,6 @@ Not a pytket limitation.
 
 ---
 
-## 5. ~~Iterated ctrl: Exponential Gate Blowup~~ — FIXED
-
-**Status: FIXED.** The exponential gate blowup from iterated `ctrl` has been eliminated.
-
-The compiler previously used `DecomposeBoxes()` to blow up compound gates (QControlBox, UnitaryNqBox) into primitives before re-controlling each one. This caused exponential growth: at level k, the compound gate from level k-1 was decomposed into many primitives, each wrapped with a new control.
-
-**Fix:** Removed `DecomposeBoxes`. `QControlBox(op, n)` wraps ANY op — including other QControlBoxes — so nested control is expressed directly without decomposition.
-
-**Note on gate counts:** The gate counts reported by `circuit.n_gates` are **pytket box counts** — each `QControlBox` counts as 1 regardless of how many primitive gates it decomposes into. The table below shows pytket box counts, not primitive gate counts:
-
-| k | ctrl^k(X) | ctrl^k(H) |
-|:---:|---:|---:|
-| 1 | 1 (CX) | 1 (CH) |
-| 2 | 1 (CCX) | 1 (QControlBox) |
-| 3 | 1 (CnX) | 1 (QControlBox) |
-| 4 | 1 (CnX) | 1 (QControlBox) |
-
-`ctrl` controls the **wires** of A, not individual gates. For `ctrl(f)` where `f : A ⊸ A`, the tag qubit gates the entire A wire bundle. pytket handles nested QControlBoxes correctly when computing unitaries.
-
----
-
 ## 6. Unequal-width distributivity: composition unsupported
 
 Composition across an unequal-width `DistL` is currently unsupported.
@@ -209,53 +188,6 @@ is complete.
 Compilation-strategy limitation (not a pytket limitation). Fix path is
 documented in `docs/LAYOUT_FRAME_REPAIR.md`; a failing regression
 witness lives at `ocaml/demos/dist_l_naturality_probe.{ml,output}`.
-
----
-
-## 7. ~~Phased ⊕-Map / phased control: three confirmed bugs~~ — FIXED
-
-**Status: FIXED.** Post-repair verification: `ocaml/demos/phased_map_probe_e2e.{ml,output}` — six checks, all fidelity 1.0.
-
-**Repair summary.** All three bugs shared the phased-emitter code path
-and were repaired jointly. A single big-endian helper
-`_emit_exact_tag_phase(circ, tag_qubits, tag_value, θ_ht)` was added to
-`python/src/compile/to_pytket.py` and used by both `PhasedPlusMap`
-Strategy A and `PhasedControl`. In OCaml, `phased_control` was
-reworked to compile as `(control dt a_ty branches) ; PhasedCtrl`, so
-branches are honored via the ordinary `control` combinator and the
-`PhasedCtrl` node remains a phase-only backend primitive. No IR
-schema change.
-
-Historical description of the three bugs (pre-fix):
-
-**ART-3 — Nested `phased_omap0` phases only one inner tag value.**
-`phased_omap0 z (A⊕B) C f g` at nested left summand `A⊕B` should apply
-phase `z` to all inputs whose outer tag is `left` — semantically the
-target diagonal on the 2-tag basis is `diag(z, z, 1, ?)`. The compiler
-instead emits `X q[0]; X q[1]; CU1(π) q[0,1]; X q[0]; X q[1]`, which is
-an anti-control-anti-control CU1 pattern that yields `diag(z, 1, 1, 1)`
-— phase `z` fires only at the single innermost-innermost tag basis
-state. Observed fidelity against the correct diagonal: 0.5.
-
-Related side observation: `omap0 A B (phase z A) (id B)` compiles to
-zero gates (identity), indicating branch-local phase via `phase` inside
-`omap0` is also lost — same code-path family, deferred to the same
-repair.
-
-**ART-4a — `phased_control` silently ignores its branches argument.**
-`phased_control desc phases A branches` compiles to bit-for-bit the
-same circuit for `branches = [id; id; …]` and for `branches = [X; H;
-Z; …]`. Only the `phases` array is honored; the `branches` array is
-dropped. Confirmed fidelity 1.0 between the all-id and nontrivial
-variants at arity 3.
-
-**ART-4b — `phased_control` and `control` disagree on tag ordering.**
-At arity 3 (2 tag qubits, 3 branches), `phased_control desc [z₁; z₂;
-z₃] q [id; id; id]` and `control desc q [phase z₁ q; phase z₂ q;
-phase z₃ q]` produce different unitaries (fidelity 0.25 = 1/4). The
-two APIs use different array-index → tag-basis-state conventions.
-
-All three fixed jointly in this repair pass.
 
 ---
 
@@ -321,41 +253,6 @@ this entry.
 
 ---
 
-## 10. ~~CaseExpr bypass of first-order guard~~ — FIXED (ART-1)
-
-**Status: FIXED.** Regression tests:
-`python/tests/test_case_expr_first_order_guard.py` (2/2 passed).
-
-Prior to the fix, `_assert_first_order_sum_payloads` in
-`python/src/compile/to_pytket.py` recognized `Case` but not `CaseExpr`.
-Since `CaseExpr` is desugared to `Seq(scrut, Case(...))` AT compile
-time and the first-order guard runs BEFORE desugaring, the ordinary
-OCaml case path (which emits `CaseExpr` on the wire per
-`bridge.ml:254`, JSON node name `"CaseExpr"`) could reach compile
-through the guard without ever tripping the outer-node inspection.
-Recursion into subterms was already correct
-(`_subterms(CaseExpr)` yields `scrut`, `left`, `right`); the missing
-piece was the outer-node check.
-
-**Fix:** one arm added to `_walk` inside
-`_assert_first_order_sum_payloads`:
-
-```python
-elif isinstance(t, CaseExpr):
-    _check_sum_output(t, "CaseExpr")
-```
-
-Two end-to-end regression tests in `test_case_expr_first_order_guard.py`:
-- **Negative:** a `CaseExpr` whose branches return `Q ⊸ Q` (i.e., output
-  summands would contain `Lolli`) is rejected with a "first-order"
-  error via `TypeCheckError`.
-- **Positive:** a `CaseExpr` that CONSUMES higher-order resources in
-  scope but RETURNS first-order summand values is accepted (the
-  first-order guard does not fire — other errors may occur but not
-  this one, verified in-test).
-
-No formal-paper change needed.
-
 | Limitation | Root cause | Fix path |
 |:---|:---:|:---|
 | 1a. Sum ≤ 8 summands | pytket | pytket `UnitaryNqBox` |
@@ -363,12 +260,9 @@ No formal-paper change needed.
 | 2. ExpInvolution ≤ 3 qubits | pytket | pytket `UnitaryNqBox` |
 | 3. Feedback not compiled | language design | Future work |
 | 4. No Python linearity checking | language design | Use OCaml pipeline |
-| ~~5. Iterated ctrl exponential blowup~~ | ~~compilation strategy~~ | **FIXED** — removed DecomposeBoxes, nested QControlBox |
 | 6. Unequal-width DistL composition | compilation strategy | Layout-frame repair (see `docs/LAYOUT_FRAME_REPAIR.md`) |
-| ~~7. Phased ⊕-Map / phased control (ART-3, ART-4a, ART-4b)~~ | ~~phased-emitter code path~~ | **FIXED** — big-endian `_emit_exact_tag_phase` helper + OCaml `control ; PhasedCtrl` composition |
 | 8. Coherent ⊕-introduction (`Sum_αβ`) — ART-5 | source-language primitive absent from surface | Design deferred; see `docs/SUM_INTRODUCTION_DESIGN.md` |
 | 9. Legacy `EncodeQubit` / `DecodeQubit` — ART-7 | pre-log-tag one-hot encoding | Excluded via `LEGACY` docstring markers; not reachable from OCaml surface |
-| ~~10. CaseExpr bypass of first-order guard~~ — ART-1 | ~~missing CaseExpr arm in `_walk`~~ | **FIXED** — CaseExpr arm added; regression tests in `test_case_expr_first_order_guard.py` |
 
 **What works without limitation:**
 
