@@ -2063,40 +2063,45 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
                     sub = compile(branch_to_compile, materialize=True, env=sub_env)
                     sub_cmds = _get_sub_cmds(sub.circuit)
+                    branch_phase_ht = float(sub.circuit.phase)
 
-                    if not sub_cmds:
-                        continue
+                    if sub_cmds:
+                        ctx_parent_phys = []
+                        for name, ty_fv in fv_in_env:
+                            ctx_parent_phys.extend(env[name])
 
-                    ctx_parent_phys = []
-                    for name, ty_fv in fv_in_env:
-                        ctx_parent_phys.extend(env[name])
+                        def make_wire_map_open(_pw=branch_pw, _pb=payload_base,
+                                               _cpp=list(ctx_parent_phys)):
+                            def wire_map(w):
+                                if w < _pw:
+                                    return p.apply_new_to_old(_pb + w)
+                                else:
+                                    return _cpp[w - _pw]
+                            return wire_map
 
-                    def make_wire_map_open(_pw=branch_pw, _pb=payload_base,
-                                           _cpp=list(ctx_parent_phys)):
-                        def wire_map(w):
-                            if w < _pw:
-                                return p.apply_new_to_old(_pb + w)
-                            else:
-                                return _cpp[w - _pw]
-                        return wire_map
-
-                    _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
-                                          make_wire_map_open())
+                        _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
+                                              make_wire_map_open())
                 else:
                     # Closed branch (or no relevant free vars in scope).
                     sub = compile(br, materialize=True)
                     sub_cmds = _get_sub_cmds(sub.circuit)
+                    branch_phase_ht = float(sub.circuit.phase)
 
-                    if not sub_cmds:
-                        continue
+                    if sub_cmds:
+                        def make_wire_map(pb=payload_base):
+                            def wire_map(w):
+                                return p.apply_new_to_old(pb + w)
+                            return wire_map
 
-                    def make_wire_map(pb=payload_base):
-                        def wire_map(w):
-                            return p.apply_new_to_old(pb + w)
-                        return wire_map
+                        _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
+                                              make_wire_map())
 
-                    _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
-                                          make_wire_map())
+                # Promote branch's accumulated global phase to an exact-tag
+                # relative phase at tag value i. Applies even when the branch
+                # has no gates (pure-GlobalPhase branch), so the scalar is
+                # not silently dropped.
+                if abs(branch_phase_ht) > 1e-10 and tag_phys:
+                    _emit_exact_tag_phase(circ, tag_phys, i, branch_phase_ht)
 
             if explain:
                 log.append(f"NPlusMap(n={n_branches}, k={k}): "
@@ -2115,14 +2120,21 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             n_sum = n_left + n_right
             k = math.ceil(math.log2(n_sum)) if n_sum > 1 else 0
 
-            # Compile branches to sub-circuits
+            # Compile branches to sub-circuits. Extract accumulated global
+            # phase so any GlobalPhase inside a branch (as opposed to the
+            # PhasedPlusMap's own phase parameter) is not silently dropped
+            # during the commands-only extraction.
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
-            left_cmds = _get_sub_cmds(compile(t.left, materialize=True).circuit) if left_w > 0 else []
+            _left_sub = compile(t.left, materialize=True)
+            left_cmds = _get_sub_cmds(_left_sub.circuit) if left_w > 0 else []
+            left_branch_phase_ht = float(_left_sub.circuit.phase)
 
             right_dom, _ = type_of(t.right)
             right_w = width(right_dom)
-            right_cmds = _get_sub_cmds(compile(t.right, materialize=True).circuit) if right_w > 0 else []
+            _right_sub = compile(t.right, materialize=True)
+            right_cmds = _get_sub_cmds(_right_sub.circuit) if right_w > 0 else []
+            right_branch_phase_ht = float(_right_sub.circuit.phase)
 
             if k <= 1:
                 tag_phys = p.apply_new_to_old(offset)
@@ -2140,9 +2152,21 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 circ.add_gate(OpType.U1, [half_turns], [tag_phys])
                 circ.X(tag_phys)
 
+                # Promote branch-accumulated global phases to exact-tag
+                # relative phases on the tag qubit, in addition to the
+                # PhasedPlusMap's own phase parameter above. Without this,
+                # a GlobalPhase inside a branch would be silently dropped.
+                if abs(left_branch_phase_ht) > 1e-10:
+                    _emit_exact_tag_phase(circ, [tag_phys], 0, left_branch_phase_ht)
+                if abs(right_branch_phase_ht) > 1e-10:
+                    _emit_exact_tag_phase(circ, [tag_phys], 1, right_branch_phase_ht)
+
                 if explain:
                     log.append(f"PhasedPlusMap(k=1, θ={theta:.4f}): {len(left_cmds)} left, "
-                               f"{len(right_cmds)} right at offset {offset}")
+                               f"{len(right_cmds)} right; "
+                               f"left_branch_phase_ht={left_branch_phase_ht:.4f}, "
+                               f"right_branch_phase_ht={right_branch_phase_ht:.4f} "
+                               f"at offset {offset}")
                 return
 
             # k >= 2: Strategy A — tag permutation sandwich
@@ -2252,6 +2276,20 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 right_wm = lambda w, stw=tw_right: p.apply_new_to_old(
                     _sub_wire_to_full(w, stw, offset, k))
                 _emit_controlled_branch(msb_phys, right_cmds, right_wm)
+
+            # Promote branch-accumulated global phases to exact-tag relative
+            # phases at each tag value the branch covers. After the P
+            # permutation, left summands live at NEW tag values 0..n_left-1
+            # and right at n_left..n_left+n_right-1. Emits ONLY when a
+            # branch's `.phase` is non-trivial; the PhasedPlusMap's own
+            # phase parameter has already been applied below.
+            tag_qubits_all_pp = [p.apply_new_to_old(offset + i) for i in range(k)]
+            if abs(left_branch_phase_ht) > 1e-10:
+                for tag_value in range(n_left):
+                    _emit_exact_tag_phase(circ, tag_qubits_all_pp, tag_value, left_branch_phase_ht)
+            if abs(right_branch_phase_ht) > 1e-10:
+                for tag_value in range(n_right):
+                    _emit_exact_tag_phase(circ, tag_qubits_all_pp, n_left + tag_value, right_branch_phase_ht)
 
             # Step 3: Emit P⁻¹
             if not is_identity_P:
