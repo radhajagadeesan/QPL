@@ -865,8 +865,18 @@ class Ctrl:
 
 @dataclass(frozen=True, slots=True)
 class EncodeQubit:
-    """Encode a primitive qubit into one-hot sum type: Q → I + I.
+    """LEGACY (pre-log-tag encoding, outside the active formal interface).
 
+    Encode a primitive qubit into a two-wire ONE-HOT sum: Q → I + I.
+    Superseded by the current log-tag encoding, where `Plus(Unit, Unit)`
+    is a single tag qubit (not two one-hot wires). This constructor is
+    not exposed through the OCaml → Bridge → Python pipeline; it exists
+    only in the direct Python term API, which is itself deprecated for
+    user-facing use (see README warnings). Retained for backward
+    compatibility of the Python direct-API test suite. Documented in
+    docs/LIMITATIONS.md §9.
+
+    Legacy semantics (one-hot encoding):
     Allocates an ancilla |0⟩ internally. Circuit: CX[0,1]; X[0]
 
     Maps:
@@ -880,8 +890,14 @@ class EncodeQubit:
 
 @dataclass(frozen=True, slots=True)
 class DecodeQubit:
-    """Decode one-hot sum type back to primitive qubit: I + I → Q.
+    """LEGACY (pre-log-tag encoding, outside the active formal interface).
 
+    Decode one-hot sum type back to primitive qubit: I + I → Q.
+    Superseded by the current log-tag encoding; retained for the
+    Python direct-API test suite. See EncodeQubit's docstring and
+    docs/LIMITATIONS.md §9.
+
+    Legacy semantics (one-hot encoding):
     Deallocates ancilla (returns to |0⟩). Circuit: X[0]; CX[0,1]
 
     Maps:

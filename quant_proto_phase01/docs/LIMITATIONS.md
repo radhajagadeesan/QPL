@@ -292,6 +292,35 @@ output tag ancilla prepped to `α|0⟩+β|1⟩`) — is documented in
 
 ---
 
+## 9. Legacy `EncodeQubit` / `DecodeQubit` — explicitly excluded
+
+`EncodeQubit` and `DecodeQubit` (defined in
+`python/src/lang/terms.py`) are Python direct-API primitives that
+encode a qubit into a two-wire one-hot representation
+(`Q → I + I` via CX + X, and back). This encoding is **superseded** by
+the current log-tag layout, under which `Plus(one, one)` is a single
+tag qubit with no payload — so the one-hot two-wire semantics does not
+match the shipped representation.
+
+These primitives are **outside the active formal interface**: they are
+not exposed through the OCaml surface, not carried by the OCaml → Bridge
+JSON encoding, and not reachable from the OCaml-only entry point that
+the artifact prescribes for user-facing use. They remain in the Python
+term IR only to keep the Python direct-API test suite
+(`python/tests/test_encode_decode.py`) and the Python-side
+`case_demo.py` intact.
+
+Both class docstrings carry an explicit `LEGACY` marker pointing at
+this entry. The reviewer (R1)'s ART-7 concern is addressed by explicit
+exclusion (as opposed to removal or realignment); users following the
+OCaml-only pipeline will never encounter them, and the Python direct
+API is itself deprecated for user-facing use (see README warnings).
+
+**Status:** CONDITIONAL / documented exclusion. No fix required beyond
+this entry.
+
+---
+
 ## Summary
 
 | Limitation | Root cause | Fix path |
@@ -305,6 +334,7 @@ output tag ancilla prepped to `α|0⟩+β|1⟩`) — is documented in
 | 6. Unequal-width DistL composition | compilation strategy | Layout-frame repair (see `docs/LAYOUT_FRAME_REPAIR.md`) |
 | ~~7. Phased ⊕-Map / phased control (ART-3, ART-4a, ART-4b)~~ | ~~phased-emitter code path~~ | **FIXED** — big-endian `_emit_exact_tag_phase` helper + OCaml `control ; PhasedCtrl` composition |
 | 8. Coherent ⊕-introduction (`Sum_αβ`) — ART-5 | source-language primitive absent from surface | Design deferred; see `docs/SUM_INTRODUCTION_DESIGN.md` |
+| 9. Legacy `EncodeQubit` / `DecodeQubit` — ART-7 | pre-log-tag one-hot encoding | Excluded via `LEGACY` docstring markers; not reachable from OCaml surface |
 
 **What works without limitation:**
 
