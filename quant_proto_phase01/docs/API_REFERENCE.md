@@ -188,9 +188,18 @@ sub-circuit gates under multi-control. This mirrors the binary `PlusMap`
 open-branch path — the deferred-Lam mechanism propagates through any depth
 of nested PlusMap/NPlusMap.
 
-**OCaml frontend (higher-order):** `o_n_plusmap : 'a ty array -> 'c ty -> ('g, 'c) oterm array -> Lolli oterm`.
-Branches share OCaml context `'g`; use `oshift` to pad branches that only
-reference a subset of the variables. See `ocaml/demos/n_plusmap_e2e.ml`.
+**OCaml frontend (higher-order):**
+`o_n_plusmap : 'c ty -> ('parts, 'c) branches -> ('g, 'parts) partition -> Lolli oterm`.
+
+Each branch is typed under its **own** branch-local context and carries its
+summand type in `BCons`; the `partition` witness proves those contexts are a
+total, disjoint cover of `'g`. There is no padding combinator — inactive
+resources are identity-transported at lowering time.
+
+If a resource is needed by **every** branch, it does not belong in a
+branch-local context: route it through the sum payload with `dist_r` and
+recover the tag-preserving form with `undist`. See
+`ocaml/demos/n_plusmap_e2e.ml` and `docs/BRANCH_CONTEXT_LINEARITY.md`.
 
 **Type helper:**
 ```python

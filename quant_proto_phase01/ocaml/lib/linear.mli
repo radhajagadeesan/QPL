@@ -58,6 +58,29 @@ type ('g, 'a) prog
     [var : Prog(x:A, A)] *)
 val var : ('a * unit, 'a) prog
 
+(** Coherent sum introduction: [sum_ alpha beta r1 r2] builds
+    [[alpha r1 | beta r2] : A (+) B] from [G1 |- r1 : A] and [G2 |- r2 : B].
+
+    Both weights must have modulus 1. These are unit-modulus branch weights
+    of a unitary block map [alpha W1 (+) beta W2], NOT amplitudes of a
+    prepared superposition: no state preparation occurs and the condition is
+    not [|alpha|^2 + |beta|^2 = 1]. Raises [Invalid_argument] otherwise.
+
+    Premises follow the logical rule exactly: [G1 |- r1 : A] and
+    [G2 |- r2 : B] give [G1, G2 |- [a r1 | b r2] : A (+) B]. There is no [I]
+    in the rule and none is required here -- the surface has no term-level
+    introduction for the tensor unit.
+
+    Executable coverage this round is limited to CLOSED premises; open
+    premises need inactive-context completion (Sum-complete) via the frame
+    inclusions j_i^eps, which are deferred, and are rejected before emission
+    rather than approximated.
+
+    See docs/SUM_INTRODUCTION_DESIGN.md. *)
+val sum_ : Complex.t -> Complex.t
+        -> ('g1, 'a) prog -> ('g2, 'b) prog
+        -> ('g1 * 'g2, [`Plus of 'a * 'b]) prog
+
 (** {2 Tensor} *)
 
 (** Tensor introduction: [pair e1 e2 : Prog(Γ1 ⊎ Γ2, A ⊗ B)]
@@ -406,8 +429,33 @@ type (_, _) oterm
 (** Variable reference at position 0 in a singleton context *)
 val ovar : string -> 'a ty -> ('a * unit, 'a) oterm
 
-(** Context weakening: add an unused variable to the front *)
-val oshift : 'b ty -> ('g, 'a) oterm -> ('b * 'g, 'a) oterm
+(** {2 Coherent branch assembly}
+
+    There is no term-level weakening. Branches of an n-ary ⊕-Map are typed
+    under their own branch-local contexts; a [partition] witness proves those
+    contexts form a total, disjoint cover of the conclusion context.
+
+    [PLast] forces the last branch's context to be exactly the remainder and
+    [split] has no drop constructor, so a resource owned by no branch is
+    unrepresentable. Inactive resources are identity-transported at lowering
+    time — this is inactive-context completion, not weakening.
+
+    A resource needed by *every* alternative does not belong in a
+    branch-local context: route it through the sum payload with [dist_r] and
+    recover the tag-preserving form with [undist]. *)
+type (_, _) partition =
+  | PLast : ('g, 'g * unit) partition
+  | PCons : ('g1, 'g2, 'g) split * ('g2, 'gs) partition
+         -> ('g, 'g1 * 'gs) partition
+
+(** Branch vector for [o_n_plusmap]. Each branch carries its own summand type,
+    so summand-count and branch-count agree structurally rather than by a
+    runtime length check. The ['parts] index matches [partition]'s, so the
+    two cannot get out of step. *)
+type (_, _) branches =
+  | BNil  : (unit, 'c) branches
+  | BCons : 'a ty * ('g, 'c) oterm * ('gs, 'c) branches
+         -> ('g * 'gs, 'c) branches
 
 (** Tensor introduction (pairing) *)
 val opair : ('g1, 'a) oterm -> ('g2, 'b) oterm -> ('g1, 'g2, 'g) split
@@ -436,17 +484,21 @@ val oplusmap : 'a ty -> 'b ty
             -> ('g1, 'g2, 'g) split
             -> ('g, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) oterm
 
-(** n-ary ⊕-Map (open). All branches share context 'g and produce homogeneous
-    output type 'c. The summand input types are given as an array.
+(** n-ary ⊕-Map (open). Branches are typed under their own branch-local
+    contexts and produce homogeneous output type 'c; the [partition] witness
+    proves those contexts are a total, disjoint cover of the conclusion
+    context. Linearity is enforced by this constructor — a branch is linear at
+    its own context, and no resource can be owned by zero branches.
 
-    For n=2 this is semantically equivalent to [oplusmap] with summand_types
-    [| 'a; 'b |]. Use this directly when you have n>2 summands to avoid the
-    asymmetric-binary nesting issues.
+    For n=2 this is semantically equivalent to [oplusmap]. Use this directly
+    when you have n>2 summands to avoid the asymmetric-binary nesting issues.
 
-    Result type uses existential sum types (pragmatic loose typing mirroring
-    prog-level [omapn]/[NMap]) — the n-ary sum is tracked at Bridge/Python
-    level via the [summand_types] array. *)
-val o_n_plusmap : 'a ty array -> 'c ty -> ('g, 'c) oterm array
+    The result Lolli's sum types remain existential ('sum_in, 'sum_out); the
+    n-ary sum is tracked at Bridge/Python level from the branch summand types.
+    That is a sum-type frame question, not a linearity one. *)
+val o_n_plusmap : 'c ty
+              -> ('parts, 'c) branches
+              -> ('g, 'parts) partition
               -> ('g, [`Lolli of 'sum_in * 'sum_out]) oterm
 
 (** Identity morphism *)

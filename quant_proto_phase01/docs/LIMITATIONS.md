@@ -264,12 +264,66 @@ this entry.
 | 8. Coherent ⊕-introduction (`Sum_αβ`) — ART-5 | source-language primitive absent from surface | Design deferred; see `docs/SUM_INTRODUCTION_DESIGN.md` |
 | 9. Legacy `EncodeQubit` / `DecodeQubit` — ART-7 | pre-log-tag one-hot encoding | Excluded via `LEGACY` docstring markers; not reachable from OCaml surface |
 
-**What works without limitation:**
+## 10. Block/Sum executable coverage
 
-- Binary sums (`A ⊕ B`): all operations
+The executable Block/Sum backend uses an environment-aware direct lowering
+for open branches. Its dense synthesis fallback is presently restricted to
+closed blocks whose completed source and target share a canonical frame.
+Blocks requiring dense synthesis across noncoincident frames are rejected
+before emission. **This is an executable-coverage restriction, not a
+restriction of the source calculus, denotational rule, or reference
+emitter.**
+
+Strategy is chosen by capability dispatch, before any circuit mutation:
+
+```
+if has_open_branches(block):        require fast_path_supports(block); emit_fast(block, env)
+elif fast_path_supports(block):     emit_fast(block, env)
+elif source_frame == target_frame:  synthesize_block(block)
+else:                               reject: asymmetric Block synthesis
+```
+
+`fast_path_supports` holds when every summand is a single leaf, so branch
+*i* owns exactly tag value *i* and exact-tag dispatch applies. Dense
+synthesis is **never** invoked with `env=None` on an open block: compiling
+an open branch standalone yields a unitary carrying its own free-variable
+context wires, whose top-left corner is unrelated to the branch's action.
+Splatting that would keep every index in range and silently miscompile —
+which is what this dispatch exists to prevent.
+
+Deferred to the frame-aware repair round — collected with the other three
+deferred items under *The frame-aware round* in
+`docs/COMPILER_INVARIANTS.md`. The repair is two-sided synthesis
+
+$$
+U_{\mathrm{sel}} = \sum_i \gamma_i\, j_i^+ U_i (j_i^-)^\dagger,
+\qquad\text{equivalently}\qquad
+U j_i^- = j_i^+ \gamma_i U_i,
+$$
+
+followed by the fixed canonical bijection from unused source words to
+unused target words. This is deferred rather than approximated because
+$j_i^\pm$ do not yet exist explicitly in the implementation (index maps are
+computed inline), and introducing ad-hoc frame conversions in their place
+is exactly the class of defect this document exists to stop.
+
+Tests: `python/tests/test_nplusmap_frame_dispatch.py` — canonical frame,
+reassociation invariance, open-branch routing, rejection before emission,
+asymmetric-frame rejection.
+
+---
+
+**What the executable backend covers** (qualified — see §10 for the
+Block/Sum coverage restriction):
+
+- Binary sums (`A ⊕ B`): all operations **whose branches meet the
+  Block/Sum coverage conditions in §10**
 - Nested sums up to 8 summands: auto-flattened to NPlusMap (preferred), with Strategy A/B fallback for opaque branches
 - Tensor types: unlimited nesting depth and width
 - Higher-order terms: Lam, Apply, Cup, Cap, Var, LetPair
 - All gates with arbitrary control nesting via `QControlBox` (O(1) pytket boxes per ctrl level; primitive gate count is higher)
 - Multi-controlled composites: `Ctrl(PlusMap(...))`, `Ctrl(ExpInvolution(...))`, etc.
 - Full OCaml → Python → circuit pipeline
+
+Cases outside §10's coverage are **rejected before emission**, never
+silently miscompiled.

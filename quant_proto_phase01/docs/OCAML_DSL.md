@@ -348,23 +348,47 @@ val o_n_plusmap : 'a ty array -> 'c ty -> ('g, 'c) oterm array
               -> ('g, [`Lolli of 'sum_in * 'sum_out]) oterm
 ```
 
-- `summand_types`: array of input summand types `[|a_0; ...; a_{n-1}|]`
 - `output_ty`: common output type `c` for all branches
-- `branches`: array of bare oterms, each producing a value of type `c`. All
-  branches share the OCaml context type `'g` — use `oshift` to pad branches
-  whose body references only a subset of `'g`'s variables.
+- `branches`: a `BCons`/`BNil` vector. Each entry carries its own summand type
+  and an oterm producing `c` **under that branch's own context** — so
+  summand-count and branch-count cannot disagree.
+- `partition`: a `PCons`/`PLast` witness proving the branch-local contexts are
+  a total, disjoint cover of the conclusion context `'g`.
 - Result: a Lolli value `(⊕^n a_i) ⊸ (⊕^n c)` with existential sum types.
+
+There is **no padding combinator**. A branch is linear at its own context, and
+`PLast` forces the final branch to own exactly the remainder, so a resource
+belonging to no branch cannot be expressed. Inactive resources are
+identity-transported through the other alternatives at lowering time —
+inactive-context completion, not weakening.
 
 ```ocaml
 (* Example: 3-branch select dispatch (Z_3, asymmetric) *)
-let pad b = oshift qq_ty (oshift qq_ty b) in
-let pm = o_n_plusmap [| ia; ia; ia |] ia
-  [| pad (apply_branch "f0");
-     pad (apply_branch "f1");
-     pad (apply_branch "f2"); |]
+let branches =
+  BCons (ia, apply_branch "f0",
+  BCons (ia, apply_branch "f1",
+  BCons (ia, apply_branch "f2", BNil)))
+
+let part3 =                              (* each branch owns one slot *)
+  PCons (SLeft (SRight (SRight SNil)),
+  PCons (SLeft (SRight SNil),
+  PLast))
+
+let pm = o_n_plusmap ia branches part3
 ```
 
-See `ocaml/demos/n_plusmap_e2e.ml` for a complete example.
+**Shared resources.** A resource needed by *every* branch does not go in a
+branch-local context. Route it through the sum payload with `dist_r`, let each
+branch consume it linearly, and recover the tag-preserving form with `undist`:
+
+```
+G ⊗ (A ⊕ B)  --dist_r-->  (G ⊗ A) ⊕ (G ⊗ B)  --⊕-map-->  C ⊕ D  --undist-->  ...
+```
+
+`ocase_hom` is the closed-branch specialization of exactly this pattern.
+
+See `ocaml/demos/n_plusmap_e2e.ml` for a complete example, and
+`docs/BRANCH_CONTEXT_LINEARITY.md` for the design rationale.
 
 ### n-ary Distributivity (`n_dist`, `n_factor`)
 

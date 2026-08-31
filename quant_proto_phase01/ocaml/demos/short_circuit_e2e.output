@@ -298,9 +298,9 @@ phase_w_nary = phased_control w_datatype phases one [id; id; id]
   CU1 q[0, 1]
   X q[0]
   X q[1]
-  X q[0]
+  X q[1]
   CU1 q[0, 1]
-  X q[0]
+  X q[1]
   perm: [0, 1]
 
   Expected gate pattern:

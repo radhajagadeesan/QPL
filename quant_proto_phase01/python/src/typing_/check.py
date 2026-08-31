@@ -43,6 +43,10 @@ from lang.terms import (
     EncodeQubit, DecodeQubit,
     # Scalar phase
     GlobalPhase,
+    # Datatype control
+    DatatypeControl,
+    # Coherent sum introduction
+    Sum,
 )
 
 
@@ -436,6 +440,24 @@ def type_of(t: Term) -> DomCod:
         return (dom, cod)
 
     # PhasedControl: phase-weighted n-ary control
+    if isinstance(t, Sum):
+        # Logical endpoints: (Γ₁ ⊗ Γ₂, A ⊕ B). The branch packing P^br is a
+        # compilation frame, NOT a Ty — see the Sum docstring.
+        g1, a = type_of(t.left)
+        g2, b = type_of(t.right)
+        def _tensor_context(x, y):
+            if isinstance(x, Unit):
+                return y
+            if isinstance(y, Unit):
+                return x
+            return Ten(x, y)
+        return (_tensor_context(g1, g2), Plus(a, b))
+
+    if isinstance(t, DatatypeControl):
+        # Type: D ⊗ A → D ⊗ A (tensor frame; see the class docstring for why
+        # this is NOT the flat sum ⊕ᵢ A).
+        return (Ten(t.dt_rep, t.a_ty), Ten(t.dt_rep, t.a_ty))
+
     if isinstance(t, PhasedControl):
         # Type: D ⊗ A → D ⊗ A where D = dt_rep
         # phases is just runtime data, doesn't affect typing

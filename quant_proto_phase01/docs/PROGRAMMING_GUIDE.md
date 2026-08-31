@@ -380,14 +380,45 @@ the n-ary analog of binary `oplusmap` and handles asymmetric n cleanly via
 the flat n-ary encoding (matches meta `control z_n`).
 
 ```ocaml
-val o_n_plusmap : 'a ty array -> 'c ty -> ('g, 'c) oterm array
+val o_n_plusmap : 'c ty
+              -> ('parts, 'c) branches
+              -> ('g, 'parts) partition
               -> ('g, [`Lolli of 'sum_in * 'sum_out]) oterm
 ```
 
-Branches share OCaml context `'g`. Use `oshift` to pad branches that reference
-only a subset of the variables in scope. The Python compiler's open-branch
-NPlusMap path resolves free variables against the outer environment, including
-through the deferred-Lam mechanism for boundary-spliced function arguments.
+Each branch is typed under its **own** branch-local context; the `partition`
+witness proves those contexts form a total, disjoint cover of `'g`. The
+surface has no weakening — there is no way to pad a branch with variables it
+does not use, and a resource owned by no branch cannot be written.
+
+```ocaml
+let branches =
+  BCons (ia_ty, apply_f_branch "f0",
+  BCons (ia_ty, apply_f_branch "f1",
+  BCons (ia_ty, apply_f_branch "f2", BNil)))
+
+let part3 =                              (* each branch owns one slot *)
+  PCons (SLeft (SRight (SRight SNil)),
+  PCons (SLeft (SRight SNil),
+  PLast))
+
+let pm = o_n_plusmap ia_ty branches part3
+```
+
+**Shared resources.** If a resource is needed by *every* branch, it does not
+belong in a branch-local context. Route it through the sum payload instead:
+
+```
+G ⊗ (A ⊕ B)  --dist_r-->  (G ⊗ A) ⊕ (G ⊗ B)  --branches-->  C ⊕ D  --undist-->  ...
+```
+
+Each branch then consumes the routed `G` linearly. A resource not needed in
+every alternative belongs in a branch-local partition, not in the shared
+payload.
+
+The Python compiler's open-branch NPlusMap path resolves free variables
+against the outer environment, including through the deferred-Lam mechanism
+for boundary-spliced function arguments.
 
 ### n-ary Distributivity (`n_dist`, `n_factor`)
 

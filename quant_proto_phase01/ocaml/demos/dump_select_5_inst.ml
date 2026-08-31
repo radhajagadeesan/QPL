@@ -22,16 +22,20 @@ let apply_f_branch f_name =
     (SRight SNil)
 
 let select_5_pm =
-  let summand_tys = [| ia_ty; ia_ty; ia_ty; ia_ty; ia_ty |] in
-  let pad b = oshift qq_ty (oshift qq_ty (oshift qq_ty (oshift qq_ty b))) in
-  let branches = [|
-    pad (apply_f_branch "g0");
-    pad (apply_f_branch "g1");
-    pad (apply_f_branch "g2");
-    pad (apply_f_branch "g3");
-    pad (apply_f_branch "g4");
-  |] in
-  o_n_plusmap summand_tys ia_ty branches
+  let branches =
+    BCons (ia_ty, apply_f_branch "g0",
+    BCons (ia_ty, apply_f_branch "g1",
+    BCons (ia_ty, apply_f_branch "g2",
+    BCons (ia_ty, apply_f_branch "g3",
+    BCons (ia_ty, apply_f_branch "g4", BNil))))) in
+  let part5 =
+    PCons (SLeft (SRight (SRight (SRight (SRight SNil)))),
+    PCons (SLeft (SRight (SRight (SRight SNil))),
+    PCons (SLeft (SRight (SRight SNil)),
+    PCons (SLeft (SRight SNil),
+    PLast))))
+  in
+  o_n_plusmap ia_ty branches part5
 
 let abstract_select_5 =
   let input_ty5 = qq_ty ** (qq_ty ** (qq_ty ** (qq_ty ** (qq_ty ** sum_5_ty)))) in

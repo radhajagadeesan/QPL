@@ -70,6 +70,12 @@ type term =
   (* Scalar phase: multiply amplitudes by z = e^{iθ}, semantics is z · I on ty.
      NOT to be confused with TRz / TPhase (per-wire relative phase gates). *)
   | TGlobalPhase of float * Rep.t
+  (* Coherent control over an n-ary datatype: D (x) A -> D (x) A, tensor frame *)
+  | TDatatypeControl of string * int * Rep.t * Rep.t * term array
+  (* Coherent sum introduction: Block^sum_{alpha,beta}(R1, R2).
+     Angles carry arg(alpha), arg(beta); |alpha| = |beta| = 1 is enforced at
+     the smart constructor. NOT amplitude preparation. *)
+  | TSum of float * float * term * term
   | TSeq of term * term
   | TTenTerm of term * term
   | TTwistTen of Rep.t * Rep.t
@@ -140,6 +146,14 @@ let rec term_to_json = function
   (* Structural combinators *)
   | TId ty ->
     Printf.sprintf {|{"node": "Id", "ty": %s}|} (type_to_json ty)
+  | TSum (alpha_theta, beta_theta, r1, r2) ->
+    Printf.sprintf {|{"node": "Sum", "alpha_theta": %f, "beta_theta": %f, "left": %s, "right": %s}|}
+      alpha_theta beta_theta (term_to_json r1) (term_to_json r2)
+  | TDatatypeControl (name, arity, dt_rep, a_ty, branches) ->
+    let branches_json = Printf.sprintf "[%s]"
+      (String.concat ", " (Array.to_list (Array.map term_to_json branches))) in
+    Printf.sprintf {|{"node": "DatatypeControl", "name": "%s", "arity": %d, "dt_rep": %s, "a_ty": %s, "branches": %s}|}
+      name arity (type_to_json dt_rep) (type_to_json a_ty) branches_json
   | TGlobalPhase (theta, ty) ->
     Printf.sprintf {|{"node": "GlobalPhase", "theta": %f, "ty": %s}|}
       theta (type_to_json ty)

@@ -72,7 +72,7 @@ let factor_3 =
   seq0 inner_map outer
 
 (** Branch i : receive I⊗Q via oid, apply f_i (named var), repackage.
-    All branches share OCaml context shape via oshift padding. *)
+    Each branch is typed at its own one-slot context holding just f_i. *)
 let apply_f_branch f_name =
   oletpair "i" "a" one q (oid ia_ty)
     (opair (ovar "i" one)
@@ -80,17 +80,20 @@ let apply_f_branch f_name =
            (SLeft (SRight (SRight SNil))))
     (SRight SNil)
 
-(** The n-ary plusmap: ⊕_{i=0}^{2}(id_b ⊗ f_i). Uses o_n_plusmap. *)
+(** The n-ary plusmap: ⊕_{i=0}^{2}(id_b ⊗ f_i). Uses o_n_plusmap.
+    Each branch is typed at its own one-slot context; the partition witness
+    covers the 3-slot conclusion context exactly. *)
 let nary_plusmap_3 =
-  let summand_tys = [| ia_ty; ia_ty; ia_ty |] in
-  (* Pad each branch to share a 3-slot context (one var per slot). *)
-  let pad b = oshift qq_ty (oshift qq_ty b) in
-  let branches = [|
-    pad (apply_f_branch "f0");
-    pad (apply_f_branch "f1");
-    pad (apply_f_branch "f2");
-  |] in
-  o_n_plusmap summand_tys ia_ty branches
+  let branches =
+    BCons (ia_ty, apply_f_branch "f0",
+    BCons (ia_ty, apply_f_branch "f1",
+    BCons (ia_ty, apply_f_branch "f2", BNil))) in
+  let part3 =
+    PCons (SLeft (SRight (SRight SNil)),
+    PCons (SLeft (SRight SNil),
+    PLast))
+  in
+  o_n_plusmap ia_ty branches part3
 
 (** Fully curried select_3: λf_0. λf_1. λf_2. λp. factor_3(plusmap(dist_3(p))).
 

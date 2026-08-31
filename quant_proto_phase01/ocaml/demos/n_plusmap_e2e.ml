@@ -40,20 +40,24 @@ let apply_f_branch f_name =
 (* Right-associated binary representation: I⊗Q ⊕ (I⊗Q ⊕ I⊗Q). Width 3. *)
 let sum_3_ty = ia_ty ++ (ia_ty ++ ia_ty)
 
-(** select_3 built via o_n_plusmap (3-ary). All branches must share OCaml
-    context shape, so we pad with [oshift] (weakening adds unused slots).
-    Each branch references only ONE variable but has type (qq * (qq * (qq * unit))).
-    Variable lookup at Bridge level is by name, so each branch's named var
-    binds correctly at compile time. *)
+(** select_3 built via o_n_plusmap (3-ary). Each branch is typed under its own
+    one-slot context holding exactly the function it applies; the [partition]
+    witness proves those three contexts are a total disjoint cover of the
+    conclusion context (qq * (qq * (qq * unit))). No padding is involved —
+    inactive functions are identity-transported through the other branches at
+    lowering time. *)
 let select_3_pm =
-  let summand_tys = [| ia_ty; ia_ty; ia_ty |] in
-  let pad b = oshift qq_ty (oshift qq_ty b) in
-  let branches = [|
-    pad (apply_f_branch "f0");
-    pad (apply_f_branch "f1");
-    pad (apply_f_branch "f2");
-  |] in
-  o_n_plusmap summand_tys ia_ty branches
+  let branches =
+    BCons (ia_ty, apply_f_branch "f0",
+    BCons (ia_ty, apply_f_branch "f1",
+    BCons (ia_ty, apply_f_branch "f2", BNil))) in
+  (* Each branch takes the head of the remaining context, in branch order. *)
+  let part3 =
+    PCons (SLeft (SRight (SRight SNil)),     (* branch 0 owns slot 0 *)
+    PCons (SLeft (SRight SNil),              (* branch 1 owns slot 1 *)
+    PLast))                                  (* branch 2 owns exactly the rest *)
+  in
+  o_n_plusmap ia_ty branches part3
 
 (** Outer lambda: λinput:((Q⊸Q)⊗((Q⊸Q)⊗((Q⊸Q)⊗sum_3))).
     Destructure to bind f_0, f_1, f_2, s; then apply select_3_pm to s. *)
@@ -127,17 +131,20 @@ let () =
   (* Build select_5 with 5 branches and outer Lam binding f_0..f_4. *)
   let sum_5_ty = ia_ty ++ (ia_ty ++ (ia_ty ++ (ia_ty ++ ia_ty))) in
   let select_5_pm =
-    let summand_tys = [| ia_ty; ia_ty; ia_ty; ia_ty; ia_ty |] in
-    (* Pad each branch to share a 5-slot context. *)
-    let pad b = oshift qq_ty (oshift qq_ty (oshift qq_ty (oshift qq_ty b))) in
-    let branches = [|
-      pad (apply_f_branch "g0");
-      pad (apply_f_branch "g1");
-      pad (apply_f_branch "g2");
-      pad (apply_f_branch "g3");
-      pad (apply_f_branch "g4");
-    |] in
-    o_n_plusmap summand_tys ia_ty branches
+    let branches =
+      BCons (ia_ty, apply_f_branch "g0",
+      BCons (ia_ty, apply_f_branch "g1",
+      BCons (ia_ty, apply_f_branch "g2",
+      BCons (ia_ty, apply_f_branch "g3",
+      BCons (ia_ty, apply_f_branch "g4", BNil))))) in
+    let part5 =
+      PCons (SLeft (SRight (SRight (SRight (SRight SNil)))),
+      PCons (SLeft (SRight (SRight (SRight SNil))),
+      PCons (SLeft (SRight (SRight SNil)),
+      PCons (SLeft (SRight SNil),
+      PLast))))
+    in
+    o_n_plusmap ia_ty branches part5
   in
 
   let abstract_select_5 =

@@ -46,13 +46,16 @@ let apply_f_branch f_name =
            (SLeft (SRight (SRight SNil))))
     (SRight SNil)
 
-(** The n-ary plusmap using o_n_plusmap (3 branches with shared context). *)
+(** The n-ary plusmap using o_n_plusmap (3 branch-local contexts, covered
+    exactly by the partition witness). *)
 let nary_plusmap_3 =
-  let pad b = oshift qq_ty (oshift qq_ty b) in
-  o_n_plusmap [| ia_ty; ia_ty; ia_ty |] ia_ty
-    [| pad (apply_f_branch "f0");
-       pad (apply_f_branch "f1");
-       pad (apply_f_branch "f2"); |]
+  o_n_plusmap ia_ty
+    (BCons (ia_ty, apply_f_branch "f0",
+     BCons (ia_ty, apply_f_branch "f1",
+     BCons (ia_ty, apply_f_branch "f2", BNil))))
+    (PCons (SLeft (SRight (SRight SNil)),
+     PCons (SLeft (SRight SNil),
+     PLast)))
 
 (** Fully curried select_3.
 

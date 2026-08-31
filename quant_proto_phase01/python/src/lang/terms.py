@@ -826,6 +826,89 @@ class PhasedPlusMap:
 
 
 @dataclass(frozen=True, slots=True)
+class Sum:
+    """Coherent ⊕-introduction: Sum_{α,β}(R₁, R₂), the Block^sum emitter row.
+
+    Premises  R₁ : Γ₁ ⊢ A  and  R₂ : Γ₂ ⊢ B  give
+
+        Γ₁, Γ₂ ⊢ [α R₁ | β R₂] : A ⊕ B
+
+    so type_of is (Γ₁ ⊗ Γ₂, A ⊕ B) — the LOGICAL endpoints. The
+    branch-completed direct-sum source P^br is a compilation frame, not a Ty;
+    returning Plus(Complete(Γ₁,Γ₂), Complete(Γ₂,Γ₁)) would confuse a physical
+    boundary packing with an object-language type and expose the
+    branch-selection tag as source data.
+
+    **This is not state preparation.** It does not prepare α|0⟩ + β|1⟩. The
+    input selected boundary is already an orthogonal direct sum of the two
+    branch-completed source sectors; the tag is its physical coordinate. The
+    operation is the unitary block map
+
+        α W̃₁ ⊕ β W̃₂       with |α| = |β| = 1
+
+    Hence: require |α| = |β| = 1 (NOT |α|² + |β|² = 1); emit no Hadamard and
+    no amplitude preparation; preserve each premise's global phase and
+    promote it to an exact-tag conditional phase; apply α and β to their
+    entire valid branch blocks.
+
+    Executable contract (Flat-Sum), layout-independent:
+
+        W_sel = j₁⁺ α W̃₁ (j₁⁻)†  +  j₂⁺ β W̃₂ (j₂⁻)†
+
+    extended to the invalid-tag complement by the fixed canonical unitary.
+    Angles are stored rather than complex α, β so the IR carries only floats;
+    |α| = |β| = 1 is enforced at the OCaml smart constructor.
+
+    See docs/SUM_INTRODUCTION_DESIGN.md.
+    """
+    alpha_theta: float   # arg(α)
+    beta_theta: float    # arg(β)
+    left: "Term"         # R₁ : Γ₁ ⊢ A
+    right: "Term"        # R₂ : Γ₂ ⊢ B
+
+
+@dataclass(frozen=True, slots=True)
+class DatatypeControl:
+    """Coherent control over an n-ary datatype: D ⊗ A → D ⊗ A.
+
+    The unphased sibling of `PhasedControl`, and the lowering target of the
+    OCaml `control` combinator.
+
+    **Frame: tensor, not flat sum.** D's wires are the outer control tag and
+    A's wires are the payload:
+
+        [ D_tag (tag_width(D)) | A payload (width(A)) ]
+
+    Branch i executes under exact-tag control on tag value i. Invalid
+    datatype tags act as identity. Branch global phases are promoted to
+    exact-tag conditional phases (Invariant P).
+
+    This node exists because `control` previously lowered to
+    `NPlusMap([A]*n, branches)`, whose declared type is `A ⊕ … ⊕ A`. That
+    type is isomorphic to D ⊗ A but has a *different canonical layout*
+    whenever |leaves(A)| is not a power of two: for A = Z3, D ⊗ A is
+    [tag 2 | payload 2] while A⊕A⊕A flattens to 9 leaves = [tag 4 | payload 0].
+    Both are 4 wires; they embed the 9 valid states at different indices.
+    Keeping them as one node forced a frame coercion — precisely the
+    unequal-width distributivity limitation of docs/LIMITATIONS.md §6.
+
+    Separating the IR nodes avoids needing that isomorphism at all:
+
+        DatatypeControl : D ⊗ A → D ⊗ A     tensor frame
+        NPlusMap        : ⊕ᵢ Aᵢ → ⊕ᵢ Bᵢ     canonical flat-sum frame
+
+    This is an internal IR separation only. The source calculus, the
+    denotational rule, and the reference emitter are unchanged, and it makes
+    no claim to fix the general distributivity limitation.
+    """
+    name: str          # datatype name (for diagnostics)
+    arity: int         # number of branches k
+    dt_rep: Ty         # datatype representation D = I^{⊕k}
+    a_ty: Ty           # payload type A
+    branches: tuple    # k branch terms, each A → A
+
+
+@dataclass(frozen=True, slots=True)
 class PhasedControl:
     """Phase-weighted n-ary coherent control.
 
@@ -959,6 +1042,8 @@ Term = Union[
     NPlusMap,
     # Phase-weighted bifunctorial action
     PhasedPlusMap,
+    DatatypeControl,
+    Sum,
     # Phase-weighted n-ary control
     PhasedControl,
     # Exponentials of structural involutions

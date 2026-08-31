@@ -1,6 +1,15 @@
 # Layout-frame repair: gate-free fix for unequal-width distributivity
 
-**Status:** Design outline, filed 2026-08-30. Not yet implemented.
+**Status:** Design outline, filed 2026-08-30. **Deferred by decision** to the
+frame-aware repair round — see *The frame-aware round* in
+`docs/COMPILER_INVARIANTS.md`, which collects this with the three other items
+that share the missing piece (the canonical-frame inclusions $j_i^\pm$ do not
+exist explicitly; index maps are computed inline).
+
+Partially superseded: the canonical layout policy this note argues for is now
+enforced as **Invariant L**, and `NPlusMap` uses the canonical frame. What
+remains deferred is the composition side — unequal-width `dist_l` naturality,
+whose witness is `demos/dist_l_naturality_probe` (full-unitary fidelity 0.5).
 
 **Motivation.** The current compiler represents post-composition layout
 state by a `WirePerm` plus payload-width bookkeeping. This suffices for

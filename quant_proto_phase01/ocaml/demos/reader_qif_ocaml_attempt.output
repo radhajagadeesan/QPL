@@ -1,8 +1,15 @@
-READER'S TERM BUILT IN OCAML SURFACE (typecheck passed).
+==============================================================
+  Regression: reader's higher-order qif term must be REJECTED
+==============================================================
 
-Now attempting to elaborate + compile through Bridge:
+The term builds at the OCaml surface (linearity is satisfied):
 
-3 qubits, 0 gates
-  perm: [1, 2, 0]
+  program : Bool ⊸ Bool  (via oplusmap0 + undist_l + oletpair + oapp)
 
-Compiled successfully. Circuit size: 0 gates.
+Attempting to compile through Bridge → Python:
+
+Compile error: PlusMap: sum payloads must be first-order (contain no Lolli).\nFunction values may be consumed inside a branch, but not returned on a summand.\nOffending output type: ((I \u2297 ((I \u2295 I) \u22b8 (I \u2295 I))) \u2295 (I \u2297 ((I \u2295 I) \u22b8 (I \u2295 I))))\n(This is the defense-in-depth check in to_pytket.py \u2014 the OCaml surface's case sugars and datatype `control` should have already caught this. If you're seeing this from OCaml source, please report it as a missing guard.)
+
+  PASS: compilation rejected with the expected first-order error.
+  This is the intended behavior of the soundness fix.
+

@@ -43,6 +43,8 @@ from lang.terms import (
     # Qubit encoding isomorphism
     EncodeQubit, DecodeQubit,
     GlobalPhase,
+    DatatypeControl,
+    Sum,
 )
 from lang.types import width, Arrow, Unit, Plus, Ten, pretty as _pretty_ty
 
@@ -220,6 +222,30 @@ def _inject_input_value(branch: Term, input_value: Term) -> Term:
     return branch
 
 
+def _has_spectator_coordinates(t: Term) -> bool:
+    """True if t's physical frame legitimately exceeds width(cod).
+
+    Spectator coordinates are physical wires the logical codomain does not
+    name: Lam/Apply function-layout wires, Cup/Cap compact-closed wires,
+    free-variable context wires, and the legacy encode/decode ancilla. For
+    every other term the frame width IS the logical width, which is what
+    Invariant W's corollary asserts.
+    """
+    from typing_.check import _free_var_width
+    if _free_var_width(t) > 0:
+        return True
+    if _contains_encode_decode(t):
+        return True
+
+    stack = [t]
+    while stack:
+        u = stack.pop()
+        if isinstance(u, (Lam, Apply, Cup, Cap, FunVar)):
+            return True
+        stack.extend(_subterms(u))
+    return False
+
+
 def _internal_width(t: Term) -> int:
     """Compute internal wire width needed for a term.
 
@@ -281,16 +307,40 @@ def _internal_width(t: Term) -> int:
     if isinstance(t, Pair):
         return _internal_width(t.fst) + _internal_width(t.snd)
 
+    if isinstance(t, Sum):
+        # Frame width, not logical width: the target carries the tag plus the
+        # shared payload of the completed branches.
+        dom_s, cod_s = type_of(t)
+        return max(type_width(dom_s), type_width(cod_s),
+                   max((_internal_width(b) for b in (t.left, t.right)), default=0))
+
+    if isinstance(t, DatatypeControl):
+        # Tensor frame: [ D_tag | A payload ].  Deliberately NOT the flat sum
+        # frame -- see the DatatypeControl docstring.
+        from lang.types import tag_width as _tw_dc, Ten as _Ten_dc
+        k_dc = _tw_dc(t.dt_rep)
+        br_int = max((_internal_width(b) for b in t.branches), default=0)
+        return max(type_width(_Ten_dc(t.dt_rep, t.a_ty)), k_dc + br_int)
+
     if isinstance(t, NPlusMap):
-        # n-ary outer dispatch: parent encoding is k_outer + max(payload).
-        # When summands are sums themselves, this differs from the flat
-        # encoding's width (which would use ceil(log_2(flat_leaves))).
-        import math
-        n_branches = len(t.summand_types)
-        k_outer = math.ceil(math.log2(n_branches)) if n_branches > 1 else 0
-        max_payload = max(type_width(st) for st in t.summand_types)
-        branch_internal = max(_internal_width(br) for br in t.branches)
-        return max(k_outer + max_payload, k_outer + branch_internal)
+        # Invariant L: size from the CANONICAL layout of the whole domain, not
+        # from an independent (branch-count + max-summand) allocation. The old
+        # formula diverged from the flat encoding exactly when a summand is
+        # itself a sum — e.g. (Z3, Z5): canonical 3 vs old 1 + 3 = 4 — leaving
+        # the emitter and the register allocator disagreeing about the frame.
+        from lang.types import (build_plus_tree, flatten_plus,
+                                tag_width as _tw)
+        dom_sum = build_plus_tree(list(t.summand_types))
+        canonical = type_width(dom_sum)
+        leaf_counts = [len(flatten_plus(st)) for st in t.summand_types]
+        if all(m == 1 for m in leaf_counts):
+            # Controlled-emission path: branch circuits are emitted into the
+            # shared payload region, so the parent must also cover k + branch.
+            branch_internal = max(_internal_width(br) for br in t.branches)
+            return max(canonical, _tw(dom_sum) + branch_internal)
+        # Block-synthesis path: branches are compiled separately and only their
+        # unitaries are splatted, so the parent needs exactly the canonical frame.
+        return canonical
 
     # Default: use type widths
     dom, cod = type_of(t)
@@ -441,6 +491,34 @@ def _normalize(term: Term) -> Term:
                         tuple(_normalize(b) for b in term.branches))
     # Structural isos, gates, FunVar, Cup, Cap, etc. — leaves
     return term
+
+
+def _compile_branch(branch, *, env=None):
+    """Sole route from a branch TERM to controlled-emission material.
+
+    Returns (cmds, phase_ht). Invariant P: the caller MUST discharge phase_ht
+    as an exact-tag relative phase at every tag value the branch covers --
+    `_discharge_branch_phase` below does that. Commands are only obtainable
+    together with the phase, so a call site cannot silently drop the scalar.
+
+    A scalar z.I is unobservable standing alone and fully observable inside a
+    branch. It was dropped independently at six sites, and each round of
+    per-site fixes missed the others; that is why extraction is funnelled here
+    rather than repeated at each emitter.
+    """
+    sub = compile(branch, materialize=True, env=env) if env is not None \
+        else compile(branch, materialize=True)
+    return _get_sub_cmds(sub.circuit), float(sub.circuit.phase)
+
+
+def _discharge_branch_phase(circ, tag_qubits, tag_values, phase_ht):
+    """Promote a branch's accumulated scalar to an exact-tag relative phase at
+    every tag value the branch covers. Runs even when the branch emitted no
+    gates, so a pure-GlobalPhase branch is not lost."""
+    if abs(phase_ht) <= 1e-10 or not tag_qubits:
+        return
+    for tv in tag_values:
+        _emit_exact_tag_phase(circ, tag_qubits, tv, phase_ht)
 
 
 def _emit_exact_tag_phase(circ, tag_qubits, tag_value, theta_ht):
@@ -1497,8 +1575,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 # General fallback: compile any body to a sub-circuit
                 # and control each gate (no decomposition needed).
                 from pytket.circuit import QControlBox
-                sub = compile(body, materialize=True)
-                sub_cmds = _get_sub_cmds(sub.circuit)
+                sub_cmds, _ctrl_phase_ht = _compile_branch(body)
+                # The body's scalar becomes a phase conditional on all
+                # controls firing (tag value all-ones).
+                _discharge_branch_phase(
+                    circ, [p.apply_new_to_old(c) for c in ctrls],
+                    [(1 << n_ctrls) - 1], _ctrl_phase_ht)
                 for cmd in sub_cmds:
                     phys_qubits = [p.apply_new_to_old(q.index[0] + pay_off)
                                    for q in cmd.qubits]
@@ -1565,10 +1647,16 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     f"but U² deviates from I by {np.max(np.abs(UU - np.eye(body_n))):.2e}"
                 )
 
-            # If U ≈ I, then exp(iθ·I) = e^{iθ}·I (global phase) — skip
+            # If U ≈ I then exp(iθ·I) = e^{iθ}·I, a SCALAR z·I. Invariant P:
+            # scalars are unobservable standing alone but fully observable
+            # inside a branch, so this must be recorded, not discarded. The
+            # enclosing controlled-emission site promotes it to an exact-tag
+            # conditional phase.
             if np.allclose(U, np.eye(body_n), atol=1e-9):
+                circ.add_phase(t.theta / _math.pi)
                 if explain:
-                    log.append(f"ExpInvolution theta={t.theta} body=I (global phase, skipped)")
+                    log.append(f"ExpInvolution theta={t.theta} body=I "
+                               f"-> scalar recorded as global phase")
                 return
 
             # M = cos(θ)·I + i·sin(θ)·U
@@ -1716,11 +1804,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                                             branch_to_compile, name, deferred_fns[key])
                             branch_to_compile = _normalize(branch_to_compile)
 
-                        branch_result = compile(branch_to_compile, materialize=True, env=sub_env)
-                        cmds = _get_sub_cmds(branch_result.circuit)
-
-                        if not cmds:
-                            continue
+                        cmds, _open_phase_ht = _compile_branch(
+                            branch_to_compile, env=sub_env)
 
                         # Map free vars to parent physical positions
                         ctx_parent_phys = []
@@ -1737,21 +1822,28 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                                     return _cpp[w - _pw]
                             return wm
 
-                        _emit_controlled_branch(tag_phys, cmds,
-                                                make_open_wire_map(), anti=anti)
+                        if cmds:
+                            _emit_controlled_branch(tag_phys, cmds,
+                                                    make_open_wire_map(), anti=anti)
                     else:
                         # Closed branch: compile without env
-                        cmds = (_get_sub_cmds(
-                            compile(branch, materialize=True).circuit)
-                            if pw > 0 else [])
-                        if not cmds:
-                            continue
-                        def make_closed_wire_map(_pb=payload_base):
-                            def wm(w):
-                                return p.apply_new_to_old(w + _pb)
-                            return wm
-                        _emit_controlled_branch(tag_phys, cmds,
-                                                make_closed_wire_map(), anti=anti)
+                        cmds, _open_phase_ht = _compile_branch(branch)
+                        if pw == 0:
+                            cmds = []
+                        if cmds:
+                            def make_closed_wire_map(_pb=payload_base):
+                                def wm(w):
+                                    return p.apply_new_to_old(w + _pb)
+                                return wm
+                            _emit_controlled_branch(tag_phys, cmds,
+                                                    make_closed_wire_map(), anti=anti)
+
+                    # Invariant P: promote this branch's scalar to an exact-tag
+                    # phase. anti=True is the tag=0 branch, anti=False tag=1.
+                    # Runs even when the branch emitted no gates, so a
+                    # pure-GlobalPhase branch is not dropped.
+                    _discharge_branch_phase(circ, [tag_phys],
+                                            [0 if anti else 1], _open_phase_ht)
 
                 if explain:
                     log.append(f"PlusMap(k={k}, open branches): "
@@ -1772,8 +1864,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 if branch_w == 0:
                     # Still compile so we can extract any accumulated global
                     # phase from a GlobalPhase term inside the branch.
-                    sub = compile(branch, materialize=True)
-                    return [], float(sub.circuit.phase)
+                    _, _ph = _compile_branch(branch)
+                    return [], _ph
                 if deferred_fns:
                     parent_phys = [p.apply_new_to_old(payload_base_off + i)
                                    for i in range(branch_w)]
@@ -1782,10 +1874,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     if input_val is not None and not isinstance(input_val, Id):
                         modified = _inject_input_value(branch, input_val)
                         modified = _normalize(modified)
-                        sub = compile(modified, materialize=True)
-                        return _get_sub_cmds(sub.circuit), float(sub.circuit.phase)
-                sub = compile(branch, materialize=True)
-                return _get_sub_cmds(sub.circuit), float(sub.circuit.phase)
+                        return _compile_branch(modified)
+                return _compile_branch(branch)
 
             payload_base_for_branches = offset + max(k, 1)
             left_cmds, left_phase = _compile_branch_with_deferred(t.left, left_w, payload_base_for_branches)
@@ -1831,8 +1921,14 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 w = k + pw
                 dim_pw = 2 ** pw
 
-                U_f = compile(t.left, materialize=True).circuit.get_unitary()
-                U_g = compile(t.right, materialize=True).circuit.get_unitary()
+                _sb_f = compile(t.left, materialize=True)
+                _sb_g = compile(t.right, materialize=True)
+                U_f = _sb_f.circuit.get_unitary()
+                U_g = _sb_g.circuit.get_unitary()
+                # Invariant P: a width-0 branch contributes ONLY a scalar; the
+                # identity fill below would discard it.
+                _zf = np.exp(1j * np.pi * float(_sb_f.circuit.phase))
+                _zg = np.exp(1j * np.pi * float(_sb_g.circuit.phase))
                 dim = 2 ** w
 
                 # Helper: copy n_blocks × n_blocks of size dim_pw blocks from U_src
@@ -1861,7 +1957,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                         for tr in range(n_right):
                             tf = n_left + tr
                             rs, re = tf * dim_pw, (tf + 1) * dim_pw
-                            U_full[rs:re, rs:re] = np.eye(dim_pw)
+                            U_full[rs:re, rs:re] = _zg * np.eye(dim_pw)
                     else:
                         _splat(U_full, U_g, n_right, n_left, dim_pw)
                 else:
@@ -1870,7 +1966,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     if w_f == 0:
                         for tl in range(n_left):
                             rs, re = tl * dim_pw, (tl + 1) * dim_pw
-                            U_full[rs:re, rs:re] = np.eye(dim_pw)
+                            U_full[rs:re, rs:re] = _zf * np.eye(dim_pw)
                     else:
                         _splat(U_full, U_f, n_left, 0, dim_pw)
                     _splat(U_full, U_g, n_right, n_left, dim_pw)
@@ -1999,7 +2095,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     _emit_exact_tag_phase(circ, tag_qubits_all, tag_value, left_phase)
             if abs(right_phase) > 1e-10:
                 for tag_value in range(n_right):
-                    _emit_exact_tag_phase(circ, tag_qubits_all, n_left + tag_value, right_phase)
+                    # P sends right summand i to tag (half + i), NOT (n_left + i);
+                    # these coincide only when n_left == half. With n_left=3,
+                    # n_right=2, k=3, half=4 the old base phased tag 3 (unused
+                    # filler) and 4, missing tag 5 -> diag(1,1,1,-1,1) instead
+                    # of diag(1,1,1,-1,-1).
+                    _emit_exact_tag_phase(circ, tag_qubits_all, half + tag_value, right_phase)
 
             # Step 3: Emit P⁻¹ if non-identity
             if not is_identity_P:
@@ -2021,6 +2122,172 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
         # PlusMap. This is the single primitive that handles all n-ary
         # dispatch — binary PlusMap, control, anticontrol, etc. all desugar
         # to this path.
+        if isinstance(t, Sum):
+            # Block^sum_{alpha,beta}: the unitary block map  a.W1 (+) b.W2,
+            # |alpha| = |beta| = 1.  NOT state preparation -- no Hadamard and
+            # no amplitude preparation is emitted; the tag is the physical
+            # coordinate of a boundary that is already a direct sum.
+            import numpy as np
+            from lang.types import (Plus as _Plus_s, flatten_plus as _fp_s,
+                                    tag_width as _tw_s, payload_width as _pw_s)
+            from typing_.check import _free_var_width as _fvw_s
+
+            g1, a_ty = type_of(t.left)
+            g2, b_ty = type_of(t.right)
+
+            # Open premises need (Sum-complete)'s identity transport of the
+            # inactive context, which requires the frame inclusions j_i^eps.
+            # Those are deferred, so reject rather than approximate.
+            if _fvw_s(t.left) > 0 or _fvw_s(t.right) > 0 or \
+               width(g1) > 0 or width(g2) > 0:
+                raise NotImplementedError(
+                    "Sum with open premises requires inactive-context "
+                    "completion (Sum-complete) via the frame inclusions "
+                    "j_i^eps, which are deferred to the frame-aware repair "
+                    "round. Closed premises are supported. See "
+                    "docs/SUM_INTRODUCTION_DESIGN.md."
+                )
+
+            target = _Plus_s(a_ty, b_ty)
+            k_s = _tw_s(target)
+            pw_s = _pw_s(target)
+            m_a = len(_fp_s(a_ty))
+            w_tot = k_s + pw_s
+            if w_tot > 3:
+                raise NotImplementedError(
+                    f"Sum needs a {w_tot}-qubit unitary box; pytket provides "
+                    f"only Unitary1/2/3qBox (docs/LIMITATIONS.md sec 1).")
+
+            sub1 = compile(t.left, materialize=True)
+            sub2 = compile(t.right, materialize=True)
+            U1 = sub1.circuit.get_unitary()
+            U2 = sub2.circuit.get_unitary()
+            # Branch coefficients only. Each premise's own global phase is
+            # ALREADY carried by its get_unitary() (pytket's get_unitary
+            # respects add_phase), so folding it into gamma as well would
+            # square it -- e.g. a GlobalPhase(pi) premise gave (-1)*(-1) = +1.
+            # Splatting U_i therefore promotes the premise scalar to an
+            # exact-tag conditional phase automatically; gamma adds only
+            # alpha / beta on top.
+            gamma1 = np.exp(1j * t.alpha_theta)
+            gamma2 = np.exp(1j * t.beta_theta)
+
+            dim = 2 ** w_tot
+            U_full = np.eye(dim, dtype=complex)
+
+            for (U_i, gamma, off_i, ty_i) in (
+                    (U1, gamma1, 0, a_ty), (U2, gamma2, m_a, b_ty)):
+                m_i = len(_fp_s(ty_i))
+                pw_i = _pw_s(ty_i) if isinstance(ty_i, _Plus_s) else width(ty_i)
+                scale = 2 ** (pw_s - pw_i)
+
+                def _g(u, y, _o=off_i, _s=scale):
+                    return (_o + u) * (2 ** pw_s) + y * _s
+
+                for u in range(m_i):
+                    for y in range(2 ** pw_i):
+                        gi = _g(u, y)
+                        U_full[gi, :] = 0
+                        U_full[:, gi] = 0
+                for u1 in range(m_i):
+                    for y1 in range(2 ** pw_i):
+                        for u2 in range(m_i):
+                            for y2 in range(2 ** pw_i):
+                                L1 = u1 * (2 ** pw_i) + y1
+                                L2 = u2 * (2 ** pw_i) + y2
+                                # alpha / beta scale the ENTIRE valid block.
+                                U_full[_g(u1, y1), _g(u2, y2)] = \
+                                    gamma * U_i[L1, L2]
+
+            phys = [p.apply_new_to_old(offset + j) for j in range(w_tot)]
+            if w_tot == 1:
+                from pytket.circuit import Unitary1qBox
+                circ.add_unitary1qbox(Unitary1qBox(U_full), phys[0])
+            elif w_tot == 2:
+                from pytket.circuit import Unitary2qBox
+                circ.add_unitary2qbox(Unitary2qBox(U_full), phys[0], phys[1])
+            else:
+                from pytket.circuit import Unitary3qBox
+                circ.add_unitary3qbox(Unitary3qBox(U_full),
+                                      phys[0], phys[1], phys[2])
+
+            if explain:
+                log.append(f"Sum(alpha={t.alpha_theta:.4f}, "
+                           f"beta={t.beta_theta:.4f}, k={k_s}, pw={pw_s}) "
+                           f"at offset {offset}")
+            return
+
+        if isinstance(t, DatatypeControl):
+            # Coherent control over an n-ary datatype, TENSOR frame:
+            #     [ D_tag (tag_width(D)) | A payload (width(A)) ]
+            # Branch i fires under exact-tag control on tag value i; invalid
+            # datatype tags act as identity. This is the emitter that `control`
+            # used before its lowering was separated from NPlusMap -- moved
+            # here verbatim so Z_n behaviour is unchanged.
+            from lang.types import tag_width as tw_dc
+            k = tw_dc(t.dt_rep)
+            tag_phys = [p.apply_new_to_old(offset + j) for j in range(k)]
+            payload_base = offset + k
+            branch_pw = width(t.a_ty)
+
+            for i, br in enumerate(t.branches):
+                fv = _ordered_free_vars(br)
+                fv_in_env = [(nm, ty_fv) for nm, ty_fv in fv if nm in env]
+
+                if fv_in_env:
+                    sub_env = {}
+                    ctx_pos = branch_pw
+                    for name, ty_fv in fv_in_env:
+                        w_fv = width(ty_fv)
+                        sub_env[name] = list(range(ctx_pos, ctx_pos + w_fv))
+                        ctx_pos += w_fv
+
+                    branch_to_compile = br
+                    if deferred_fns:
+                        for name, ty_fv in fv_in_env:
+                            key = tuple(env[name])
+                            if key in deferred_fns:
+                                branch_to_compile = _substitute(
+                                    branch_to_compile, name, deferred_fns[key])
+                        branch_to_compile = _normalize(branch_to_compile)
+
+                    sub_cmds, branch_phase_ht = _compile_branch(
+                        branch_to_compile, env=sub_env)
+
+                    if sub_cmds:
+                        ctx_parent_phys = []
+                        for name, ty_fv in fv_in_env:
+                            ctx_parent_phys.extend(env[name])
+
+                        def _wm_open(_pw=branch_pw, _pb=payload_base,
+                                     _cpp=list(ctx_parent_phys)):
+                            def wire_map(w):
+                                if w < _pw:
+                                    return p.apply_new_to_old(_pb + w)
+                                return _cpp[w - _pw]
+                            return wire_map
+
+                        _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
+                                              _wm_open())
+                else:
+                    sub_cmds, branch_phase_ht = _compile_branch(br)
+
+                    if sub_cmds:
+                        def _wm_closed(pb=payload_base):
+                            def wire_map(w):
+                                return p.apply_new_to_old(pb + w)
+                            return wire_map
+
+                        _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
+                                              _wm_closed())
+
+                _discharge_branch_phase(circ, tag_phys, [i], branch_phase_ht)
+
+            if explain:
+                log.append(f"DatatypeControl({t.name}, arity={t.arity}, "
+                           f"k={k}, payload={branch_pw}) at offset {offset}")
+            return
+
         if isinstance(t, NPlusMap):
             from lang.types import (Plus, flatten_plus, tag_width as tw_fn,
                                     payload_width, build_plus_tree)
@@ -2028,11 +2295,160 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
             n_branches = len(t.summand_types)
             assert n_branches >= 2
-            # Tag width is computed from number of branches (outer n-ary dispatch),
-            # NOT from a flattened sum_ty. Each summand type may itself be a sum,
-            # in which case its tag bits live inside the per-summand payload.
-            k = math.ceil(math.log2(n_branches)) if n_branches > 1 else 0
-            pw = max(width(st) for st in t.summand_types)
+
+            # Invariant L (docs/COMPILER_INVARIANTS.md): the emitter must use the
+            # canonical layout of the complete domain, not an independent
+            # allocation. Previously this computed k from the BRANCH COUNT and
+            # pw from max(width(summand)), which for sum-headed summands yields a
+            # frame no isometry connects to the declared type — e.g. (Z3, Z5) has
+            # 3+5=8 leaves so canonical width is 3, while the old formula gave
+            # ceil(log2 2) + max(2,3) = 4.
+            dom_sum = build_plus_tree(list(t.summand_types))
+            k = tw_fn(dom_sum)
+            pw = payload_width(dom_sum)
+
+            # Per-branch leaf counts and global tag offsets:
+            #   m_i = |leaves(A_i)|,  o_i = sum_{j<i} m_j
+            # Local leaf tag u of branch i embeds as global tag o_i + u.
+            leaf_counts = [len(flatten_plus(st)) for st in t.summand_types]
+            offsets_i = []
+            _acc = 0
+            for _m in leaf_counts:
+                offsets_i.append(_acc)
+                _acc += _m
+
+            # Fast path: when every summand is a single leaf, o_i = i and each
+            # branch owns exactly tag value i, so the canonical frame coincides
+            # with per-branch exact-tag dispatch and controlled emission applies
+            # directly. (This is every NPlusMap in the current corpus.)
+            # ---- capability dispatch, BEFORE any circuit mutation ----
+            #
+            #   if has_open_branches:  require fast path (env-aware), else reject
+            #   elif fast_path_supports: fast path
+            #   elif source_frame == target_frame: dense synthesis
+            #   else: reject (asymmetric Block synthesis)
+            #
+            # Dense synthesis is never invoked with env=None on an open block:
+            # standalone-compiling an open branch yields a unitary carrying its
+            # own context wires, whose top-left corner is unrelated to the
+            # branch's action, and splatting it would silently miscompile.
+            from typing_.check import _free_var_width as _fvw
+
+            # fast_path_supports: exact-tag dispatch needs branch i to own
+            # exactly tag value i, i.e. every summand is a single leaf.
+            fast_path_supports = all(m == 1 for m in leaf_counts)
+            open_branches = [i for i, br in enumerate(t.branches)
+                             if _fvw(br) > 0]
+
+            if open_branches and not fast_path_supports:
+                raise NotImplementedError(
+                    f"NPlusMap has open branches {open_branches} (free-variable "
+                    f"contexts) but leaf counts {leaf_counts} require dense "
+                    f"synthesis, which compiles branches standalone and cannot "
+                    f"resolve free variables. Rejected before emission. "
+                    f"See docs/LIMITATIONS.md."
+                )
+
+            all_single_leaf = fast_path_supports
+            if not all_single_leaf:
+                # Block synthesis at the canonical frame. Branch i owns the tag
+                # RANGE [o_i, o_i+m_i), which is not power-of-2 aligned in
+                # general, so exact-tag controlled emission cannot express it.
+                # Build the block-diagonal unitary directly.
+                #
+                # Index mapping (big-endian, q[0] = MSB; a branch's payload
+                # occupies the first pw_i of the pw global payload wires):
+                #   local   L = u * 2^pw_i + y            (u < m_i, y < 2^pw_i)
+                #   global  G = (o_i + u) * 2^pw + y * 2^(pw - pw_i)
+                # The tag relation is additive, not a bit projection — which is
+                # exactly why controlled emission does not apply.
+                import numpy as np
+
+                cod_sum = build_plus_tree(
+                    [type_of(br)[1] for br in t.branches])
+                if (tw_fn(cod_sum), payload_width(cod_sum)) != (k, pw):
+                    raise NotImplementedError(
+                        f"NPlusMap block synthesis currently requires the domain "
+                        f"and codomain to share a canonical frame; got "
+                        f"dom (k={k}, pw={pw}) vs cod "
+                        f"(k={tw_fn(cod_sum)}, pw={payload_width(cod_sum)})."
+                    )
+
+                w_total = k + pw
+                if w_total > 3:
+                    raise NotImplementedError(
+                        f"NPlusMap block synthesis needs a {w_total}-qubit unitary "
+                        f"box; pytket provides only Unitary1/2/3qBox "
+                        f"(docs/LIMITATIONS.md §1)."
+                    )
+
+                dim = 2 ** w_total
+                U_full = np.eye(dim, dtype=complex)
+
+                for i, (st, br) in enumerate(zip(t.summand_types, t.branches)):
+                    m_i = leaf_counts[i]
+                    o_i = offsets_i[i]
+                    pw_i = payload_width(st) if isinstance(st, Plus) else width(st)
+                    scale = 2 ** (pw - pw_i)
+
+                    # An OPEN branch carries context wires for its free
+                    # variables, so its unitary is larger than the block we
+                    # splat into and its top-left corner is unrelated to the
+                    # branch's action. Reading it would silently miscompile
+                    # (indices stay in range), so reject explicitly.
+                    from typing_.check import _free_var_width as _fvw
+                    fv_open = [nm for nm, _ in _ordered_free_vars(br)
+                               if env and nm in env]
+                    if fv_open or _fvw(br) > 0:
+                        raise NotImplementedError(
+                            f"NPlusMap block synthesis does not support open "
+                            f"branches: branch {i} has free variables "
+                            f"{[nm for nm, _ in _ordered_free_vars(br)]} "
+                            f"(context width {_fvw(br)}). The "
+                            f"controlled-emission path resolves these against "
+                            f"the outer env; synthesis compiles branches "
+                            f"standalone and cannot."
+                        )
+
+                    U_i = compile(br, materialize=True).circuit.get_unitary()
+
+                    def g_index(u, y, _o=o_i, _s=scale):
+                        return (_o + u) * (2 ** pw) + y * _s
+
+                    # Clear this branch's global block (rows and columns) before
+                    # splatting, so the initial identity does not leak in.
+                    for u in range(m_i):
+                        for y in range(2 ** pw_i):
+                            gi = g_index(u, y)
+                            U_full[gi, :] = 0
+                            U_full[:, gi] = 0
+
+                    for u1 in range(m_i):
+                        for y1 in range(2 ** pw_i):
+                            for u2 in range(m_i):
+                                for y2 in range(2 ** pw_i):
+                                    L1 = u1 * (2 ** pw_i) + y1
+                                    L2 = u2 * (2 ** pw_i) + y2
+                                    U_full[g_index(u1, y1), g_index(u2, y2)] = \
+                                        U_i[L1, L2]
+
+                phys = [p.apply_new_to_old(offset + j) for j in range(w_total)]
+                if w_total == 1:
+                    from pytket.circuit import Unitary1qBox
+                    circ.add_unitary1qbox(Unitary1qBox(U_full), phys[0])
+                elif w_total == 2:
+                    from pytket.circuit import Unitary2qBox
+                    circ.add_unitary2qbox(Unitary2qBox(U_full), phys[0], phys[1])
+                else:
+                    from pytket.circuit import Unitary3qBox
+                    circ.add_unitary3qbox(Unitary3qBox(U_full),
+                                          phys[0], phys[1], phys[2])
+
+                if explain:
+                    log.append(
+                        f"NPlusMap(block synthesis): leaf_counts={leaf_counts}, "
+                        f"offsets={offsets_i}, k={k}, pw={pw} at offset {offset}")
+                return
 
             tag_phys = [p.apply_new_to_old(offset + j) for j in range(k)]
             payload_base = offset + k
@@ -2061,9 +2477,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                                     branch_to_compile, name, deferred_fns[key])
                         branch_to_compile = _normalize(branch_to_compile)
 
-                    sub = compile(branch_to_compile, materialize=True, env=sub_env)
-                    sub_cmds = _get_sub_cmds(sub.circuit)
-                    branch_phase_ht = float(sub.circuit.phase)
+                    sub_cmds, branch_phase_ht = _compile_branch(
+                        branch_to_compile, env=sub_env)
 
                     if sub_cmds:
                         ctx_parent_phys = []
@@ -2083,9 +2498,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                                               make_wire_map_open())
                 else:
                     # Closed branch (or no relevant free vars in scope).
-                    sub = compile(br, materialize=True)
-                    sub_cmds = _get_sub_cmds(sub.circuit)
-                    branch_phase_ht = float(sub.circuit.phase)
+                    sub_cmds, branch_phase_ht = _compile_branch(br)
 
                     if sub_cmds:
                         def make_wire_map(pb=payload_base):
@@ -2096,12 +2509,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                         _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
                                               make_wire_map())
 
-                # Promote branch's accumulated global phase to an exact-tag
-                # relative phase at tag value i. Applies even when the branch
-                # has no gates (pure-GlobalPhase branch), so the scalar is
-                # not silently dropped.
-                if abs(branch_phase_ht) > 1e-10 and tag_phys:
-                    _emit_exact_tag_phase(circ, tag_phys, i, branch_phase_ht)
+                _discharge_branch_phase(circ, tag_phys, [i], branch_phase_ht)
 
             if explain:
                 log.append(f"NPlusMap(n={n_branches}, k={k}): "
@@ -2126,15 +2534,15 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             # during the commands-only extraction.
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
-            _left_sub = compile(t.left, materialize=True)
-            left_cmds = _get_sub_cmds(_left_sub.circuit) if left_w > 0 else []
-            left_branch_phase_ht = float(_left_sub.circuit.phase)
+            left_cmds, left_branch_phase_ht = _compile_branch(t.left)
+            if left_w == 0:
+                left_cmds = []
 
             right_dom, _ = type_of(t.right)
             right_w = width(right_dom)
-            _right_sub = compile(t.right, materialize=True)
-            right_cmds = _get_sub_cmds(_right_sub.circuit) if right_w > 0 else []
-            right_branch_phase_ht = float(_right_sub.circuit.phase)
+            right_cmds, right_branch_phase_ht = _compile_branch(t.right)
+            if right_w == 0:
+                right_cmds = []
 
             if k <= 1:
                 tag_phys = p.apply_new_to_old(offset)
@@ -2179,8 +2587,14 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 w = k + pw
                 dim_pw = 2 ** pw
 
-                U_f = compile(t.left, materialize=True).circuit.get_unitary()
-                U_g = compile(t.right, materialize=True).circuit.get_unitary()
+                _sb_f = compile(t.left, materialize=True)
+                _sb_g = compile(t.right, materialize=True)
+                U_f = _sb_f.circuit.get_unitary()
+                U_g = _sb_g.circuit.get_unitary()
+                # Invariant P: a width-0 branch contributes ONLY a scalar; the
+                # identity fill below would discard it.
+                _zf = np.exp(1j * np.pi * float(_sb_f.circuit.phase))
+                _zg = np.exp(1j * np.pi * float(_sb_g.circuit.phase))
                 dim = 2 ** w
 
                 def _splat_phased(U_dst, U_src, n_blocks, off, dim_pw):
@@ -2204,7 +2618,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                         for tr in range(n_right):
                             tf = n_left + tr
                             rs, re = tf * dim_pw, (tf + 1) * dim_pw
-                            U_full[rs:re, rs:re] = np.eye(dim_pw)
+                            U_full[rs:re, rs:re] = _zg * np.eye(dim_pw)
                     else:
                         _splat_phased(U_full, U_g, n_right, n_left, dim_pw)
                 else:
@@ -2213,7 +2627,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     if w_f == 0:
                         for tl in range(n_left):
                             rs, re = tl * dim_pw, (tl + 1) * dim_pw
-                            U_full[rs:re, rs:re] = np.eye(dim_pw)
+                            U_full[rs:re, rs:re] = _zf * np.eye(dim_pw)
                     else:
                         _splat_phased(U_full, U_f, n_left, 0, dim_pw)
                     _splat_phased(U_full, U_g, n_right, n_left, dim_pw)
@@ -2289,7 +2703,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     _emit_exact_tag_phase(circ, tag_qubits_all_pp, tag_value, left_branch_phase_ht)
             if abs(right_branch_phase_ht) > 1e-10:
                 for tag_value in range(n_right):
-                    _emit_exact_tag_phase(circ, tag_qubits_all_pp, n_left + tag_value, right_branch_phase_ht)
+                    # Same tag-base correction as PlusMap Strategy A above.
+                    _emit_exact_tag_phase(circ, tag_qubits_all_pp, half + tag_value, right_branch_phase_ht)
 
             # Step 3: Emit P⁻¹
             if not is_identity_P:
@@ -2614,6 +3029,26 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
         if explain:
             log.append(f"Materialize swaps={swaps}")
         p = identity(n)
+
+    # ---- Invariant W (docs/COMPILER_INVARIANTS.md) --------------------------
+    # Stated over frames: n_qubits == the compositional frame width. The
+    # checkable corollary is that for a term with NO spectator coordinates the
+    # frame width is the logical width, so n == width(cod).
+    #
+    # This is the assertion that catches an emitter and its _internal_width
+    # case implementing the same layout policy independently and drifting: for
+    # sum-headed NPlusMap summands the allocator said 4 while the canonical
+    # codomain was 3, and that was found only by running a demo.
+    if not _has_spectator_coordinates(term):
+        _w_cod = width(cod)
+        if n != _w_cod:
+            raise TypeCheckError(
+                f"Invariant W violated: frame sized at {n} qubits but the "
+                f"codomain {_pretty_ty(cod)} has canonical width {_w_cod}, and "
+                f"{type(term).__name__} has no spectator coordinates. An "
+                f"emitter and its _internal_width case disagree about the "
+                f"layout (see docs/COMPILER_INVARIANTS.md Invariant W)."
+            )
 
     return Compiled(circuit=circ, perm=p, log=(log if explain else None))
 

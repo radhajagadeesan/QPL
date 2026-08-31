@@ -197,6 +197,22 @@ type (_, _) prog =
          -> (unit, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) prog
 
   (* N-ary omap for n-ary sums *)
+  (* Coherent control over an n-ary datatype: D (x) A -> D (x) A.
+     Distinct from NMap: this carries the TENSOR frame [D_tag | A payload],
+     whereas NMap's declared type is the flat sum and uses the canonical
+     flat-sum frame. The two coincide only when |leaves(A)| is a power of
+     two; keeping one node forced a frame coercion. See the Python
+     DatatypeControl docstring and docs/LIMITATIONS.md sec 6. *)
+  (* Coherent sum introduction: [alpha R1 | beta R2] : A (+) B.
+     Logical rule:  G1 |- R1 : A    G2 |- R2 : B
+                   ------------------------------
+                    G1, G2 |- [a R1 | b R2] : A (+) B
+     Stores arg(alpha), arg(beta); |alpha| = |beta| = 1 validated in [sum_]. *)
+  | SumIntro : float * float * ('g1, 'a) prog * ('g2, 'b) prog
+            -> ('g1 * 'g2, [`Plus of 'a * 'b]) prog
+  | DatatypeCtrl : string * int * Rep.t * Rep.t
+                 * (unit, [`Lolli of 'a * 'a]) prog array
+                -> (unit, [`Lolli of [`Tensor of 'b * 'a] * [`Tensor of 'b * 'a]]) prog
   | NMap : Rep.t array * (unit, [`Lolli of 'a * 'b]) prog array
         -> (unit, [`Lolli of 'c * 'd]) prog
 
@@ -266,6 +282,21 @@ let phase z ty =
   else
     let theta = Complex.arg z in
     Phase (theta, ty)
+
+(* Coherent sum introduction. Requires |alpha| = |beta| = 1 -- these are
+   unit-modulus branch WEIGHTS of a unitary block map, not amplitudes of a
+   prepared superposition, so the condition is NOT |a|^2 + |b|^2 = 1. *)
+let sum_ (alpha : Complex.t) (beta : Complex.t) r1 r2 =
+  let tol = 1e-10 in
+  let chk nm z =
+    let m = Complex.norm z in
+    if abs_float (m -. 1.0) > tol then
+      invalid_arg (Printf.sprintf
+        "sum_: %s must have modulus 1 (unit-modulus branch weight, not an \
+         amplitude), got |z| = %f" nm m)
+  in
+  chk "alpha" alpha; chk "beta" beta;
+  SumIntro (Complex.arg alpha, Complex.arg beta, r1, r2)
 
 let exp_i theta body = ExpI (theta, body)
 
@@ -468,6 +499,11 @@ let rec emit_any : type g a. (g, a) prog -> Bridge.term = function
   | Prim (name, _dom, _cod) -> Bridge.TGate (name, [0], [])
   | OMap0 (ty_left, ty_right, f, g) ->
       Bridge.TPlusMap (ty_left, ty_right, emit_any f, emit_any g)
+  | SumIntro (at, bt, r1, r2) ->
+      Bridge.TSum (at, bt, emit_any r1, emit_any r2)
+  | DatatypeCtrl (name, arity, dt_rep, a_ty, branches) ->
+      Bridge.TDatatypeControl (name, arity, dt_rep, a_ty,
+                               Array.map emit_any branches)
   | NMap (summand_types, branches) ->
       Bridge.TNPlusMap (summand_types, Array.map emit_any branches)
   | PhasedOMap0 (theta, ty_left, ty_right, f, g) ->
@@ -491,6 +527,22 @@ type (_, _, _) split =
 
 (* ========== Open Terms (Full Source Language) ========== *)
 
+(** Total, disjoint n-way context partition: an iterated binary [split].
+
+    [PLast] forces the final branch's context to be *exactly* the remainder,
+    so no resource can be left unowned; each [PCons] consumes a [split], which
+    has no drop constructor. Every variable of the conclusion context
+    therefore has exactly one owner. There is no "omitted resource" case to
+    reject at runtime because it cannot be written.
+
+    This is inactive-context completion, not weakening: a resource owned by
+    branch i is transported unchanged through the other alternatives at
+    lowering time. *)
+type (_, _) partition =
+  | PLast : ('g, 'g * unit) partition
+  | PCons : ('g1, 'g2, 'g) split * ('g2, 'gs) partition
+         -> ('g, 'g1 * 'gs) partition
+
 (** Open terms: GADT tracking both context ('g) and output type ('a).
     Supports the full source language including nested LetPair
     and variable references that the context-tracking [prog] cannot express.
@@ -505,7 +557,6 @@ type (_, _, _) split =
 type (_, _) oterm =
   (* Variables *)
   | OHere  : string * 'a ty -> ('a * unit, 'a) oterm
-  | OShift : 'b ty * ('g, 'a) oterm -> ('b * 'g, 'a) oterm
 
   (* Tensor *)
   | OPair : ('g1, 'a) oterm * ('g2, 'b) oterm * ('g1, 'g2, 'g) split
@@ -530,13 +581,18 @@ type (_, _) oterm =
              * ('g1, 'g2, 'g) split
             -> ('g, [`Lolli of [`Plus of 'a * 'b] * [`Plus of 'c * 'd]]) oterm
 
-  (* n-ary ⊕-Map: all branches share context 'g and produce homogeneous output 'c.
-     This is the general primitive; binary OPlusMap is the n=2 special case.
-     Linearity for n>2 cases is the user's responsibility (each var in 'g must be
-     used in exactly one branch, mirroring the binary split discipline).
-     The result Lolli's sum-types are existential ('sum_in, 'sum_out) — pragmatic
-     loose typing mirroring the prog-level NMap. *)
-  | ONPlusMap : 'a ty array * 'c ty * ('g, 'c) oterm array
+  (* n-ary ⊕-Map. Branches are typed under their own branch-local contexts;
+     the partition witness proves those contexts form a total disjoint cover
+     of the conclusion context 'g. Linearity is therefore enforced by the
+     constructor rather than left to the caller: a branch is linear at its own
+     context (no padding primitive exists), and no resource can be owned by
+     zero branches (no drop constructor).
+     The result Lolli's sum-types remain existential ('sum_in, 'sum_out) —
+     that is a sum-*type* frame question, handled by the layout policy, not a
+     linearity one. *)
+  | ONPlusMap : 'c ty
+              * ('parts, 'c) branches
+              * ('g, 'parts) partition
              -> ('g, [`Lolli of 'sum_in * 'sum_out]) oterm
 
   (* Sequential composition of morphisms *)
@@ -549,16 +605,24 @@ type (_, _) oterm =
   | OId    : 'a ty -> (unit, 'a) oterm
   | OEmbed : (unit, 'a) prog -> (unit, 'a) oterm
 
+(** Heterogeneous branch vector for [ONPlusMap]. Each branch carries its own
+    summand type, so summand-count and branch-count cannot disagree — arity
+    agreement is structural rather than a runtime [Array.length] check. The
+    ['parts] index is the same right-nested tuple of contexts indexed by
+    [partition], so the two travel together and cannot get out of step. *)
+and (_, _) branches =
+  | BNil  : (unit, 'c) branches
+  | BCons : 'a ty * ('g, 'c) oterm * ('gs, 'c) branches
+         -> ('g * 'gs, 'c) branches
+
 (** Smart constructors for open terms — general (explicit split) *)
 let ovar name ty = OHere (name, ty)
-let oshift ty inner = OShift (ty, inner)
 let opair e1 e2 sp = OPair (e1, e2, sp)
 let oletpair x y ty_x ty_y pair body sp = OLetPair (x, y, ty_x, ty_y, pair, body, sp)
 let olam name dom cod body = OLam (name, dom, cod, body)
 let oapp f arg sp = OApp (f, arg, sp)
 let oplusmap ty_l ty_r f g sp = OPlusMap (ty_l, ty_r, f, g, sp)
-let o_n_plusmap summand_types output_ty branches =
-  ONPlusMap (summand_types, output_ty, branches)
+let o_n_plusmap output_ty bs part = ONPlusMap (output_ty, bs, part)
 let oid ty = OId ty
 let oembed p = OEmbed p
 let oseq f g sp = OSeq (f, g, sp)
@@ -611,16 +675,13 @@ let omake_branch ty_g ty_a body = oembed (make_branch ty_g ty_a body)
     For a term of type [('g, 'a) oterm], returns the Rep.t of 'g. *)
 let rec context_rep : type g a. (g, a) oterm -> Rep.t = function
   | OHere (_, ty) -> Rep.Tensor (ty, Rep.Unit)
-  | OShift (b_ty, inner) -> Rep.Tensor (b_ty, context_rep inner)
   | OPair (l, r, sp) -> split_rep (context_rep l) (context_rep r) sp
   | OLetPair (_, _, _, _, pair, body, sp) ->
       split_rep (context_rep pair) (strip_pair_bound (context_rep body)) sp
   | OLam (_, _, _, body) -> strip_front (context_rep body)
   | OApp (f, arg, sp) -> split_rep (context_rep f) (context_rep arg) sp
   | OPlusMap (_, _, f, g, sp) -> split_rep (context_rep f) (context_rep g) sp
-  | ONPlusMap (_, _, branches) ->
-      if Array.length branches = 0 then Rep.Unit
-      else context_rep branches.(0)
+  | ONPlusMap (_, bs, part) -> partition_rep bs part
   | OSeq (f, g, sp) -> split_rep (context_rep f) (context_rep g) sp
   | OId _ -> Rep.Unit
   | OEmbed _ -> Rep.Unit
@@ -642,6 +703,20 @@ and split_rep : type g1 g2 g. Rep.t -> Rep.t -> (g1, g2, g) split -> Rep.t =
         in
         Rep.Tensor (a, split_rep r1 rest_r2 s)
 
+(** Reconstruct the conclusion context rep from the branch-local contexts and
+    the partition witness. This replaces the previous [context_rep branches.(0)],
+    which was only correct while every branch was padded to carry the whole
+    context. The [BNil, _] case is refuted: [partition] has no index [unit], so
+    a zero-branch map is unrepresentable rather than rejected at runtime. *)
+and partition_rep : type parts c whole.
+    (parts, c) branches -> (whole, parts) partition -> Rep.t =
+  fun bs p ->
+  match bs, p with
+  | BNil, _ -> .
+  | BCons (_, b, BNil), PLast -> context_rep b
+  | BCons (_, b, rest_bs), PCons (sp, rest_p) ->
+      split_rep (context_rep b) (partition_rep rest_bs rest_p) sp
+
 (** Strip the first tensor component (lambda-bound variable) from a context rep *)
 and strip_front = function
   | Rep.Tensor (_, rest) -> rest
@@ -656,7 +731,6 @@ and strip_pair_bound = function
 (** Emit an open term to Bridge.term *)
 let rec emit_oterm : type g a. (g, a) oterm -> Bridge.term = function
   | OHere (name, ty) -> Bridge.TVar (name, ty)
-  | OShift (_, inner) -> emit_oterm inner
   | OPair (e1, e2, _) -> Bridge.TPair (emit_oterm e1, emit_oterm e2)
   | OLetPair (x, y, ty_x, ty_y, pair, body, _) ->
       Bridge.TLetPair (x, y, ty_x, ty_y, emit_oterm pair, emit_oterm body)
@@ -665,9 +739,8 @@ let rec emit_oterm : type g a. (g, a) oterm -> Bridge.term = function
   | OApp (f, arg, _) ->
       (* Function variables and lambdas use boundary splicing (TApply).
          Structural morphisms (embed, plusmap, seq, id) use composition (TSeq). *)
-      let rec is_apply_target : type g a. (g, a) oterm -> bool = function
+      let is_apply_target : type g a. (g, a) oterm -> bool = function
         | OHere _ -> true
-        | OShift (_, inner) -> is_apply_target inner
         | OLam _ -> true
         | OApp _ -> true
         | _ -> false
@@ -678,13 +751,20 @@ let rec emit_oterm : type g a. (g, a) oterm -> Bridge.term = function
         Bridge.TSeq (emit_oterm arg, emit_oterm f)
   | OPlusMap (ty_l, ty_r, f, g, _) ->
       Bridge.TPlusMap (ty_l, ty_r, emit_oterm f, emit_oterm g)
-  | ONPlusMap (summand_types, _output_ty, branches) ->
-      let summand_reps = Array.map ty_to_rep summand_types in
-      let branch_terms = Array.map emit_oterm branches in
-      Bridge.TNPlusMap (summand_reps, branch_terms)
+  | ONPlusMap (_output_ty, bs, _part) ->
+      let reps, terms = branches_emit bs in
+      Bridge.TNPlusMap (Array.of_list reps, Array.of_list terms)
   | OSeq (f, g, _) -> Bridge.TSeq (emit_oterm f, emit_oterm g)
   | OId ty -> Bridge.TId ty
   | OEmbed p -> emit p
+
+(** Collect summand reps and emitted branch terms, in branch order. *)
+and branches_emit : type parts c.
+    (parts, c) branches -> Rep.t list * Bridge.term list = function
+  | BNil -> ([], [])
+  | BCons (ty, b, rest) ->
+      let reps, terms = branches_emit rest in
+      (ty_to_rep ty :: reps, emit_oterm b :: terms)
 
 (* ========== Datatype Declarations ========== *)
 
@@ -786,11 +866,13 @@ let control (dt : datatype_desc) (a_ty : 'a ty)
   if dt.arity = 1 then
     par0 (id dt.rep) branches.(0)
   else
-    (* D = I^{⊕n}, so D ⊗ A has flat tag encoding [tag_bits | A_wires].
-       Each summand of D is Unit, so summand ⊗ A = A in the payload.
-       We use NMap on n copies of a_ty to apply per-branch morphisms. *)
-    let summand_types = Array.make dt.arity a_ty in
-    omapn summand_types branches
+    (* D (x) A in the TENSOR frame [D_tag | A payload]. Previously this
+       lowered to NMap on n copies of a_ty, whose declared type is the flat
+       sum A + ... + A; that type is isomorphic to D (x) A but has a
+       different canonical layout whenever |leaves(A)| is not a power of
+       two (for A = Z3: [tag 2 | payload 2] vs 9 leaves = [tag 4 | payload 0]).
+       DatatypeCtrl keeps the tensor frame explicitly. *)
+    DatatypeCtrl (dt.name, dt.arity, dt.rep, ty_to_rep a_ty, branches)
 
 
 (** Phase-weighted coherent control over n-ary datatype.
