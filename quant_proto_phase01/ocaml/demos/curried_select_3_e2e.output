@@ -9,7 +9,11 @@
 ==========================================================================
   Part 1: Compile abstract select_3 (curried, 4 nested lambdas)
 ==========================================================================
-16 qubits, 13 gates
+16 qubits, 23 gates
+  ToffoliBox q[6, 7, 8]
+  ToffoliBox q[6, 7, 8]
+  ToffoliBox q[6, 7, 8]
+  ToffoliBox q[6, 7, 8]
   X q[6]
   X q[7]
   QControlBox q[6, 7, 8, 1]
@@ -21,8 +25,14 @@
   X q[7]
   QControlBox q[6, 7, 8, 5]
   X q[7]
+  ToffoliBox q[6, 7, 8]
+  ToffoliBox q[6, 7, 8]
   Unitary2qBox q[6, 7]
   Unitary2qBox q[6, 7]
+  ToffoliBox q[6, 7, 8]
+  ToffoliBox q[6, 7, 8]
+  ToffoliBox q[6, 7, 8]
+  ToffoliBox q[6, 7, 8]
   perm: [10, 11, 5, 9, 3, 4, 0, 1, 2, 6, 7, 8, 12, 13, 14, 15]
 Abstract compilation SUCCESS!
 
@@ -30,7 +40,11 @@ Abstract compilation SUCCESS!
   Part 2: Instantiate via 3 nested Apply with H, S, T
 ==========================================================================
 Apply(Apply(Apply(select_3, H), S), T):
-6 qubits, 13 gates
+6 qubits, 23 gates
+  ToffoliBox q[0, 1, 2]
+  ToffoliBox q[0, 1, 2]
+  ToffoliBox q[0, 1, 2]
+  ToffoliBox q[0, 1, 2]
   X q[0]
   X q[1]
   QControlBox q[0, 1, 2]
@@ -42,8 +56,14 @@ Apply(Apply(Apply(select_3, H), S), T):
   X q[1]
   QControlBox q[0, 1, 2]
   X q[1]
+  ToffoliBox q[0, 1, 2]
+  ToffoliBox q[0, 1, 2]
   Unitary2qBox q[0, 1]
   Unitary2qBox q[0, 1]
+  ToffoliBox q[0, 1, 2]
+  ToffoliBox q[0, 1, 2]
+  ToffoliBox q[0, 1, 2]
+  ToffoliBox q[0, 1, 2]
   perm: [3, 4, 5, 0, 1, 2]
 Instantiation SUCCESS!
 

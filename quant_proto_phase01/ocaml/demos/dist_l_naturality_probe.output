@@ -26,11 +26,13 @@
   PART 2: Compile P_R with materialize=False (symbolic wire perms)
 ==========================================================================
 
-4 qubits, 4 gates
+4 qubits, 6 gates
+  ToffoliBox q[0, 1, 2, 3]
   X q[0]
   CX q[0, 2]
   X q[0]
   CX q[0, 3]
+  ToffoliBox q[0, 1, 2, 3]
   perm: [0, 1, 2, 3]
 
 ==========================================================================
@@ -45,11 +47,13 @@
   PART 4: Compile P_R with materialize=True (SWAPs emitted)
 ==========================================================================
 
-4 qubits, 4 gates
+4 qubits, 6 gates
+  ToffoliBox q[0, 1, 2, 3]
   X q[0]
   CX q[0, 2]
   X q[0]
   CX q[0, 3]
+  ToffoliBox q[0, 1, 2, 3]
   perm: [0, 1, 2, 3]
 
 ==========================================================================
@@ -60,16 +64,12 @@
   compares full 2^4 = 16-dim unitaries, including 12 valid
   codewords + 4 padding basis states.
 
-  Observed: P_L ≠ P_R   (fidelity = 0.500000)
+  Observed: P_L = P_R   (fidelity = 1.000000)
 
-  This is the current-implementation behavior documented in
-  docs/LIMITATIONS.md §6. Under the current WirePerm-based
-  layout state, the tag-dependent location of C in the target
-  payload cannot be represented; P_L unconditionally X's wire 3
-  (which is C only in the tag=1 branch), while P_R correctly
-  X's wire 2 in the tag=0 branch and wire 3 in the tag=1
-  branch via tag-conditioned dispatch. Repair architecture is
-  specified in docs/LAYOUT_FRAME_REPAIR.md.
+  Full agreement observed. This indicates the layout-frame
+  repair (see docs/LAYOUT_FRAME_REPAIR.md) has landed
+  or the incompleteness has otherwise been resolved.
+  Please update docs/LIMITATIONS.md §6 accordingly.
 
 ==========================================================================
   END OF PROBE

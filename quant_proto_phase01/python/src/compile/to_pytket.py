@@ -47,6 +47,16 @@ from lang.terms import (
     Sum,
 )
 from lang.types import width, Arrow, Unit, Plus, Ten, pretty as _pretty_ty
+from dataclasses import dataclass as _dc_alias
+from compile.frames import (Frame, Sector, Port, canonical_frame,
+                            frames_agree, semantic_dim,
+                            apply_wire_perm, with_spectators,
+                            distl_frames, encode_qubit_frames,
+                            distributor_frames,
+                            UnsupportedFrame, embeddings_agree)
+from compile.align import (emit_align, align_as_wire_permutation,
+                           align_is_identity, align_permutation,
+                           build_align, transported_frame, AlignError)
 
 # Type alias for compilation environment
 # Maps variable names to (start, width) wire ranges in the logical layout
@@ -63,11 +73,55 @@ from core.perm import (
 from backends.materialize import swaps_for_perm, apply_swaps
 
 
+@dataclass
+class Artifact:
+    """The effective artifact of ONE occurrence of a subterm.
+
+    Carries what a splice actually needs: the frames selected for this
+    occurrence, its physical offset, and the pending permutation at entry and
+    exit. Recording frames alone is not enough -- two occurrences of the same
+    AST object sit at different offsets, and a consumer must align against
+    the producer's effective output, not against a type.
+    """
+    term: object
+    occurrence: int
+    offset: int
+    input_frame: object
+    output_frame: object
+    perm_at_entry: tuple = ()
+    perm_at_exit: tuple = ()
+
+    @property
+    def n_qubits(self) -> int:
+        return max(self.input_frame.n_qubits, self.output_frame.n_qubits)
+
+
 @dataclass(frozen=True, slots=True)
 class Compiled:
+    """A compiled artifact.
+
+    `perm` is an OPTIMISATION, not the semantic boundary representation --
+    the frames below are authoritative. Frames and ports are recorded by the
+    emitter that produced the artifact (the typed term is the derivation);
+    downstream compilation only transports or aligns them, and must never
+    reconstruct them from `type_of`.
+
+    `global_phase` is tracked explicitly because the backend circuit
+    representation may discard it, and the framed semantics is compared
+    exactly -- (iX)(iX) = -I must be distinguishable from +I.
+
+    Frames default to None while emitters are being made frame-aware; a None
+    frame means "this emitter has not yet recorded its selection", never
+    "use the canonical frame of the type".
+    """
     circuit: Circuit
     perm: WirePerm
     log: Optional[List[str]] = None
+    input_frame: Optional["Frame"] = None
+    output_frame: Optional["Frame"] = None
+    input_ports: tuple = ()
+    output_ports: tuple = ()
+    global_phase: float = 0.0
 
 
 # --- Auto-flatten helpers for nested PlusMap → NPlusMap conversion ---
@@ -246,6 +300,196 @@ def _has_spectator_coordinates(t: Term) -> bool:
     return False
 
 
+def _nplusmap_frames(t):
+    """NPlusMap's selection, with SECTORS recorded per summand.
+
+    The sectors say which codes belong to which branch -- disjoint,
+    exhaustive, and matched to the logical summands, which is what a
+    downstream splice needs in order to align branch-wise.
+    """
+    from lang.types import build_plus_tree
+    from compile.frames import Sector as _Sec
+    dom = build_plus_tree(list(t.summand_types))
+    cod = build_plus_tree([type_of(br)[1] for br in t.branches])
+    fin, fout = canonical_frame(dom), canonical_frame(cod)
+
+    def _sectors(frame, summands):
+        # A summand that is itself a sum spans SEVERAL tag words -- in
+        # (Z3, Z5) the second spans 3..7 -- so tag_values is derived from the
+        # codes rather than assumed to be the summand index.
+        from lang.types import payload_width as _pwf
+        pw = _pwf(frame.logical) if isinstance(frame.logical, Plus) else 0
+        secs, at = [], 0
+        for i, sm in enumerate(summands):
+            d = semantic_dim(sm)
+            codes = frame.codes[at:at + d]
+            tags = tuple(sorted({c >> pw for c in codes}))
+            secs.append(_Sec(i, sm, codes, tags))
+            at += d
+        return tuple(secs)
+
+    fin = Frame(logical=dom, n_qubits=fin.n_qubits, codes=fin.codes,
+                expr=fin.expr, label="NPlusMap in",
+                sectors=_sectors(fin, list(t.summand_types)))
+    cods = [type_of(br)[1] for br in t.branches]
+    fout = Frame(logical=cod, n_qubits=fout.n_qubits, codes=fout.codes,
+                 expr=fout.expr, label="NPlusMap out",
+                 sectors=_sectors(fout, cods))
+    return fin, fout
+
+
+def allocation_width(t: Term, env: Env = None) -> int:
+    """The register width for `t` -- the SINGLE authority.
+
+    Both the allocator and `select_frames` call this, so the emitter's frames
+    and the circuit agree by construction and Invariant W's content becomes
+    "nobody allocated something other than this", which is the drift it
+    exists to catch.
+    """
+    # Deliberately NOT max(width(dom), width(cod)): the judgment types fix the
+    # semantic space, not the embedding, and folding them in here is what
+    # overrode dist_l's 4-qubit selection with a 5-qubit register.
+    # Composites allocate structurally from their operands, so that an
+    # operand needing a wider register than its judgment type (Encode's
+    # ancilla, a distributor's shared layout) is actually given the room --
+    # otherwise the emitter's selection and the register disagree.
+    if isinstance(t, TenTerm):
+        return allocation_width(t.f, env) + allocation_width(t.g, env)
+    if isinstance(t, Seq):
+        return max(allocation_width(t.f, env), allocation_width(t.g, env))
+
+    n = _internal_width(t)
+    if _contains_encode_decode(t):
+        n = max(n, 2)          # the legacy one-hot pair works in two wires
+    if env:
+        for phys_list in env.values():
+            for phys in phys_list:
+                n = max(n, phys + 1)
+    return n
+
+
+def _distributor_canonical_frames(t):
+    """The canonical frames of a distributor, when its own wire permutation
+    actually realises the canonical iso -- otherwise None.
+
+    Equal WIDTH is not the right criterion: UndistR(I, I, Bool) has a 2-qubit
+    domain and codomain whose canonical embeddings are codes (0,2,3) and
+    (0,1,2), which no wire permutation relates. Nor is "the permutation makes
+    the two frames identical": the permutation's job is to IMPLEMENT the
+    relabelling, so for dist_r both frames are canonical and the wire swap is
+    what realises the iso. The truthful check is that the permutation carries
+    each domain code to the codomain code of its image under the canonical
+    iso; then the framed semantics is exactly that iso, with no leakage, at
+    zero gates, and the artifact's public boundary stays canonical.
+    """
+    from compile.frames import distributor_iso, permute_index
+    d_, c_ = type_of(t)
+    cd, cc = canonical_frame(d_), canonical_frame(c_)
+    if cd.n_qubits != cc.n_qubits or cd.dim != cc.dim:
+        return None
+    fn = {DistL: dist_L_perm, DistR: dist_R_perm,
+          UndistL: undist_L_perm, UndistR: undist_R_perm}[type(t)]
+    tagged = fn(t.a, t.b, t.c)
+    if tagged.tag_perm is not None or tagged.tag_flips:
+        return None                    # tag moves are not plain wire moves
+    # The FORWARD map: permute_index already sends a physical index to where
+    # this wire permutation puts it. Using the inverse here passes anyway for
+    # a symmetric perm -- DistR(Q,I,I) is [1,0] -- and fails for an
+    # asymmetric one such as DistR(Q(x)Q,I,I) at [2,0,1], the same trap that
+    # hid the pending-permutation direction error behind TwistTen(Q,Q).
+    fwd = list(tagged.perm.new_to_old)
+    try:
+        iso = distributor_iso(t.a, t.b, t.c, type(t).__name__)
+    except Exception:
+        return None
+    for k, code in enumerate(cd.codes):
+        if permute_index(code, fwd, cd.n_qubits) != cc.codes[iso[k]]:
+            return None
+    return cd, cc
+
+
+def select_frames(t: Term):
+    """The boundary frames the emitter for `t` selects.
+
+    Emitter-specific selections come first; everything else selects the
+    canonical frame of its own interface. This is consulted BEFORE the
+    register is allocated, so that a derivation which chooses a narrower
+    layout actually gets it -- sizing from judgment types instead silently
+    overrides the selection.
+    """
+    if isinstance(t, (DistL, DistR, UndistL, UndistR)):
+        # The shared narrower layout exists to solve a WIDTH mismatch: sizing
+        # from the judgment types gives (for unequal-width dist_l) a 5-qubit
+        # domain against a 4-qubit codomain and wrongly suggests no gate-free
+        # distributor exists.
+        #
+        # Where the two canonical widths already agree there is no such
+        # mismatch, so the canonical frames are selectable and are preferred:
+        # they keep the artifact's public boundary canonical. Choosing the
+        # shared layout there instead would hand every external caller a
+        # rotated interface -- dist_r's domain reading is A-outer while the
+        # shared layout is tag-outer, which made QSwitch[id,id] compare
+        # against a canonically framed `id` at fidelity 0.5.
+        #
+        # In the equal-width case the two canonical layouts differ by a WIRE
+        # permutation, which the emitter contributes and which costs no gates.
+        _canon = _distributor_canonical_frames(t)
+        if _canon is not None:
+            return _canon
+        return distributor_frames(t.a, t.b, t.c, type(t).__name__)
+    if isinstance(t, TenTerm):
+        # Compose the operands' SELECTED frames, including any residual
+        # wires they hold. Falling back to the canonical frame of the tensor
+        # type would ignore an operand's own layout choice and let its
+        # residual coordinates collide with the other operand's.
+        from compile.frames import tensor_frame as _tf
+        lf_in, lf_out = select_frames(t.f)
+        rf_in, rf_out = select_frames(t.g)
+        return (_tf(lf_in, rf_in, label="ten in"),
+                _tf(lf_out, rf_out, label="ten out"))
+
+    if isinstance(t, Seq):
+        # A Seq's effective boundary is its producer's input and its
+        # consumer's output, taken from their own selections.
+        f_in, _ = select_frames(t.f)
+        _, g_out = select_frames(t.g)
+        n_amb = max(f_in.n_qubits, g_out.n_qubits)
+        if f_in.n_qubits < n_amb:
+            f_in = with_spectators(f_in, n_amb, residual_name="splice_pad")
+        if g_out.n_qubits < n_amb:
+            g_out = with_spectators(g_out, n_amb, residual_name="splice_pad")
+        return f_in, g_out
+
+    if isinstance(t, NPlusMap):
+        return _nplusmap_frames(t)
+
+    if isinstance(t, EncodeQubit):
+        return encode_qubit_frames()
+    if isinstance(t, DecodeQubit):
+        fin, fout = encode_qubit_frames()
+        return fout, fin                       # Decode is Encode reversed
+
+    d_, c_ = type_of(t)
+    fin, fout = canonical_frame(d_), canonical_frame(c_)
+
+    # A term whose interfaces have different widths, or which needs scratch
+    # wires (Lam/Apply function layout), SELECTS both frames in the register
+    # it actually uses, recording the extra coordinates as residual ports.
+    # This is a declared selection, not boundary widening: it happens here,
+    # in the one place selection lives, so the allocator and the emitter agree
+    # by construction and Invariant W stays strict.
+    # Selection is INDEPENDENT of allocation: it must not consult
+    # _internal_width, or the two move together and Invariant W -- which
+    # compares the allocation against the independently selected frames --
+    # becomes vacuous.
+    want = max(fin.n_qubits, fout.n_qubits)
+    if fin.n_qubits < want:
+        fin = with_spectators(fin, want)
+    if fout.n_qubits < want:
+        fout = with_spectators(fout, want)
+    return fin, fout
+
+
 def _internal_width(t: Term) -> int:
     """Compute internal wire width needed for a term.
 
@@ -313,6 +557,16 @@ def _internal_width(t: Term) -> int:
         dom_s, cod_s = type_of(t)
         return max(type_width(dom_s), type_width(cod_s),
                    max((_internal_width(b) for b in (t.left, t.right)), default=0))
+
+    if isinstance(t, (DistL, DistR, UndistL, UndistR)):
+        # All four distributors are gate-free in the derivation-selected
+        # SHARED layout; sizing from the judgment types instead gives (for
+        # dist_l) a 5-qubit domain against a 4-qubit codomain and wrongly
+        # suggests no gate-free distributor exists. Allocation must READ the
+        # selection here rather than recompute a width of its own -- a second
+        # width policy would silently override the selected frame.
+        _fi, _fo = select_frames(t)
+        return max(_fi.n_qubits, _fo.n_qubits)
 
     if isinstance(t, DatatypeControl):
         # Tensor frame: [ D_tag | A payload ].  Deliberately NOT the flat sum
@@ -950,7 +1204,22 @@ def _subterms(t: Term):
     # Otherwise no subterms.
 
 
-def compile(term: Term, *, materialize: bool = False, explain: bool = False, env: Env = None) -> Compiled:
+def compile_with_artifacts(term: Term, *, materialize: bool = False,
+                           explain: bool = False, env: Env = None):
+    """`compile`, plus every occurrence artifact produced along the way.
+
+    Two occurrences of the same AST object appear as two artifacts at two
+    offsets, which is what a splice needs and what `id()`-keyed recording
+    could not express.
+    """
+    out = {}
+    res = compile(term, materialize=materialize, explain=explain, env=env,
+                  _artifact_sink=out)
+    return res, out.get("artifacts", [])
+
+
+def compile(term: Term, *, materialize: bool = False, explain: bool = False,
+            env: Env = None, _artifact_sink=None) -> Compiled:
     # Check for Feedback - not currently supported
     if _contains_feedback(term):
         raise NotImplementedError(
@@ -970,15 +1239,22 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
     # For terms with encode/decode, we always need 2 wires (Q=1, I+I=2).
     # Even if roundtrip Q→Q has width 1, internally we need 2 wires.
-    if _contains_encode_decode(term):
-        n = 2  # encode/decode always operate on 2 wires
+    if False:   # superseded: allocation_width handles encode/decode structurally
+        n = 2
     else:
         # Compute internal width needed for higher-order terms
-        n = _internal_width(term)
-        n_dom = width(dom)
-        n_cod = width(cod)
-        # Ensure we have at least max(dom, cod) wires
-        n = max(n, n_dom, n_cod)
+        # One authority for the register width, shared with select_frames.
+        # No fail-open fallback: if the emitter cannot select frames we stop.
+        try:
+            _sel_in, _sel_out = select_frames(term)
+        except UnsupportedFrame:
+            raise                      # dedicated error, surfaced verbatim
+        except Exception as _e:
+            raise TypeCheckError(
+                f"cannot select boundary frames for {type(term).__name__}: "
+                f"{_e}")
+        n = max(allocation_width(term, env),
+                _sel_in.n_qubits, _sel_out.n_qubits)
         # When env is supplied (sub-compile of open PlusMap branches), it may
         # reference physical wire positions beyond the term's declared width.
         # Make sure the circuit is large enough.
@@ -988,6 +1264,65 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                     if phys + 1 > n:
                         n = phys + 1
 
+    # --- derivation-selected frame recording -------------------------------
+    # The typed term IS the derivation: the emitter handling each constructor
+    # selects and RECORDS its boundary frames, sectors and ports here.
+    # Downstream compilation transports or aligns what was recorded; it must
+    # never reconstruct embeddings, sectors, ports or payload locations from
+    # type_of. Keyed by id(subterm) so producer and consumer frames at a
+    # splice stay independently addressable (checkpoint 2 consumes these).
+    # Keyed by OCCURRENCE, not by id(subterm): the same AST object may appear
+    # twice at different offsets, and id() would collapse the two derivations
+    # into one entry. Each entry into `go` takes the next sequence number, so
+    # producer and consumer at a splice stay independently addressable.
+    frame_registry = {}
+    _occurrence = [0]
+
+    def _record_frames(occ, t_, fin, fout, in_ports=(), out_ports=()):
+        frame_registry[occ] = (type(t_).__name__, fin, fout,
+                               tuple(in_ports), tuple(out_ports))
+        return fin, fout
+
+    def _select_default_frames(t_):
+        """Delegates to the single module-level `select_frames`.
+
+        There is deliberately no second copy of the selection policy here:
+        the allocator and the emitter must agree by construction, and a
+        duplicated policy is how they drift apart.
+        """
+        return select_frames(t_)
+
+    def go(t: Term, offset: int = 0, env: Env = None, *, is_value: bool = False):
+        """Emit `t` and return its EFFECTIVE artifact for this occurrence."""
+        occ = _occurrence[0]
+        _occurrence[0] += 1
+        try:
+            fin, fout = select_frames(t)
+        except UnsupportedFrame:
+            raise
+        except Exception as _e:
+            raise TypeCheckError(
+                f"cannot select boundary frames for {type(t).__name__}: {_e}")
+        entry = tuple(p.new_to_old)
+        prev_occ = _cur_occ[0]
+        _cur_occ[0] = occ
+        try:
+            _go_body(t, offset, env, is_value=is_value)
+        finally:
+            _cur_occ[0] = prev_occ
+        # An emitter may report a TRANSPORTED output frame (Seq after Align);
+        # that effective frame, not the selected one, is what propagates.
+        fout = _frame_override.pop(occ, fout)
+        art = Artifact(term=t, occurrence=occ, offset=offset,
+                       input_frame=fin, output_frame=fout,
+                       perm_at_entry=entry, perm_at_exit=tuple(p.new_to_old))
+        frame_registry[occ] = art
+        artifacts.append(art)
+        return art
+
+    artifacts = []
+    _frame_override = {}
+    _cur_occ = [0]
     circ = Circuit(n)
     p = identity(n)
     # Track pending tag flips (X gates to emit after permutation tracking)
@@ -1257,7 +1592,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
         if anti:
             circ.X(ctrl_q)
 
-    def go(t: Term, offset: int = 0, env: Env = None, *, is_value: bool = False) -> None:
+    def _go_body(t: Term, offset: int = 0, env: Env = None, *, is_value: bool = False) -> None:
         """Compile term t at given wire offset with variable environment.
 
         Args:
@@ -1315,18 +1650,61 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
                 log.append(f"TagPerm: k={k}, perm={t.perm}")
             return
         if isinstance(t, Seq):
-            go(t.f, offset, env)
+            a_f = go(t.f, offset, env)
+            try:
+                g_in, g_out = select_frames(t.g)
+            except UnsupportedFrame:
+                raise
+
+            # Align at the splice, against the producer's EFFECTIVE output
+            # frame from its returned artifact -- never a frame recomputed
+            # from type_of.  A u_C^- = u_P^+ , so A carries CONSUMER codes
+            # onto PRODUCER codes.
+            prod_out, cons_in = a_f.output_frame, g_in
+            # Unequal registers need an explicitly selected common ambient
+            # frame with typed residual ports -- Align never widens silently.
+            if prod_out.n_qubits != cons_in.n_qubits:
+                _amb = max(prod_out.n_qubits, cons_in.n_qubits)
+                if prod_out.n_qubits < _amb:
+                    prod_out = with_spectators(prod_out, _amb,
+                                               residual_name="splice_pad")
+                if cons_in.n_qubits < _amb:
+                    cons_in = with_spectators(cons_in, _amb,
+                                              residual_name="splice_pad")
+                    g_out = with_spectators(g_out, _amb,
+                                            residual_name="splice_pad")
+            if not align_is_identity(cons_in, prod_out):
+                wp = align_as_wire_permutation(cons_in, prod_out)
+                if wp is not None:
+                    # Fast path: a pure wire permutation folds into WirePerm.
+                    _frame_override[_cur_occ[0]] = transported_frame(
+                        build_align(cons_in, prod_out), g_out)
+                    go(t.g, offset, env)
+                    return
+                wires = [p.apply_new_to_old(offset + i)
+                         for i in range(prod_out.n_qubits)]
+                A = build_align(cons_in, prod_out)
+                # G_C' = A G_C A^dagger, emitted chronologically as
+                # A^dagger ; G_C ; A.
+                emit_align(circ, wires, prod_out, cons_in)     # A^dagger
+                go(t.g, offset, env)                            # G_C
+                emit_align(circ, wires, cons_in, prod_out)      # A
+                # The effective output is A u_C^+ ; propagate it onward.
+                _frame_override[_cur_occ[0]] = transported_frame(A, g_out)
+                return
             go(t.g, offset, env)
             return
 
         # TenTerm: parallel composition with offset semantics (Phase 2)
         if isinstance(t, TenTerm):
             # Get the type of the left branch to compute right branch offset
-            left_dom, _ = type_of(t.f)
-            left_width = width(left_dom)
-            # Compile left branch first (spec: left-then-right order)
+            # Offset the right operand by the left operand's SELECTED
+            # physical width -- including any residual wires it holds --
+            # never by its judgment width, which would let one operand's
+            # residual coordinates collide with the other's.
+            _lf_in, _lf_out = select_frames(t.f)
+            left_width = max(_lf_in.n_qubits, _lf_out.n_qubits)
             go(t.f, offset, env)
-            # Compile right branch with additional offset
             go(t.g, offset + left_width, env)
             if explain:
                 log.append(f"TenTerm left_width={left_width}")
@@ -1375,30 +1753,71 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
 
         # Distributivity: now supported with tagged layout
         if isinstance(t, DistL):
-            tagged = dist_L_perm(t.a, t.b, t.c)
-            apply_tagged_perm(tagged, offset)
-            if explain:
-                log.append(f"DistL perm={tagged.perm.new_to_old} (identity)")
+            # Gate-free either way. At equal widths the canonical frames were
+            # selected and the two layouts differ by a wire permutation, which
+            # is contributed here and costs no gates. At unequal widths the
+            # shared layout was selected: both readings are the same physical
+            # layout, so nothing moves and any conversion a consumer needs
+            # happens at the splice, via Align.
+            if _distributor_canonical_frames(t) is not None:
+                tagged = dist_L_perm(t.a, t.b, t.c)
+                apply_tagged_perm(tagged, offset)
+                if explain:
+                    log.append(
+                        f"DistL perm={tagged.perm.new_to_old} (identity)")
+            elif explain:
+                log.append("DistL: gate-free in the shared layout")
             return
+
         if isinstance(t, DistR):
-            tagged = dist_R_perm(t.a, t.b, t.c)
-            apply_tagged_perm(tagged, offset)
-            if explain:
-                log.append(f"DistR perm={tagged.perm.new_to_old} (tag moves to front)")
+            # Gate-free either way. At equal widths the canonical frames were
+            # selected and the two layouts differ by a wire permutation, which
+            # is contributed here and costs no gates. At unequal widths the
+            # shared layout was selected: both readings are the same physical
+            # layout, so nothing moves and any conversion a consumer needs
+            # happens at the splice, via Align.
+            if _distributor_canonical_frames(t) is not None:
+                tagged = dist_R_perm(t.a, t.b, t.c)
+                apply_tagged_perm(tagged, offset)
+                if explain:
+                    log.append(
+                        f"DistR perm={tagged.perm.new_to_old} (tag moves to front)")
+            elif explain:
+                log.append("DistR: gate-free in the shared layout")
             return
 
         # Inverse distributivity: now supported with tagged layout
         if isinstance(t, UndistL):
-            tagged = undist_L_perm(t.a, t.b, t.c)
-            apply_tagged_perm(tagged, offset)
-            if explain:
-                log.append(f"UndistL perm={tagged.perm.new_to_old} (identity)")
+            # Gate-free either way. At equal widths the canonical frames were
+            # selected and the two layouts differ by a wire permutation, which
+            # is contributed here and costs no gates. At unequal widths the
+            # shared layout was selected: both readings are the same physical
+            # layout, so nothing moves and any conversion a consumer needs
+            # happens at the splice, via Align.
+            if _distributor_canonical_frames(t) is not None:
+                tagged = undist_L_perm(t.a, t.b, t.c)
+                apply_tagged_perm(tagged, offset)
+                if explain:
+                    log.append(
+                        f"UndistL perm={tagged.perm.new_to_old} (identity)")
+            elif explain:
+                log.append("UndistL: gate-free in the shared layout")
             return
         if isinstance(t, UndistR):
-            tagged = undist_R_perm(t.a, t.b, t.c)
-            apply_tagged_perm(tagged, offset)
-            if explain:
-                log.append(f"UndistR perm={tagged.perm.new_to_old} (tag moves back)")
+            # Gate-free either way. At equal widths the canonical frames were
+            # selected and the two layouts differ by a wire permutation, which
+            # is contributed here and costs no gates. At unequal widths the
+            # shared layout was selected: both readings are the same physical
+            # layout, so nothing moves and any conversion a consumer needs
+            # happens at the splice, via Align.
+            if _distributor_canonical_frames(t) is not None:
+                tagged = undist_R_perm(t.a, t.b, t.c)
+                apply_tagged_perm(tagged, offset)
+                if explain:
+                    log.append(
+                        f"UndistR perm={tagged.perm.new_to_old} (identity)")
+            elif explain:
+                log.append("UndistR: gate-free in the shared layout")
             return
 
         if isinstance(t, H):
@@ -3030,26 +3449,74 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False, env
             log.append(f"Materialize swaps={swaps}")
         p = identity(n)
 
-    # ---- Invariant W (docs/COMPILER_INVARIANTS.md) --------------------------
-    # Stated over frames: n_qubits == the compositional frame width. The
-    # checkable corollary is that for a term with NO spectator coordinates the
-    # frame width is the logical width, so n == width(cod).
-    #
-    # This is the assertion that catches an emitter and its _internal_width
-    # case implementing the same layout policy independently and drifting: for
-    # sum-headed NPlusMap summands the allocator said 4 while the canonical
-    # codomain was 3, and that was found only by running a demo.
-    if not _has_spectator_coordinates(term):
-        _w_cod = width(cod)
-        if n != _w_cod:
-            raise TypeCheckError(
-                f"Invariant W violated: frame sized at {n} qubits but the "
-                f"codomain {_pretty_ty(cod)} has canonical width {_w_cod}, and "
-                f"{type(term).__name__} has no spectator coordinates. An "
-                f"emitter and its _internal_width case disagree about the "
-                f"layout (see docs/COMPILER_INVARIANTS.md Invariant W)."
-            )
+    if _artifact_sink is not None:
+        _artifact_sink["artifacts"] = artifacts
+    _root = frame_registry.get(0)
+    if _root is None:
+        raise TypeCheckError(
+            f"no boundary frames recorded for {type(term).__name__}: every "
+            f"emitter must record the frames it selected (frames are "
+            f"required, never reconstructed downstream)")
+    _fin, _fout = _root.input_frame, _root.output_frame
 
-    return Compiled(circuit=circ, perm=p, log=(log if explain else None))
+    # Higher-order terms carry function-layout wires (Lam/Apply boundary
+    # slots, Cup/Cap) whose exact count emission determines rather than
+    # _internal_width predicting it. The CATEGORY is declared here -- these
+    # coordinates are function layout, recorded as such -- so a first-order
+    # term whose register drifts still trips W below.
+    if _has_spectator_coordinates(term):
+        if _fin.n_qubits < n:
+            _fin = with_spectators(_fin, n, residual_name="fn_layout",
+                                   role="residual")
+        if _fout.n_qubits < n:
+            _fout = with_spectators(_fout, n, residual_name="fn_layout",
+                                    role="residual")
+
+    # A sub-compile given an `env` works inside a larger PARENT register; the
+    # extra coordinates are the outer context, which is explainable and so is
+    # recorded as a context port. This is not the unconditional boundary
+    # widening that made W tautological: it fires only when an env was
+    # actually supplied, so an unexplained allocation at top level still trips.
+    if env and (_fin.n_qubits < n or _fout.n_qubits < n):
+        if _fin.n_qubits < n:
+            _fin = with_spectators(_fin, n, residual_name="context",
+                                   role="context")
+        if _fout.n_qubits < n:
+            _fout = with_spectators(_fout, n, residual_name="context",
+                                    role="context")
+    # Frame.ports is the single authoritative location; Compiled's fields
+    # mirror it rather than being a second, independently-filled copy.
+    _pin, _pout = _fin.ports, _fout.ports
+
+    # A PENDING permutation is semantics, not bookkeeping: without it the
+    # frames claim identity while the artifact permutes. Under
+    # materialize=True the swaps were emitted and p is the identity, so both
+    # modes end up truthful.
+    _pl = list(p.new_to_old)
+    if _pl != list(range(len(_pl))) and len(_pl) == _fout.n_qubits:
+        # The INVERSE: new_to_old says which old wire each new wire reads, so
+        # transporting a frame forward through the pending permutation uses
+        # the inverse map. A symmetric perm (SWAP) hides the difference, which
+        # is why TwistTen(Q,Q) passed while TwistTen(Q,Z3) did not.
+        _inv = [0] * len(_pl)
+        for _j, _o in enumerate(_pl):
+            _inv[_o] = _j
+        _fout = apply_wire_perm(_fout, _inv)
+    # ---- Invariant W (docs/COMPILER_INVARIANTS.md) --------------------------
+    # Strictly  q = F_in.n = F_out.n, checked against the FINAL frames (after
+    # any declared spectator/context selection), not against the values
+    # recorded before emission -- otherwise the check never sees them.
+    if not (n == _fin.n_qubits == _fout.n_qubits):
+        raise TypeCheckError(
+            f"Invariant W violated: register is {n} qubits but the selected "
+            f"frames are {_fin.n_qubits} (in) and {_fout.n_qubits} (out) for "
+            f"{type(term).__name__}. Either the allocator drifted or the "
+            f"emitter's selection is wrong; spectators must be selected "
+            f"explicitly (docs/COMPILER_INVARIANTS.md).")
+
+    return Compiled(circuit=circ, perm=p, log=(log if explain else None),
+                    input_frame=_fin, output_frame=_fout,
+                    input_ports=_pin, output_ports=_pout,
+                    global_phase=float(circ.phase))
 
 

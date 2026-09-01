@@ -514,7 +514,17 @@ def handle_compile(request: dict) -> dict:
         resp = {
             "success": True,
             "perm": perm_to_json(result.perm),
-            "circuit_size": result.circuit.n_gates
+            "circuit_size": result.circuit.n_gates,
+            # Boundary frames are authoritative; perm is an optimisation.
+            "input_frame": (result.input_frame.to_json()
+                            if result.input_frame is not None else None),
+            "output_frame": (result.output_frame.to_json()
+                             if result.output_frame is not None else None),
+            "input_ports": [pt.to_json() for pt in result.input_ports],
+            "output_ports": [pt.to_json() for pt in result.output_ports],
+            # Tracked explicitly: the backend representation may discard it,
+            # and framed semantics is compared exactly.
+            "global_phase": result.global_phase,
         }
 
         if request.get("show_gates"):

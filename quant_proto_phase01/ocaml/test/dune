@@ -33,3 +33,7 @@
 (test
  (name test_first_order_directional)
  (libraries qpl_surface str))
+
+(test
+ (name test_frames_bridge)
+ (libraries qpl_surface str))

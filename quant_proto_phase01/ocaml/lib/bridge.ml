@@ -10,10 +10,88 @@ type wire_perm = {
   new_to_old : int list;
 }
 
-(** Compilation result *)
+(** A logical type as reconstructed from the bridge payload.
+
+    Parsing the type back into a tree is what makes the round-trip
+    STRUCTURAL: comparing the raw JSON text would pass on a payload that
+    merely looks similar, and would break on whitespace. *)
+type ty_repr =
+  | TUnit
+  | TQ
+  | TTen of ty_repr * ty_repr
+  | TPlus of ty_repr * ty_repr
+  | TArrow of ty_repr * ty_repr
+  | TDual of ty_repr
+
+(** A symbolic frame expression, reconstructed from the bridge payload. *)
+type expr_repr =
+  | EIdentity of int
+  | EWirePerm of int list
+  | ETensor of expr_repr * expr_repr
+  | ESum of expr_repr list * int * int      (* parts, tag_bits, payload_bits *)
+  | ETagCond of int * int list list         (* tag_bits, per_tag *)
+  | ECompose of expr_repr * expr_repr
+  | EOpaque of string
+
+(** One summand's placement inside a sum frame. A sector may span SEVERAL
+    tag words, so [sec_tag_values] is a list, not a single tag. *)
+type sector = {
+  sec_index : int;
+  sec_logical : ty_repr option;
+  sec_codes : int list;
+  sec_tag_values : int list;
+}
+
+(** A sub-interface's placement. [prt_by_sector] is non-empty exactly when the
+    placement is sector-conditioned (the port sits on different wires in
+    different sectors), in which case [prt_wires] is empty. *)
+type port = {
+  prt_name : string;
+  prt_logical : ty_repr option;
+  prt_wires : int list;
+  prt_role : string;
+  prt_by_sector : (int * int list) list;
+}
+
+(** A boundary frame: the exact embedding of a semantic basis into the
+    physical register. [f_codes] at position [i] is the physical basis index
+    of the i-th valid semantic label. Authoritative -- [wire_perm] is an
+    optimisation.
+
+    The judgment type fixes the semantic space; the FRAME fixes the physical
+    embedding. Both must survive the bridge intact -- codes and width alone
+    do not determine the interface, so the logical type, the symbolic
+    expression, the sectors and the ports all round-trip too. *)
+type frame = {
+  f_n_qubits : int;
+  f_codes : int list;
+  f_label : string;
+  f_logical : ty_repr option;
+  f_expr : expr_repr option;
+  f_sectors : sector list;
+  f_ports : port list;
+}
+
+(** Compilation result.
+
+    Carries both boundary frames and the global phase, because a judgment
+    type fixes the semantic space but not its physical embedding, and the
+    backend circuit representation may discard phase. *)
 type compile_result =
   | CompileOk of wire_perm * int  (* perm, circuit_size *)
   | CompileError of string
+
+type framed_result = {
+  fr_perm : wire_perm;
+  fr_size : int;
+  fr_input_frame : frame option;
+  fr_output_frame : frame option;
+  fr_global_phase : float;
+}
+
+type framed_compile_result =
+  | FramedOk of framed_result
+  | FramedError of string
 
 (** Involution check result *)
 type involution_result =
@@ -147,7 +225,7 @@ let rec term_to_json = function
   | TId ty ->
     Printf.sprintf {|{"node": "Id", "ty": %s}|} (type_to_json ty)
   | TSum (alpha_theta, beta_theta, r1, r2) ->
-    Printf.sprintf {|{"node": "Sum", "alpha_theta": %f, "beta_theta": %f, "left": %s, "right": %s}|}
+    Printf.sprintf {|{"node": "Sum", "alpha_theta": %.17g, "beta_theta": %.17g, "left": %s, "right": %s}|}
       alpha_theta beta_theta (term_to_json r1) (term_to_json r2)
   | TDatatypeControl (name, arity, dt_rep, a_ty, branches) ->
     let branches_json = Printf.sprintf "[%s]"
@@ -155,7 +233,7 @@ let rec term_to_json = function
     Printf.sprintf {|{"node": "DatatypeControl", "name": "%s", "arity": %d, "dt_rep": %s, "a_ty": %s, "branches": %s}|}
       name arity (type_to_json dt_rep) (type_to_json a_ty) branches_json
   | TGlobalPhase (theta, ty) ->
-    Printf.sprintf {|{"node": "GlobalPhase", "theta": %f, "ty": %s}|}
+    Printf.sprintf {|{"node": "GlobalPhase", "theta": %.17g, "ty": %s}|}
       theta (type_to_json ty)
   | TSeq (f, g) ->
     Printf.sprintf {|{"node": "Seq", "f": %s, "g": %s}|}
@@ -211,14 +289,14 @@ let rec term_to_json = function
   | TX i -> Printf.sprintf {|{"node": "X", "i": %d}|} i
   | TY i -> Printf.sprintf {|{"node": "Y", "i": %d}|} i
   | TZ i -> Printf.sprintf {|{"node": "Z", "i": %d}|} i
-  | TRx (theta, i) -> Printf.sprintf {|{"node": "Rx", "theta": %f, "i": %d}|} theta i
-  | TRy (theta, i) -> Printf.sprintf {|{"node": "Ry", "theta": %f, "i": %d}|} theta i
-  | TRz (theta, i) -> Printf.sprintf {|{"node": "Rz", "theta": %f, "i": %d}|} theta i
-  | TPhase (theta, i) -> Printf.sprintf {|{"node": "Phase", "theta": %f, "i": %d}|} theta i
+  | TRx (theta, i) -> Printf.sprintf {|{"node": "Rx", "theta": %.17g, "i": %d}|} theta i
+  | TRy (theta, i) -> Printf.sprintf {|{"node": "Ry", "theta": %.17g, "i": %d}|} theta i
+  | TRz (theta, i) -> Printf.sprintf {|{"node": "Rz", "theta": %.17g, "i": %d}|} theta i
+  | TPhase (theta, i) -> Printf.sprintf {|{"node": "Phase", "theta": %.17g, "i": %d}|} theta i
   (* Two-qubit gates *)
   | TCX (i, j) -> Printf.sprintf {|{"node": "CX", "i": %d, "j": %d}|} i j
   | TCZ (i, j) -> Printf.sprintf {|{"node": "CZ", "i": %d, "j": %d}|} i j
-  | TCRz (theta, i, j) -> Printf.sprintf {|{"node": "CRz", "theta": %f, "i": %d, "j": %d}|} theta i j
+  | TCRz (theta, i, j) -> Printf.sprintf {|{"node": "CRz", "theta": %.17g, "i": %d, "j": %d}|} theta i j
   (* Three-qubit gate *)
   | TCCX (i, j, k) -> Printf.sprintf {|{"node": "CCX", "i": %d, "j": %d, "k": %d}|} i j k
   (* Controlled single-qubit gates for quantum case expressions *)
@@ -233,9 +311,9 @@ let rec term_to_json = function
       name targets_json controls_json
   (* Exponentials of structural involutions *)
   | TExpSwap (theta, i, j) ->
-    Printf.sprintf {|{"node": "ExpSwap", "theta": %f, "i": %d, "j": %d}|} theta i j
+    Printf.sprintf {|{"node": "ExpSwap", "theta": %.17g, "i": %d, "j": %d}|} theta i j
   | TExpInvolution (theta, body) ->
-    Printf.sprintf {|{"node": "ExpInvolution", "theta": %f, "body": %s}|}
+    Printf.sprintf {|{"node": "ExpInvolution", "theta": %.17g, "body": %s}|}
       theta (term_to_json body)
   (* Higher-order constructs (GOI apply) *)
   | TFunVar (name, dom, cod) ->
@@ -253,7 +331,7 @@ let rec term_to_json = function
       (type_to_json ty_left) (type_to_json ty_right) (term_to_json left) (term_to_json right)
   (* Phase-weighted bifunctorial action *)
   | TPhasedPlusMap (theta, ty_left, ty_right, left, right) ->
-    Printf.sprintf {|{"node": "PhasedPlusMap", "theta": %f, "ty_left": %s, "ty_right": %s, "left": %s, "right": %s}|}
+    Printf.sprintf {|{"node": "PhasedPlusMap", "theta": %.17g, "ty_left": %s, "ty_right": %s, "left": %s, "right": %s}|}
       theta (type_to_json ty_left) (type_to_json ty_right) (term_to_json left) (term_to_json right)
   (* N-ary bifunctorial action on sums *)
   | TNPlusMap (summand_types, branches) ->
@@ -266,7 +344,7 @@ let rec term_to_json = function
   (* Phase-weighted n-ary control *)
   | TPhasedControl (name, arity, phases, dt_rep, a_ty) ->
     let phases_json = Printf.sprintf "[%s]"
-      (String.concat ", " (List.map (Printf.sprintf "%f") phases)) in
+      (String.concat ", " (List.map (Printf.sprintf "%.17g") phases)) in
     Printf.sprintf {|{"node": "PhasedControl", "name": "%s", "arity": %d, "phases": %s, "dt_rep": %s, "a_ty": %s}|}
       name arity phases_json (type_to_json dt_rep) (type_to_json a_ty)
   (* Pattern-matching case on sums *)
@@ -364,6 +442,326 @@ let call_bridge request_json =
 
     String.trim output
   )
+
+(** Parse an int list out of a JSON array field, e.g. "codes": [0, 2, 4] *)
+let parse_int_list key json =
+  try
+    let re = Str.regexp (Printf.sprintf {|"%s": *\[\([^]]*\)\]|} key) in
+    let _ = Str.search_forward re json 0 in
+    let body = Str.matched_group 1 json in
+    if String.trim body = "" then Some []
+    else
+      Some (List.map (fun s -> int_of_string (String.trim s))
+              (String.split_on_char ',' body))
+  with Not_found | Failure _ -> None
+
+(** Raw text of the value of a TOP-LEVEL key of a JSON object.
+
+    A flat regexp search is wrong here: in [Ten(Plus(..), Plus(..))] the first
+    textual occurrence of ["right"] belongs to the nested LEFT subtree, so a
+    flat search silently returns the wrong subterm. This walks the object at
+    depth one and returns the value of the key at that level only. *)
+let field key raw =
+  let n = String.length raw in
+  if n < 2 || raw.[0] <> '{' then None
+  else begin
+    let want = "\"" ^ key ^ "\"" in
+    let wl = String.length want in
+    let result = ref None in
+    let depth = ref 0 and in_str = ref false and esc = ref false and i = ref 1 in
+    while !result = None && !i < n - 1 do
+      let ch = raw.[!i] in
+      if !in_str then begin
+        if !esc then esc := false
+        else if ch = '\\' then esc := true
+        else if ch = '"' then in_str := false
+      end else if ch = '"' then begin
+        if !depth = 0 && !i + wl <= n && String.sub raw !i wl = want then begin
+          (* skip the key, then whitespace and the colon *)
+          let j = ref (!i + wl) in
+          while !j < n && (raw.[!j] = ' ' || raw.[!j] = ':') do incr j done;
+          if !j < n then begin
+            let c = raw.[!j] in
+            if c = '{' || c = '[' then begin
+              let closing = if c = '{' then '}' else ']' in
+              let d = ref 0 and k = ref !j
+              and s2 = ref false and e2 = ref false and stop = ref (-1) in
+              while !stop < 0 && !k < n do
+                let ck = raw.[!k] in
+                if !s2 then begin
+                  if !e2 then e2 := false
+                  else if ck = '\\' then e2 := true
+                  else if ck = '"' then s2 := false
+                end
+                else if ck = '"' then s2 := true
+                else if ck = c then incr d
+                else if ck = closing then
+                  (decr d; if !d = 0 then stop := !k + 1);
+                incr k
+              done;
+              if !stop > 0 then result := Some (String.sub raw !j (!stop - !j))
+            end else begin
+              (* scalar: up to the next top-level comma or the closing brace *)
+              let k = ref !j and s2 = ref false and e2 = ref false
+              and stop = ref (-1) in
+              while !stop < 0 && !k < n do
+                let ck = raw.[!k] in
+                if !s2 then begin
+                  if !e2 then e2 := false
+                  else if ck = '\\' then e2 := true
+                  else if ck = '"' then s2 := false
+                end
+                else if ck = '"' then s2 := true
+                else if ck = ',' || ck = '}' then stop := !k;
+                incr k
+              done;
+              let stop = if !stop < 0 then n - 1 else !stop in
+              result := Some (String.trim (String.sub raw !j (stop - !j)))
+            end
+          end;
+          (* consumed as a key; continue past it if unmatched *)
+          i := !j - 1
+        end else in_str := true
+      end
+      else if ch = '{' || ch = '[' then incr depth
+      else if ch = '}' || ch = ']' then decr depth;
+      incr i
+    done;
+    !result
+  end
+
+(** A top-level string field, unquoted. *)
+let field_string key raw =
+  match field key raw with
+  | Some v when String.length v >= 2 && v.[0] = '"' ->
+    Some (String.sub v 1 (String.length v - 2))
+  | _ -> None
+
+(** A top-level integer field. *)
+let field_int key raw =
+  match field key raw with
+  | Some v -> int_of_string_opt (String.trim v)
+  | None -> None
+
+(** A top-level array of integers. *)
+let field_int_list key raw =
+  match field key raw with
+  | None -> None
+  | Some v ->
+    let body = String.sub v 1 (String.length v - 2) in
+    if String.trim body = "" then Some []
+    else
+      (try Some (List.map (fun x -> int_of_string (String.trim x))
+                   (String.split_on_char ',' body))
+       with Failure _ -> None)
+
+(** Split a raw JSON array into the raw text of its elements. *)
+let split_array raw =
+  let n = String.length raw in
+  if n < 2 then []
+  else begin
+    let body_start = 1 and body_stop = n - 1 in
+    let out = ref [] and buf = Buffer.create 64 in
+    let depth = ref 0 and in_str = ref false and esc = ref false in
+    for i = body_start to body_stop - 1 do
+      let ch = raw.[i] in
+      let boundary =
+        if !in_str then begin
+          (if !esc then esc := false
+           else if ch = '\\' then esc := true
+           else if ch = '"' then in_str := false);
+          false
+        end else if ch = '"' then (in_str := true; false)
+        else if ch = '{' || ch = '[' then (incr depth; false)
+        else if ch = '}' || ch = ']' then (decr depth; false)
+        else ch = ',' && !depth = 0
+      in
+      if boundary then begin
+        out := Buffer.contents buf :: !out; Buffer.clear buf
+      end else Buffer.add_char buf ch
+    done;
+    let last = String.trim (Buffer.contents buf) in
+    let all = if last = "" then !out else last :: !out in
+    List.rev_map String.trim all |> List.rev |> List.rev
+  end
+
+(** Reconstruct a logical type from its serialized form. *)
+let rec parse_ty raw =
+  match field_string "node" raw with
+  | None -> None
+  | Some "Unit" -> Some TUnit
+  | Some "Q" -> Some TQ
+  | Some (("Ten" | "Plus") as node) ->
+    (match field "left" raw, field "right" raw with
+     | Some l, Some r ->
+       (match parse_ty l, parse_ty r with
+        | Some l', Some r' ->
+          Some (if node = "Ten" then TTen (l', r') else TPlus (l', r'))
+        | _ -> None)
+     | _ -> None)
+  | Some "Arrow" ->
+    (match field "dom" raw, field "cod" raw with
+     | Some d, Some c ->
+       (match parse_ty d, parse_ty c with
+        | Some d', Some c' -> Some (TArrow (d', c'))
+        | _ -> None)
+     | _ -> None)
+  | Some "Dual" ->
+    (match field "ty" raw with
+     | Some t -> (match parse_ty t with Some t' -> Some (TDual t') | None -> None)
+     | None -> None)
+  | Some _ -> None
+
+(** Reconstruct a symbolic frame expression from its serialized form. *)
+let rec parse_expr raw =
+  match field_string "k" raw with
+  | None -> None
+  | Some "identity" ->
+    (match field_int "n" raw with Some n -> Some (EIdentity n) | None -> None)
+  | Some "wireperm" ->
+    (match field_int_list "new_to_old" raw with
+     | Some p -> Some (EWirePerm p) | None -> None)
+  | Some "tensor" ->
+    (match field "left" raw, field "right" raw with
+     | Some l, Some r ->
+       (match parse_expr l, parse_expr r with
+        | Some l', Some r' -> Some (ETensor (l', r'))
+        | _ -> None)
+     | _ -> None)
+  | Some "compose" ->
+    (match field "first" raw, field "second" raw with
+     | Some a, Some b ->
+       (match parse_expr a, parse_expr b with
+        | Some a', Some b' -> Some (ECompose (a', b'))
+        | _ -> None)
+     | _ -> None)
+  | Some "sum" ->
+    (match field "parts" raw, field_int "tag_bits" raw,
+           field_int "payload_bits" raw with
+     | Some arr, Some tb, Some pb ->
+       let parts = List.map parse_expr (split_array arr) in
+       if List.exists (fun x -> x = None) parts then None
+       else Some (ESum (List.filter_map (fun x -> x) parts, tb, pb))
+     | _ -> None)
+  | Some "tagcond" ->
+    (match field "per_tag" raw, field_int "tag_bits" raw with
+     | Some arr, Some tb ->
+       Some (ETagCond (tb,
+                       List.map
+                         (fun e ->
+                            List.filter_map
+                              (fun x -> int_of_string_opt (String.trim x))
+                              (split_array e))
+                         (split_array arr)))
+     | _ -> None)
+  | Some "opaque" ->
+    Some (EOpaque (match field_string "note" raw with Some n -> n | None -> ""))
+  | Some _ -> None
+
+let parse_sector raw =
+  { sec_index = (match field_int "index" raw with Some v -> v | None -> -1);
+    sec_logical = (match field "logical" raw with
+                   | Some v -> parse_ty v | None -> None);
+    sec_codes = (match field_int_list "codes" raw with Some c -> c | None -> []);
+    sec_tag_values =
+      (match field_int_list "tag_values" raw with Some t -> t | None -> []) }
+
+let parse_port raw =
+  let by_sector =
+    match field "by_sector" raw with
+    | None -> []
+    | Some arr ->
+      List.filter_map
+        (fun elt ->
+           (* each element is [tag, [wires...]] *)
+           match split_array elt with
+           | tag :: rest ->
+             (try
+                let t = int_of_string (String.trim tag) in
+                let ws = match rest with
+                  | [w] ->
+                    List.filter_map
+                      (fun x -> int_of_string_opt (String.trim x))
+                      (split_array (String.trim w))
+                  | _ -> []
+                in
+                Some (t, ws)
+              with Failure _ -> None)
+           | [] -> None)
+        (split_array arr)
+  in
+  { prt_name = (match field_string "name" raw with Some v -> v | None -> "");
+    prt_logical = (match field "logical" raw with
+                   | Some v -> parse_ty v | None -> None);
+    prt_wires = (match field_int_list "wires" raw with Some w -> w | None -> []);
+    prt_role = (match field_string "role" raw with Some v -> v | None -> "");
+    prt_by_sector = by_sector }
+
+(** Parse one frame object out of the response, keyed by its field name. *)
+let parse_frame key json =
+  try
+    let re = Str.regexp (Printf.sprintf {|"%s": *{|} key) in
+    let start = Str.search_forward re json 0 in
+    (* take the balanced object following the key *)
+    let rec scan i depth =
+      if i >= String.length json then None
+      else match json.[i] with
+        | '{' -> scan (i + 1) (depth + 1)
+        | '}' -> if depth = 1 then Some (i + 1) else scan (i + 1) (depth - 1)
+        | _ -> scan (i + 1) depth
+    in
+    let obj_start = Str.search_forward (Str.regexp "{") json start in
+    match scan obj_start 0 with
+    | None -> None
+    | Some obj_end ->
+      let obj = String.sub json obj_start (obj_end - obj_start) in
+      let n = match field_int "n_qubits" obj with Some v -> v | None -> 0 in
+      let codes = match field_int_list "codes" obj with Some c -> c | None -> [] in
+      let label = match field_string "label" obj with Some l -> l | None -> "" in
+      let logical = match field "logical" obj with
+        | Some v -> parse_ty v | None -> None in
+      let expr = match field "expr" obj with
+        | Some v -> parse_expr v | None -> None in
+      let sectors = match field "sectors" obj with
+        | None -> []
+        | Some arr -> List.map parse_sector (split_array arr) in
+      let ports = match field "ports" obj with
+        | None -> []
+        | Some arr -> List.map parse_port (split_array arr) in
+      Some { f_n_qubits = n; f_codes = codes; f_label = label;
+             f_logical = logical; f_expr = expr;
+             f_sectors = sectors; f_ports = ports }
+  with Not_found -> None
+
+(** Compile a term and return the full framed artifact: both boundary frames
+    and the global phase, not only the perm. *)
+let compile_framed term =
+  let term_json = term_to_json term in
+  let request = Printf.sprintf {|{"type": "compile", "term": %s}|} term_json in
+  let response = call_bridge request in
+  match find_bool "success" response with
+  | Some true ->
+    (match parse_perm response, find_int "circuit_size" response with
+     | Some perm, Some size ->
+       let phase = match find_float "global_phase" response with
+         | Some f -> f | None -> 0.0 in
+       (* A successful framed response must carry BOTH frames and the phase;
+          a missing field is an error, not a silent default. *)
+       (match parse_frame "input_frame" response,
+              parse_frame "output_frame" response,
+              find_float "global_phase" response with
+        | Some fi, Some fo, Some _ ->
+          FramedOk { fr_perm = perm; fr_size = size;
+                     fr_input_frame = Some fi; fr_output_frame = Some fo;
+                     fr_global_phase = phase }
+        | _ ->
+          FramedError "framed response is missing a frame or the global phase")
+     | _ -> FramedError "Failed to parse framed response")
+  | Some false ->
+    (match find_string "error" response with
+     | Some err -> FramedError err
+     | None -> FramedError "Unknown error")
+  | None -> FramedError "Invalid response"
 
 (** Compile a term and return the wire permutation *)
 let compile term =

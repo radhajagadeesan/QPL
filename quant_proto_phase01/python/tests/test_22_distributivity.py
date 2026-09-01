@@ -12,6 +12,7 @@ Option B Distributivity:
     - DistR moves tag bits from after A to before A
 """
 
+import numpy as np
 from lang.types import Q, Ten
 from lang.terms import DistL, DistR
 from compile.to_pytket import compile
@@ -63,3 +64,17 @@ def test_distR_moves_tags():
     # new_to_old: [1, 0, 2, 3]
     expected_perm = [1, 0, 2, 3]
     assert out.perm.new_to_old == expected_perm
+
+    # Since the boundary-frame repair, the wire permutation is no longer the
+    # whole story: assert that it actually REALISES the canonical
+    # distributivity iso on the selected frames, with no leakage.
+    from compile.frames import semantic_action, leakage, distributor_iso
+    U = out.circuit.get_unitary()
+    assert leakage(out.input_frame, U, out.output_frame) < 1e-12
+    sem = semantic_action(out.input_frame, U, out.output_frame)
+    assert sem.shape == (12, 12)
+    iso = distributor_iso(a, b, c, "DistR")
+    expected = np.zeros((12, 12))
+    for k, j in enumerate(iso):
+        expected[j, k] = 1
+    assert np.allclose(sem, expected, atol=1e-12, rtol=0.0)

@@ -169,25 +169,41 @@ Not a pytket limitation.
 
 ---
 
-## 6. Unequal-width distributivity: composition unsupported
+## 6. Unequal-width distributivity: RESOLVED by the boundary-frame repair
 
-Composition across an unequal-width `DistL` is currently unsupported.
-The standalone distributor emits zero gates and an identity `WirePerm`,
-but that metadata cannot represent the tag-dependent location of a
-tensor spectator in the target payload. Consequently, distributivity
-naturality can fail under subsequent branch operations.
+**Status: fixed.** This section previously recorded that composition
+across an unequal-width `DistL` was unsupported, with the
+distributivity-naturality square at full-unitary fidelity 0.5.
 
-The regression witness uses `A = Q`, `B = Q ⊗ Q`, and `C = Q`. The two
-sides of the distributivity-naturality square have full-unitary fidelity
-0.5; they disagree on all 4 tag-zero codewords and agree on the 8
-tag-one codewords. The tag-zero computation can also leave the valid
-codeword subspace. Unequal-width distributors and analogous nested-width
-cases should therefore not be relied upon until the layout-frame repair
-is complete.
+The witness `ocaml/demos/dist_l_naturality_probe.{ml,output}` (`A = Q`,
+`B = Q ⊗ Q`, `C = Q`) now reports **fidelity 1.0**, and the regression
+suite checks the square exactly (`rtol=0`) with zero leakage.
 
-Compilation-strategy limitation (not a pytket limitation). Fix path is
-documented in `docs/LAYOUT_FRAME_REPAIR.md`; a failing regression
-witness lives at `ocaml/demos/dist_l_naturality_probe.{ml,output}`.
+What changed: `WirePerm` plus payload-width bookkeeping was never able to
+describe the tag-dependent location of a tensor spectator. Compilation
+now carries explicit boundary **frames** — exact embeddings with sectors
+and sector-conditioned port placements — and reconciles mismatched frames
+at each splice with **Align**. A distributor whose two canonical readings
+are related by its own wire permutation keeps the canonical frames; one
+whose readings differ in width selects a shared narrower layout and is
+gate-free, with the conversion moved to the splice.
+
+The cost is visible and intended: splices that previously emitted nothing
+now emit an alignment permutation where the frames genuinely disagree
+(two `ToffoliBox`es in this witness). See `docs/LAYOUT_FRAME_REPAIR.md`
+for the full design and `docs/COMPILER_INVARIANTS.md` for the invariants.
+
+Known remaining inefficiency: adjacent Aligns are not yet cancelled, so a
+chain of splices can emit an alignment and its inverse back to back
+(`ocaml/demos/curried_select_3_e2e` goes from 13 to 23 commands). That
+demo establishes successful compilation and unchanged printed result
+lines; it does not itself compute a numerical semantic equivalence. The
+splice is correct by the tested Align mechanism (see the exact
+framed-semantics and zero-leakage assertions in
+`python/tests/test_align_acceptance.py`); a dedicated semantic oracle for
+the curried selector is deferred together with Align normalization, and
+is tracked in `docs/ALIGN_NORMALIZATION.md`. This is a missing peephole,
+not a soundness gap.
 
 ---
 
