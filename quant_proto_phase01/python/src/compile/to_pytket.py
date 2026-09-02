@@ -408,6 +408,48 @@ def _distributor_canonical_frames(t):
     return cd, cc
 
 
+def _check_open_placement(*, branch_name, payload_phys, context_phys,
+                          tag_phys, cmds, wire_map):
+    """Reject an overlapping open-branch placement BEFORE emission.
+
+    A pre-emission safety guard only: it repairs nothing, infers no frame and
+    adds no metadata. It uses evidence already computed on this path -- the
+    payload/context/tag physical placements and the mapped argument list of
+    each command -- and converts what would otherwise surface from inside the
+    backend ("Multiple operation arguments reference q[N]") into a
+    deterministic UnsupportedFrame naming the wire and the two roles.
+    """
+    roles = (("tag", list(tag_phys)),
+             ("payload", list(payload_phys)),
+             ("context", list(context_phys)))
+    for role, wires in roles:
+        if len(set(wires)) != len(wires):
+            dup = next(w for w in wires if wires.count(w) > 1)
+            raise UnsupportedFrame(
+                f"{branch_name}: the {role} placement {wires} is not "
+                f"injective -- physical wire {dup} is claimed twice. "
+                f"Failing closed before emission.")
+    for i in range(len(roles)):
+        for j in range(i + 1, len(roles)):
+            (ra, wa), (rb, wb) = roles[i], roles[j]
+            shared = sorted(set(wa) & set(wb))
+            if shared:
+                raise UnsupportedFrame(
+                    f"{branch_name}: physical wire {shared[0]} is claimed by "
+                    f"both the {ra} placement {wa} and the {rb} placement "
+                    f"{wb}. The derivation does not identify that coordinate "
+                    f"with itself, so the branch cannot be emitted. Failing "
+                    f"closed before emission.")
+    for cmd in cmds:
+        mapped = [wire_map(qb.index[0]) for qb in cmd.qubits]
+        if len(set(mapped)) != len(mapped):
+            dup = next(w for w in mapped if mapped.count(w) > 1)
+            raise UnsupportedFrame(
+                f"{branch_name}: operation {cmd.op.type.name} would receive "
+                f"physical wire {dup} twice (mapped arguments {mapped}). "
+                f"Failing closed before emission.")
+
+
 def select_frames(t: Term):
     """The boundary frames the emitter for `t` selects.
 
@@ -2242,8 +2284,17 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                             return wm
 
                         if cmds:
+                            _wm_open = make_open_wire_map()
+                            _check_open_placement(
+                                branch_name=("PlusMap left" if anti
+                                             else "PlusMap right"),
+                                payload_phys=[p.apply_new_to_old(_w + payload_base)
+                                              for _w in range(pw)],
+                                context_phys=list(ctx_parent_phys),
+                                tag_phys=[tag_phys],
+                                cmds=cmds, wire_map=_wm_open)
                             _emit_controlled_branch(tag_phys, cmds,
-                                                    make_open_wire_map(), anti=anti)
+                                                    _wm_open, anti=anti)
                     else:
                         # Closed branch: compile without env
                         cmds, _open_phase_ht = _compile_branch(branch)
