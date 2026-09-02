@@ -425,6 +425,124 @@ def _strategy_a_local_to_block(sub_ty, artifact_n, k):
     return tup if all(0 <= wr < 64 for wr in tup) else None
 
 
+class StrategyBDensePlan(NamedTuple):
+    """Strategy B's occurrence plan.
+
+    Deliberately NOT a BranchPlacement: Strategy B does not factor through
+    wires at all, it synthesizes one full-register unitary. What it owes is an
+    ordered CODE MAP per sector, from the branch artifact's own frame codes
+    onto the parent's sector codes:
+
+        artifact fin  code[j]  ->  K_i^-[j]
+        artifact fout code[j]  ->  K_i^+[j]
+
+    Taking K_i^- = J_i^- and K_i^+ = J_i^+ makes (1) and (3) identity by
+    construction, so no intermediate egress frame is ever formed. That matters:
+    the old ingress-geometry arithmetic produced (2,4,6,8) for SB_R, a code
+    outside the 3-qubit register, so an intermediate egress is not merely
+    inconvenient -- it is not representable.
+    """
+    n_qubits: int
+    K_minus: tuple          # per sector, ordered parent codes
+    K_plus: tuple
+    in_maps: tuple          # per sector: ((artifact_code, parent_code), ...)
+    out_maps: tuple
+    free_in: tuple          # deterministic complement, ascending
+    free_out: tuple
+    logicals_in: tuple
+    logicals_out: tuple
+
+
+# --- primitive gates on framed sum boundaries ------------------------------
+#
+# A raw qubit gate on a TAG wire of a SPARSE sum frame can carry valid codes
+# out of the code space, producing an artifact whose recorded frames the
+# circuit leaks out of. Diagonal gates move no code and are always safe;
+# payload gates never touch the tag; a dense frame has no unused codes to
+# leak into. Everything else must be proved code-space preserving.
+
+_GATE_SHAPE = {}          # term class name -> (pytket OpType name, arity)
+
+
+def _gate_shape(t):
+    """(OpType, local wires) for a primitive gate term, or None."""
+    from pytket.circuit import OpType
+    name = type(t).__name__
+    table = {
+        "H": (OpType.H, ("i",)), "X": (OpType.X, ("i",)),
+        "Y": (OpType.Y, ("i",)), "Z": (OpType.Z, ("i",)),
+        "S": (OpType.S, ("i",)), "Sdg": (OpType.Sdg, ("i",)),
+        "T": (OpType.T, ("i",)), "Tdg": (OpType.Tdg, ("i",)),
+        "CX": (OpType.CX, ("i", "j")), "CZ": (OpType.CZ, ("i", "j")),
+        "CCX": (OpType.CCX, ("i", "j", "k")),
+        "CSWAP": (OpType.CSWAP, ("c", "i", "j")),
+    }
+    if name not in table:
+        return None
+    op, fields = table[name]
+    try:
+        wires = tuple(int(getattr(t, f)) for f in fields)
+    except AttributeError:
+        return None
+    return op, wires
+
+
+def _gate_preserves_code_space(op, wires, n_qubits, codes):
+    """True iff the gate maps every valid code into the span of valid codes.
+
+    Exact, not conservative: the gate's own unitary is built on |wires| qubits
+    and only the transitions it ACTUALLY makes are checked, so a permutation
+    gate is not rejected merely because some unrelated bit pattern is unused.
+    """
+    from pytket.circuit import Circuit
+    m = len(wires)
+    sub = Circuit(m)
+    sub.add_gate(op, list(range(m)))
+    U = sub.get_unitary()
+    valid = set(codes)
+    for c in codes:
+        idx = 0
+        for slot, w in enumerate(wires):
+            if (c >> (n_qubits - 1 - w)) & 1:
+                idx |= 1 << (m - 1 - slot)
+        col = U[:, idx]
+        for row in range(1 << m):
+            if abs(col[row]) <= 1e-12:
+                continue
+            c2 = c
+            for slot, w in enumerate(wires):
+                mask = 1 << (n_qubits - 1 - w)
+                c2 = (c2 | mask) if (row >> (m - 1 - slot)) & 1 else (c2 & ~mask)
+            if c2 not in valid:
+                return False
+    return True
+
+
+def _check_primitive_frame(t, frame):
+    """Raise before emission if a primitive would leave the code space."""
+    if frame is None or not frame.codes:
+        return
+    n = frame.n_qubits
+    if len(frame.codes) == (1 << n):
+        return                                  # dense: nothing to leak into
+    shape = _gate_shape(t)
+    if shape is None:
+        return
+    op, wires = shape
+    if any(not (0 <= w < n) for w in wires):
+        return
+    if _gate_preserves_code_space(op, wires, n, tuple(frame.codes)):
+        return
+    from compile.frames import pretty as _pretty
+    raise UnsupportedFrame(
+        f"{type(t).__name__} on wire(s) {list(wires)} does not preserve the "
+        f"code space of {_pretty(frame.logical)}: the frame has "
+        f"{len(frame.codes)} valid codes {tuple(frame.codes)} in a "
+        f"{n}-qubit register, and this gate carries some of them onto unused "
+        f"states. Emitting the raw gate would record boundary frames the "
+        f"circuit leaks out of. Failing closed before emission.")
+
+
 def _plusmap_placement(n_qubits, k):
     """(tag_wires, payload_base) in LOCAL coordinates. The only definition."""
     base = max(k, 1)
@@ -1006,8 +1124,8 @@ def _compile_branch(branch, *, env=None):
 
 
 class BranchArtifact(NamedTuple):
-    """One branch, compiled ONCE: its commands, its scalar, and BOTH of its
-    own frames. The frames must travel with the commands -- re-deriving them
+    """One branch, compiled ONCE: its commands, its scalar, BOTH of its own
+    frames, and its exact unitary. The frames must travel with the commands -- re-deriving them
     later from `type_of` gives the declared type's width, which is not the
     artifact's frame width (DistL(Z3,I,I) declares 2 -> 3 but its artifact
     frames are 3 and 3), and the branch would then be lifted to the wrong
@@ -1016,13 +1134,29 @@ class BranchArtifact(NamedTuple):
     phase: float
     fin: Frame
     fout: Frame
+    circuit: object = None      # the SAME compilation, for its exact unitary
+
+    @property
+    def unitary(self):
+        """The branch's exact unitary, phase included (pytket's get_unitary
+        carries circuit.phase). Computed from the ONE compilation above --
+        never a second compile."""
+        return None if self.circuit is None else self.circuit.get_unitary()
+
+    def framed_action(self):
+        """G_i = u(fout)^dagger U u(fin), in the branch's own frames."""
+        u = self.unitary
+        if u is None:
+            raise ValueError("BranchArtifact carries no circuit")
+        from compile.frames import semantic_action as _sa
+        return _sa(self.fin, u, self.fout)
 
 
 def _compile_branch_artifact(branch, *, env=None):
     sub = compile(branch, materialize=True, env=env) if env is not None \
         else compile(branch, materialize=True)
     return BranchArtifact(_get_sub_cmds(sub.circuit), float(sub.circuit.phase),
-                          sub.input_frame, sub.output_frame)
+                          sub.input_frame, sub.output_frame, sub.circuit)
 
 
 def _discharge_branch_phase(circ, tag_qubits, tag_values, phase_ht):
@@ -2191,6 +2325,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 log.append("UndistR: gate-free in the shared layout")
             return
 
+        # Frame-awareness for primitive gates: checked BEFORE any emission.
+        _check_primitive_frame(t, parent_in)
+
         if isinstance(t, H):
             emit_H(t.i, offset); return
         if isinstance(t, S):
@@ -2714,7 +2851,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     # Still compile so we can extract any accumulated global
                     # phase from a GlobalPhase term inside the branch.
                     _a = _compile_branch_artifact(branch)
-                    return BranchArtifact([], _a.phase, _a.fin, _a.fout)
+                    return BranchArtifact([], _a.phase, _a.fin, _a.fout,
+                                          _a.circuit)
                 if deferred_fns:
                     parent_phys = [p.apply_new_to_old(payload_base_off + i)
                                    for i in range(branch_w)]
@@ -2809,89 +2947,164 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             half = 2 ** (k - 1)
 
             if n_left > half or n_right > half:
-                # Strategy B: full unitary synthesis for asymmetric splits
+                # Strategy B: one full-register unitary, built DIRECTLY in the
+                # occurrence-selected parent code frames.
+                #
+                # The previous construction sized each branch's tag blocks from
+                # its INGRESS leaf count and reused that for the egress
+                # (_splat, additive tag offsets, n_left/n_right). That is the
+                # defect: a branch may change leaf count (3 in, 4 out), and
+                # then the egress does not fit -- SB_L had its egress block
+                # zeroed to make room for the other branch, and SB_R's fourth
+                # egress block would have landed at parent code 8, outside the
+                # register. None of that arithmetic is used here.
                 import numpy as np
                 pw = payload_width(Plus(t.ty_left, t.ty_right))
                 w = k + pw
-                dim_pw = 2 ** pw
-
-                _sb_f = compile(t.left, materialize=True)
-                _sb_g = compile(t.right, materialize=True)
-                U_f = _sb_f.circuit.get_unitary()
-                U_g = _sb_g.circuit.get_unitary()
-                # Invariant P: a width-0 branch contributes ONLY a scalar; the
-                # identity fill below would discard it.
-                _zf = np.exp(1j * np.pi * float(_sb_f.circuit.phase))
-                _zg = np.exp(1j * np.pi * float(_sb_g.circuit.phase))
                 dim = 2 ** w
 
-                # Helper: copy n_blocks × n_blocks of size dim_pw blocks from U_src
-                # starting at block (0, 0) into U_dst starting at block (off, off).
-                # This copies the FULL used-states sub-block (including off-diagonal
-                # entries that carry cross-summand permutations).
-                def _splat(U_dst, U_src, n_blocks, off, dim_pw):
-                    for b1 in range(n_blocks):
-                        for b2 in range(n_blocks):
-                            d_rs1, d_re1 = (off + b1) * dim_pw, (off + b1 + 1) * dim_pw
-                            d_rs2, d_re2 = (off + b2) * dim_pw, (off + b2 + 1) * dim_pw
-                            s_rs1, s_re1 = b1 * dim_pw, (b1 + 1) * dim_pw
-                            s_rs2, s_re2 = b2 * dim_pw, (b2 + 1) * dim_pw
-                            U_dst[d_rs1:d_re1, d_rs2:d_re2] = U_src[s_rs1:s_re1, s_rs2:s_re2]
+                _sb_in, _sb_out = parent_in, parent_out
 
-                if n_left > half:
-                    U_full = U_f.copy()
-                    w_g = width(type_of(t.right)[0])
-                    # Zero out right-summand rows/cols, then splat U_g block.
-                    for tr in range(n_right):
-                        tf = n_left + tr
-                        rs, re = tf * dim_pw, (tf + 1) * dim_pw
-                        U_full[rs:re, :] = 0
-                        U_full[:, rs:re] = 0
-                    if w_g == 0:
-                        for tr in range(n_right):
-                            tf = n_left + tr
-                            rs, re = tf * dim_pw, (tf + 1) * dim_pw
-                            U_full[rs:re, rs:re] = _zg * np.eye(dim_pw)
-                    else:
-                        _splat(U_full, U_g, n_right, n_left, dim_pw)
-                else:
-                    U_full = np.eye(dim, dtype=complex)
-                    w_f = width(type_of(t.left)[0])
-                    if w_f == 0:
-                        for tl in range(n_left):
-                            rs, re = tl * dim_pw, (tl + 1) * dim_pw
-                            U_full[rs:re, rs:re] = _zf * np.eye(dim_pw)
-                    else:
-                        _splat(U_full, U_f, n_left, 0, dim_pw)
-                    _splat(U_full, U_g, n_right, n_left, dim_pw)
+                def _sb_fail(why):
+                    raise UnsupportedFrame(
+                        f"PlusMap: cannot construct the Strategy B dense "
+                        f"placement plan ({why}). Failing closed before "
+                        f"emission.")
 
-                phys = [p.apply_new_to_old(offset + i) for i in range(w)]
-                # Check if U_full is a permutation matrix (each row & col has
-                # exactly one 1, all others 0). Common when summand payloads
-                # are width 0 (e.g., Z_n shifts).
+                if _sb_in is None or _sb_out is None:
+                    _sb_fail("the occurrence selected no parent frames")
+                if _sb_in.n_qubits != _sb_out.n_qubits:
+                    _sb_fail(f"parent registers differ "
+                             f"({_sb_in.n_qubits} vs {_sb_out.n_qubits} qubits)")
+                if _sb_in.n_qubits != w:
+                    _sb_fail(f"parent register {_sb_in.n_qubits} qubits but "
+                             f"Strategy B synthesises {w}")
+                if len(_sb_in.codes) != len(_sb_out.codes):
+                    _sb_fail(f"parent dimensions differ "
+                             f"({len(_sb_in.codes)} vs {len(_sb_out.codes)})")
+                if len(_sb_in.sectors) != 2 or len(_sb_out.sectors) != 2:
+                    _sb_fail(f"expected exactly two parent sectors, got "
+                             f"{len(_sb_in.sectors)} / {len(_sb_out.sectors)}")
+
+                _sb_arts = (_left_art, _right_art)
+                if len(_sb_arts) != 2:
+                    _sb_fail("expected exactly two branch artifacts")
+
+                _K_minus, _K_plus = [], []
+                _in_maps, _out_maps = [], []
+                _lg_in, _lg_out = [], []
+                _G = []
+                for _i, _a in enumerate(_sb_arts):
+                    _Jm = tuple(_sb_in.sectors[_i].codes)
+                    _Jp = tuple(_sb_out.sectors[_i].codes)
+                    if _sb_in.sectors[_i].logical != type_of(
+                            (t.left, t.right)[_i])[0]:
+                        _sb_fail(f"sector {_i} ingress type disagrees with the "
+                                 f"branch artifact interface")
+                    if _sb_out.sectors[_i].logical != type_of(
+                            (t.left, t.right)[_i])[1]:
+                        _sb_fail(f"sector {_i} egress type disagrees with the "
+                                 f"branch artifact interface")
+                    if len(_a.fin.codes) != len(_Jm):
+                        _sb_fail(f"sector {_i} ingress code map is "
+                                 f"{len(_a.fin.codes)} -> {len(_Jm)}")
+                    if len(_a.fout.codes) != len(_Jp):
+                        _sb_fail(f"sector {_i} egress code map is "
+                                 f"{len(_a.fout.codes)} -> {len(_Jp)}")
+                    if len(set(_Jm)) != len(_Jm) or len(set(_Jp)) != len(_Jp):
+                        _sb_fail(f"sector {_i} parent codes are not injective")
+                    if any(not (0 <= c < dim) for c in _Jm + _Jp):
+                        _sb_fail(f"sector {_i} parent codes leave the register")
+                    _Ua = _a.unitary
+                    if _Ua is None:
+                        _sb_fail(f"sector {_i} artifact carries no unitary")
+
+                    from compile.frames import (semantic_action as _sa2,
+                                                leakage as _lk_fn)
+                    _Gi = _sa2(_a.fin, _Ua, _a.fout)
+                    _lk = _lk_fn(_a.fin, _Ua, _a.fout)
+                    if _lk > 1e-9:
+                        _sb_fail(f"branch {_i} leaks ({_lk:.6e}); projecting it "
+                                 f"would mask the leak")
+                    if _Gi.shape[0] != _Gi.shape[1] or _Gi.shape[0] != len(_Jm):
+                        _sb_fail(f"branch {_i} action is {_Gi.shape}, expected "
+                                 f"({len(_Jm)},{len(_Jm)})")
+                    if not np.allclose(_Gi.conj().T @ _Gi,
+                                       np.eye(_Gi.shape[0]), atol=1e-9,
+                                       rtol=0.0):
+                        _sb_fail(f"branch {_i} action is not unitary")
+
+                    _K_minus.append(_Jm)
+                    _K_plus.append(_Jp)
+                    _in_maps.append(tuple(zip(tuple(_a.fin.codes), _Jm)))
+                    _out_maps.append(tuple(zip(tuple(_a.fout.codes), _Jp)))
+                    _lg_in.append(_sb_in.sectors[_i].logical)
+                    _lg_out.append(_sb_out.sectors[_i].logical)
+                    _G.append(_Gi)
+
+                _used_in = [c for s_ in _K_minus for c in s_]
+                _used_out = [c for s_ in _K_plus for c in s_]
+                if len(set(_used_in)) != len(_used_in):
+                    _sb_fail("parent ingress sectors overlap")
+                if len(set(_used_out)) != len(_used_out):
+                    _sb_fail("parent egress sectors overlap")
+                if sorted(_used_in) != sorted(_sb_in.codes):
+                    _sb_fail("ingress sectors are not exhaustive of the "
+                             "parent codes")
+                if sorted(_used_out) != sorted(_sb_out.codes):
+                    _sb_fail("egress sectors are not exhaustive of the "
+                             "parent codes")
+
+                _free_in = tuple(sorted(set(range(dim)) - set(_used_in)))
+                _free_out = tuple(sorted(set(range(dim)) - set(_used_out)))
+                if len(_free_in) != len(_free_out):
+                    _sb_fail(f"complement sizes differ "
+                             f"({len(_free_in)} vs {len(_free_out)})")
+
+                _sb_plan = StrategyBDensePlan(
+                    n_qubits=w, K_minus=tuple(_K_minus), K_plus=tuple(_K_plus),
+                    in_maps=tuple(_in_maps), out_maps=tuple(_out_maps),
+                    free_in=_free_in, free_out=_free_out,
+                    logicals_in=tuple(_lg_in), logicals_out=tuple(_lg_out))
+
+                # B_valid = sum_i E(K_i^+) G_i E(K_i^-)^dagger, then the
+                # deterministic ascending complement completion.
+                def _E(codes):
+                    M = np.zeros((dim, len(codes)), complex)
+                    for _m, _c in enumerate(codes):
+                        M[_c, _m] = 1.0
+                    return M
+
+                U_full = np.zeros((dim, dim), complex)
+                for _Jm, _Jp, _Gi in zip(_sb_plan.K_minus, _sb_plan.K_plus, _G):
+                    U_full += _E(_Jp) @ _Gi @ _E(_Jm).conj().T
+                for _src, _dst in zip(_sb_plan.free_in, _sb_plan.free_out):
+                    U_full[_dst, _src] = 1.0     # rows are outputs
+
+                if not np.allclose(U_full.conj().T @ U_full, np.eye(dim),
+                                   atol=1e-9, rtol=0.0):
+                    _sb_fail("the completed block is not unitary")
+
+                _plan_sink[_cur_occ[0]] = _sb_plan
+                phys = [p.apply_new_to_old(offset + _j) for _j in range(w)]
+
                 def _is_perm_matrix(U):
-                    if U.shape[0] != U.shape[1]:
-                        return False
-                    n = U.shape[0]
-                    if not np.allclose(np.abs(U), np.eye(n)[np.argmax(np.abs(U), axis=0)].T,
-                                       atol=1e-10):
-                        # Fallback: check each row has one entry of magnitude 1 and rest 0
-                        for r in range(n):
-                            row = U[r]
-                            mags = np.abs(row)
-                            if not (np.sum(mags > 0.5) == 1 and np.allclose(mags[mags <= 0.5], 0)):
+                    n_ = U.shape[0]
+                    for r_ in range(n_):
+                        mags = np.abs(U[r_])
+                        if not (np.sum(mags > 0.5) == 1
+                                and np.allclose(mags[mags <= 0.5], 0)):
+                            return False
+                    for c_ in range(n_):
+                        mags = np.abs(U[:, c_])
+                        if not (np.sum(mags > 0.5) == 1
+                                and np.allclose(mags[mags <= 0.5], 0)):
+                            return False
+                    for r_ in range(n_):
+                        for c_ in range(n_):
+                            if np.abs(U[r_, c_]) > 0.5 and not np.allclose(
+                                    U[r_, c_], 1.0, atol=1e-10):
                                 return False
-                        for c in range(n):
-                            col = U[:, c]
-                            mags = np.abs(col)
-                            if not (np.sum(mags > 0.5) == 1 and np.allclose(mags[mags <= 0.5], 0)):
-                                return False
-                    # Also require all non-zero entries to be 1 (real, no phase).
-                    for r in range(n):
-                        for c in range(n):
-                            if np.abs(U[r, c]) > 0.5:
-                                if not np.allclose(U[r, c], 1.0, atol=1e-10):
-                                    return False
                     return True
 
                 if w == 2:

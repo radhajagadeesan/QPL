@@ -23,8 +23,82 @@ from lang.terms import (
     H, S, X, CX, PlusMap,
 )
 from compile.to_pytket import compile
+from compile.frames import UnsupportedFrame, leakage
 from typing_.check import type_of
 from tests.helpers import circuit_fingerprint
+
+
+# ================================================================
+# Backend-level / raw-IR classification
+# ================================================================
+#
+# `rand_endo` addresses gates by PHYSICAL WIRE INDEX into the compiled
+# layout, so it freely produces terms that aim a primitive at a coordinate the
+# compiler introduced to encode a sum's tag. Those are raw-IR programs, not
+# source-calculus programs, and the backend now refuses them rather than
+# emitting a circuit whose recorded frames it leaks out of.
+#
+# THIS IS NOT A CALCULUS RESTRICTION. The source permits gates on base quantum
+# registers and their exponent/register forms. The current backend directly
+# emits only known primitives on explicit source-selected placements; physical
+# coordinates introduced to encode sum tags are not source Q/register
+# coordinates.
+#
+# The generator is deliberately UNCHANGED. We want it to keep producing
+# tag-coordinate programs, because those are useful rejection tests. What
+# changed is the property:
+#
+#   * compiles            -> the old determinism/composition/frame checks
+#                            must hold, and the result must not leak;
+#   * UnsupportedFrame    -> an acceptable PASS: a correct rejection;
+#   * any other exception -> failure;
+#   * leak after compile  -> failure.
+
+FUZZ_STATS = {
+    "compiled_and_checked": 0,
+    "unsupported_frame_rejected": 0,
+    "unexpected_exception": 0,
+    "leaked_after_compile": 0,
+}
+
+
+def _is_placement_rejection(exc):
+    """An UnsupportedFrame carrying the expected primitive/tag-placement
+    diagnostic. Any other UnsupportedFrame is still a real failure."""
+    m = str(exc).lower()
+    return ("code space" in m) or ("placement plan" in m)
+
+
+def fuzz_compile(term, **kw):
+    """Compile, classifying the outcome.
+
+    Returns the Compiled result, or None when the term was correctly rejected
+    as a raw-IR placement the backend does not emit.
+    """
+    try:
+        r = compile(term, **kw)
+    except UnsupportedFrame as e:
+        if _is_placement_rejection(e):
+            FUZZ_STATS["unsupported_frame_rejected"] += 1
+            return None
+        FUZZ_STATS["unexpected_exception"] += 1
+        raise AssertionError(
+            f"UnsupportedFrame without a placement diagnostic: {e}") from e
+    except Exception as e:
+        FUZZ_STATS["unexpected_exception"] += 1
+        raise AssertionError(
+            f"unexpected {type(e).__name__}: {e}") from e
+    lk = leakage(r.input_frame, r.circuit.get_unitary(), r.output_frame)
+    if lk > 1e-9:
+        FUZZ_STATS["leaked_after_compile"] += 1
+        raise AssertionError(
+            f"compilation succeeded but the artifact leaks {lk:.6e}; a "
+            f"successful compile must record truthful frames")
+    FUZZ_STATS["compiled_and_checked"] += 1
+    return r
+
+
+
 
 
 # ================================================================
@@ -169,9 +243,12 @@ def rand_endo(rng, ty, depth=4):
 # ================================================================
 
 def compile_unitary(term):
-    """Compile term with materialization and return the unitary matrix."""
-    compiled = compile(term, materialize=True)
-    return compiled.circuit.get_unitary()
+    """Compile term with materialization and return the unitary matrix.
+
+    Returns None when the term is a correctly rejected raw-IR placement.
+    """
+    compiled = fuzz_compile(term, materialize=True)
+    return None if compiled is None else compiled.circuit.get_unitary()
 
 
 # ================================================================
@@ -188,9 +265,11 @@ def test_prop_comp_01_determinism(trial):
     ty = rand_type(rng, max_width=4, sum_bias=True)
     term = rand_endo(rng, ty, depth=rng.randint(2, 5))
 
-    c1 = compile(term)
-    c2 = compile(term)
-
+    c1 = fuzz_compile(term)
+    if c1 is None:
+        return                      # correctly rejected raw-IR placement
+    c2 = fuzz_compile(term)
+    assert c2 is not None, "rejection was not deterministic"
     assert circuit_fingerprint(c1.circuit) == circuit_fingerprint(c2.circuit), \
         f"Non-deterministic on type {ty}"
 
@@ -210,7 +289,12 @@ def test_prop_eq_01_identity_left(trial):
 
     u_f = compile_unitary(f)
     u_lhs = compile_unitary(lhs)
-
+    if u_f is None or u_lhs is None:
+        # A rejected raw-IR placement. Rejection must be consistent: the law
+        # cannot hold for one side and be refused on the other.
+        assert u_f is None and u_lhs is None, (
+            f"id;f and f disagree on acceptance for type {ty}")
+        return
     assert np.allclose(u_f, u_lhs, atol=1e-8), \
         f"id;f != f for type {ty}"
 
@@ -226,7 +310,10 @@ def test_prop_eq_01_identity_right(trial):
 
     u_f = compile_unitary(f)
     u_rhs = compile_unitary(rhs)
-
+    if u_f is None or u_rhs is None:
+        assert u_f is None and u_rhs is None, (
+            f"f;id and f disagree on acceptance for type {ty}")
+        return
     assert np.allclose(u_f, u_rhs, atol=1e-8), \
         f"f;id != f for type {ty}"
 
@@ -312,3 +399,24 @@ def test_prop_coh_01_plusmap_id_id(trial):
 
     assert np.allclose(u_pm, u_id, atol=1e-8), \
         f"PlusMap(Id,Id) != Id on {ty}"
+
+
+# ================================================================
+# Classification summary (defined LAST so it runs after every case)
+# ================================================================
+
+def test_zzz_fuzz_classification_summary():
+    """Reported counters, and the gate on them.
+
+    Named to sort last so the counts cover the whole module.
+    """
+    print("\n  fuzz classification:")
+    for k, v in FUZZ_STATS.items():
+        print(f"    {k:28s} {v}")
+    assert FUZZ_STATS["unexpected_exception"] == 0
+    assert FUZZ_STATS["leaked_after_compile"] == 0
+    assert FUZZ_STATS["compiled_and_checked"] > 0, (
+        "every case was rejected; the corpus stopped exercising compilation")
+    assert FUZZ_STATS["unsupported_frame_rejected"] > 0, (
+        "no case was rejected; the corpus stopped exercising tag-coordinate "
+        "placements, which are the useful rejection tests")
