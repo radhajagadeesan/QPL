@@ -383,7 +383,7 @@ def _lift_port(pt, local_to_block):
 
 
 def _lift_via_placement(codes, tag_value, n_qubits, local_to_block,
-                        P_inv=None, pw_parent=None):
+                        P_inv=None, pw_parent=None, selector_bits=1):
     """Branch code -> parent code, THROUGH the placement tuple.
 
     The branch's w-bit code is scattered onto the block wires named by
@@ -392,12 +392,17 @@ def _lift_via_placement(codes, tag_value, n_qubits, local_to_block,
     resulting block tag is carried back through P^-1 into the parent's own
     coordinates.
 
-    Both paths share this; only `local_to_block` and the presence of P differ.
+    `selector_bits` is how many leading wires the selector owns: 1 for the
+    binary paths, where it is the single left/right bit, and k for the
+    NPlusMap fast path, where branch i owns the whole k-bit tag word i.
+
+    All three paths share this; only `local_to_block`, `selector_bits` and the
+    presence of P differ.
     """
     w = len(local_to_block)
     out = []
     for c in codes:
-        block = tag_value << (n_qubits - 1)
+        block = tag_value << (n_qubits - selector_bits)
         for j in range(w):
             if (c >> (w - 1 - j)) & 1:
                 block |= 1 << (n_qubits - 1 - local_to_block[j])
@@ -420,55 +425,10 @@ def _strategy_a_local_to_block(sub_ty, artifact_n, k):
     return tup if all(0 <= wr < 64 for wr in tup) else None
 
 
-def _strategy_a_lift(codes, sub_ty, msb, n_qubits, k, P_inv):
-    """Branch code -> parent code on the Strategy A path.
-
-    Strategy A wraps the branches in a tag-permutation sandwich
-    P ; branches ; P^-1, and places a branch by `_sub_wire_to_full`: the
-    branch's inner tag occupies the LAST sub_tw of the parent's k-1 inner tag
-    bits, and its payload starts at parent wire k. So, per code,
-
-        inner_tag = c >> pw_branch          payload = c mod 2^pw_branch
-        perm_tag  = (msb << (k-1)) | inner_tag
-        parent    = (P^-1[perm_tag] << pw_parent) | payload << (pw_parent-pw_b)
-
-    The P^-1 is what puts the result back in the PARENT's own coordinates:
-    the sandwich, P and P^-1 included, is the block B that the two Aligns
-    surround, which is why equation (2) is checked against the whole emitted
-    circuit rather than against the controlled gates alone.
-
-    Returns None when the branch does not fit the parent's payload field.
-    """
-    from lang.types import tag_width as _tw, payload_width as _pw
-    sub_tw = _tw(sub_ty) if isinstance(sub_ty, Plus) else 0
-    pw_b = _pw(sub_ty) if isinstance(sub_ty, Plus) else width(sub_ty)
-    pw_parent = n_qubits - k
-    if pw_b > pw_parent or sub_tw > k - 1:
-        return None
-    out = []
-    for c in codes:
-        it = c >> pw_b
-        pl = c & ((1 << pw_b) - 1)
-        perm_tag = (msb << (k - 1)) | it
-        if perm_tag >= len(P_inv):
-            return None
-        out.append((P_inv[perm_tag] << pw_parent) | (pl << (pw_parent - pw_b)))
-    return tuple(out)
-
-
 def _plusmap_placement(n_qubits, k):
     """(tag_wires, payload_base) in LOCAL coordinates. The only definition."""
     base = max(k, 1)
     return tuple(range(k)), base
-
-
-def _lift_codes(codes, tag_value, n_qubits, k, w):
-    """Branch code -> parent code, at the placement above."""
-    _, base = _plusmap_placement(n_qubits, k)
-    if base + w > n_qubits:
-        return None
-    return tuple((tag_value << (n_qubits - k)) | (c << (n_qubits - base - w))
-                 for c in codes)
 
 
 def _sum_sectors(frame, summands):
@@ -518,14 +478,35 @@ def _with_sum_sectors(frame, summands, label):
 
 
 def _nplusmap_frames(t):
-    """NPlusMap's selection, with SECTORS recorded per summand."""
+    """NPlusMap's selection: independent ingress and egress, sectors, then a
+    common register.
+
+    Ingress and egress are canonical frames of their own types and may have
+    different natural widths -- (IA (+) BIA (+) I) needs 4 qubits while its
+    image (IA (+) (IA (+) IA) (+) I) needs 3. Selecting them at those two
+    widths and stopping there left the emitter with a 4-qubit register and a
+    3-qubit output frame, which Invariant W rejects outright: the artifact
+    could not even be built, let alone be truthful.
+
+    Sectors are recorded BEFORE widening -- tag_values derive as
+    `code >> payload_width`, and widening shifts every code -- and
+    `with_spectators` then carries sectors, tag_values and ports through,
+    recording the pad as a typed residual port. The allocator consumes this
+    selected width; W is not repaired downstream.
+    """
     from lang.types import build_plus_tree
     dom = build_plus_tree(list(t.summand_types))
-    cod = build_plus_tree([type_of(br)[1] for br in t.branches])
-    fin, fout = canonical_frame(dom), canonical_frame(cod)
     cods = [type_of(br)[1] for br in t.branches]
-    return (_with_sum_sectors(fin, list(t.summand_types), "NPlusMap in"),
-            _with_sum_sectors(fout, cods, "NPlusMap out"))
+    cod = build_plus_tree(cods)
+    fin, fout = canonical_frame(dom), canonical_frame(cod)
+    fin = _with_sum_sectors(fin, list(t.summand_types), "NPlusMap in")
+    fout = _with_sum_sectors(fout, cods, "NPlusMap out")
+    want = max(fin.n_qubits, fout.n_qubits)
+    if fin.n_qubits < want:
+        fin = with_spectators(fin, want)
+    if fout.n_qubits < want:
+        fout = with_spectators(fout, want)
+    return fin, fout
 
 
 def _plusmap_frames(t):
@@ -1835,7 +1816,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
 
     def _plusmap_align_plan(t, arts, k, parent_in, parent_out,
                             placement_fn=None, P_inv=None,
-                            payload_base_override=None):
+                            payload_base_override=None,
+                            summ_in=None, summ_out=None, selector_bits=1):
         """Build the occurrence's plan, or FAIL CLOSED.
 
         Called for an in-scope CLOSED boundary -- equal registers, both sides
@@ -1866,8 +1848,13 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 f"under it. Failing closed before emission.")
 
         pls, pre, mid = [], [], []
-        summ_in = [t.ty_left, t.ty_right]
-        summ_out = [type_of(t.left)[1], type_of(t.right)[1]]
+        if summ_in is None:
+            summ_in = [t.ty_left, t.ty_right]
+        if summ_out is None:
+            summ_out = [type_of(t.left)[1], type_of(t.right)[1]]
+        if len(summ_in) != len(arts) or len(summ_out) != len(arts):
+            _fail(f"{len(arts)} branch artifacts but {len(summ_in)} ingress / "
+                  f"{len(summ_out)} egress summands")
         for tv, a in enumerate(arts):
             wi, wo = a.fin.n_qubits, a.fout.n_qubits
             l2b = placement_fn(tv, max(wi, wo))
@@ -1875,9 +1862,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 _fail(f"branch {tv} artifact width {max(wi, wo)} does not fit "
                       f"a {n}-qubit parent")
             Km = _lift_via_placement(a.fin.codes, tv, n, l2b[:wi],
-                                     P_inv, pw_parent)
+                                     P_inv, pw_parent, selector_bits)
             Kp = _lift_via_placement(a.fout.codes, tv, n, l2b[:wo],
-                                     P_inv, pw_parent)
+                                     P_inv, pw_parent, selector_bits)
             if Km is None or Kp is None:
                 _fail(f"branch {tv} does not lift into the parent register")
             pls.append(BranchPlacement(
@@ -3407,6 +3394,65 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             tag_phys = [p.apply_new_to_old(offset + j) for j in range(k)]
             payload_base = offset + k
 
+            # --- closed fast-path sector transport ---------------------------
+            # The synthetic NPlusMap is its own occurrence and owns its own
+            # plan; it does not inherit anything from a PlusMap that
+            # auto-flatten dissolved. Its cut has one sector per leaf, which is
+            # a different (and equally legitimate) classification of the same
+            # embedding the outer PlusMap occurrence records with fewer
+            # sectors.
+            # "Closed" must mean SYNTACTICALLY closed -- free variables are
+            # computed independently of `env`. Keying on env membership let a
+            # branch with a free variable that simply is not in scope be
+            # classified as closed and compiled standalone, which is not a
+            # closed branch, it is an unresolved one.
+            _np_fv = [[nm for nm, _ in _ordered_free_vars(br)]
+                      for br in t.branches]
+            _np_unresolved = [(i, [nm for nm in fv if not (env and nm in env)])
+                              for i, fv in enumerate(_np_fv)]
+            _np_unresolved = [(i, nms) for i, nms in _np_unresolved if nms]
+            if _np_unresolved:
+                # Before branch compilation, Align emission or any parent
+                # mutation. The open/context path is a later phase; until it
+                # exists this fails closed rather than compiling a branch
+                # whose context nothing supplies.
+                raise UnsupportedFrame(
+                    f"NPlusMap: branch(es) "
+                    f"{[i for i, _ in _np_unresolved]} have free variables "
+                    f"{[nms for _, nms in _np_unresolved]} that are not bound "
+                    f"in the enclosing environment, so their context is "
+                    f"unresolved. Failing closed before emission.")
+            _np_arts = None
+            _np_plan = None
+            if not any(_np_fv):
+                # Compile every branch EXACTLY once, carrying commands, phase
+                # and both frames together.
+                _np_arts = [_compile_branch_artifact(br) for br in t.branches]
+                _npf_in, _npf_out = parent_in, parent_out
+                _np_dp, _np_cp = type_of(t)
+                if (_npf_in is not None and _npf_out is not None
+                        and _npf_in.n_qubits == _npf_out.n_qubits
+                        and bool(_npf_in.sectors) and bool(_npf_out.sectors)
+                        and len(_npf_in.sectors) == len(t.branches)
+                        and len(_npf_out.sectors) == len(t.branches)
+                        and _first_order(_np_dp) and _first_order(_np_cp)):
+                    _np_plan = _plusmap_align_plan(
+                        t, _np_arts, k, _npf_in, _npf_out,
+                        payload_base_override=k, selector_bits=k,
+                        summ_in=list(t.summand_types),
+                        summ_out=[type_of(br)[1] for br in t.branches])
+                    # Validate against the derivation-selected parent sectors.
+                    for _i, _pl in enumerate(_np_plan.placements):
+                        if _pl.logical_in != _npf_in.sectors[_i].logical or \
+                                _pl.logical_out != _npf_out.sectors[_i].logical:
+                            raise UnsupportedFrame(
+                                f"NPlusMap: branch {_i} interface disagrees "
+                                f"with the selected parent sector. Failing "
+                                f"closed before emission.")
+                    _plan_sink[_cur_occ[0]] = _np_plan
+                    _emit_frame_align(_npf_in, _np_plan.F_pre, offset,
+                                      _np_plan.n_qubits, where="A_pre (NPlusMap)")
+
             for i, (st, br) in enumerate(zip(t.summand_types, t.branches)):
                 branch_pw = width(st)
                 # Check if branch is open: any free var present in outer env.
@@ -3451,19 +3497,38 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
                                               make_wire_map_open())
                 else:
-                    # Closed branch (or no relevant free vars in scope).
-                    sub_cmds, branch_phase_ht = _compile_branch(br)
+                    # Closed branch: reuse the single compile from above.
+                    if _np_arts is not None:
+                        sub_cmds = _np_arts[i].cmds
+                        branch_phase_ht = _np_arts[i].phase
+                    else:
+                        sub_cmds, branch_phase_ht = _compile_branch(br)
 
                     if sub_cmds:
-                        def make_wire_map(pb=payload_base):
-                            def wire_map(w):
-                                return p.apply_new_to_old(pb + w)
-                            return wire_map
+                        if _np_plan is not None:
+                            # THE authority. `payload_base + w` happens to give
+                            # the same answer here, and keeping both would
+                            # recreate exactly the drift removed for Strategy A.
+                            def make_wire_map(_pl=_np_plan.placements[i],
+                                              _off=offset):
+                                def wire_map(w):
+                                    return p.apply_new_to_old(_off + _pl.wire(w))
+                                return wire_map
+                        else:
+                            # Unplanned legacy path only.
+                            def make_wire_map(pb=payload_base):
+                                def wire_map(w):
+                                    return p.apply_new_to_old(pb + w)
+                                return wire_map
 
                         _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
                                               make_wire_map())
 
                 _discharge_branch_phase(circ, tag_phys, [i], branch_phase_ht)
+
+            if _np_plan is not None:
+                _emit_frame_align(_np_plan.F_mid, _npf_out, offset,
+                                  _np_plan.n_qubits, where="A_post (NPlusMap)")
 
             if explain:
                 log.append(f"NPlusMap(n={n_branches}, k={k}): "

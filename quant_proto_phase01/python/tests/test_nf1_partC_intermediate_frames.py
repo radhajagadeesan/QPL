@@ -553,7 +553,7 @@ def test_each_branch_is_compiled_exactly_once(materialize, monkeypatch):
 
 @pytest.mark.parametrize("materialize", MODES)
 def test_plan_failure_raises_before_mutating_the_parent(materialize, monkeypatch):
-    """Force _lift_codes to fail and prove nothing reached the parent circuit.
+    """Force _lift_via_placement to fail; prove nothing reached the parent.
 
     The witness has a command-bearing branch, so if the parent were emitted at
     all a 3-qubit circuit would receive operations. None may.
@@ -565,9 +565,9 @@ def test_plan_failure_raises_before_mutating_the_parent(materialize, monkeypatch
     t = PlusMap(IA, Ten(Plus(I, I), q), Hg(0, IA), DistL(I, I, q))
     assert compile(t, materialize=materialize).circuit.n_qubits == 3
 
-    # Patch the symbol the plan ACTUALLY calls. (It was `_lift_codes` before
-    # the placement tuple became the single authority; patching a symbol the
-    # planner no longer consults would make this test vacuous.)
+    # Patch the symbol the plan ACTUALLY calls -- `_lift_via_placement` is
+    # the single live authority. Patching anything the planner no longer
+    # consults would make this test vacuous.
     monkeypatch.setattr(TP, "_lift_via_placement", lambda *a, **k: None)
 
     touched = []
