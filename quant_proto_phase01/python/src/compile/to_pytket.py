@@ -320,12 +320,20 @@ class BranchPlacement(NamedTuple):
     logical_out: object
     K_minus: tuple
     K_plus: tuple
+    local_to_block: tuple = ()  # branch-local wire -> parent-local block wire
     ports_in: tuple = ()        # lifted Port objects, parent-local wires
     ports_out: tuple = ()
 
     def wire(self, local_branch_wire: int) -> int:
-        """Branch-local wire -> parent-local wire."""
-        return self.payload_base + local_branch_wire
+        """Branch-local wire -> parent-local wire, at the controlled-block
+        stage. THE authority: the K lift, the lifted ports and the emitted
+        commands all read this one tuple.
+
+        It is not `payload_base + i` in general. On the Strategy A path a
+        sum-typed branch's inner tag sits in the parent's TAG register, so its
+        wire 0 lands at k-1, not at k -- for Q's right branch the mapping is
+        (1, 2), where `payload_base + i` would say (2, 3)."""
+        return self.local_to_block[local_branch_wire]
 
 
 class PlusMapAlignPlan(NamedTuple):
@@ -356,20 +364,96 @@ class PlusMapAlignPlan(NamedTuple):
         return tuple(pl.K_plus for pl in self.placements)
 
 
-def _lift_port(pt, payload_base):
-    """A branch Port, shifted into parent-local coordinates.
+def _lift_port(pt, local_to_block):
+    """A branch Port, carried into parent-local coordinates.
 
-    Name, logical type, role, wires AND by_sector all survive. Every wire
-    moves by `payload_base`; the by_sector TAG VALUES are left alone, because
-    those index the branch's own inner sectors -- the outer sector is supplied
-    by the enclosing BranchPlacement.tag_value. Rewriting them would conflate
-    two different sum levels.
+    Name, logical type, role, wires AND by_sector all survive. Every wire goes
+    through the placement tuple -- NOT `+ payload_base`, which is wrong
+    wherever the branch's inner tag sits in the parent's tag register. The
+    by_sector TAG VALUES are left alone: they index the branch's own inner
+    sectors, while the outer sector is supplied by the enclosing
+    BranchPlacement.tag_value, and rewriting them would conflate two sum
+    levels.
     """
-    return Port(
-        name=pt.name, logical=pt.logical, role=pt.role,
-        wires=tuple(w + payload_base for w in pt.wires),
-        by_sector=tuple((tv, tuple(w + payload_base for w in ws))
-                        for tv, ws in pt.by_sector))
+    def mv(ws):
+        return tuple(local_to_block[w] for w in ws)
+    return Port(name=pt.name, logical=pt.logical, role=pt.role,
+                wires=mv(pt.wires),
+                by_sector=tuple((tv, mv(ws)) for tv, ws in pt.by_sector))
+
+
+def _lift_via_placement(codes, tag_value, n_qubits, local_to_block,
+                        P_inv=None, pw_parent=None):
+    """Branch code -> parent code, THROUGH the placement tuple.
+
+    The branch's w-bit code is scattered onto the block wires named by
+    `local_to_block` (big-endian: branch bit j is the j-th most significant),
+    the left/right selector goes to wire 0, and on the Strategy A path the
+    resulting block tag is carried back through P^-1 into the parent's own
+    coordinates.
+
+    Both paths share this; only `local_to_block` and the presence of P differ.
+    """
+    w = len(local_to_block)
+    out = []
+    for c in codes:
+        block = tag_value << (n_qubits - 1)
+        for j in range(w):
+            if (c >> (w - 1 - j)) & 1:
+                block |= 1 << (n_qubits - 1 - local_to_block[j])
+        if P_inv is not None:
+            tag = block >> pw_parent
+            if tag >= len(P_inv):
+                return None
+            block = (P_inv[tag] << pw_parent) | (block & ((1 << pw_parent) - 1))
+        out.append(block)
+    return tuple(out)
+
+
+def _strategy_a_local_to_block(sub_ty, artifact_n, k):
+    """`_sub_wire_to_full` at offset 0 -- the Strategy A placement tuple."""
+    from lang.types import tag_width as _tw
+    sub_tw = _tw(sub_ty) if isinstance(sub_ty, Plus) else 0
+    if sub_tw > k - 1:
+        return None
+    tup = tuple(_sub_wire_to_full(i, sub_tw, 0, k) for i in range(artifact_n))
+    return tup if all(0 <= wr < 64 for wr in tup) else None
+
+
+def _strategy_a_lift(codes, sub_ty, msb, n_qubits, k, P_inv):
+    """Branch code -> parent code on the Strategy A path.
+
+    Strategy A wraps the branches in a tag-permutation sandwich
+    P ; branches ; P^-1, and places a branch by `_sub_wire_to_full`: the
+    branch's inner tag occupies the LAST sub_tw of the parent's k-1 inner tag
+    bits, and its payload starts at parent wire k. So, per code,
+
+        inner_tag = c >> pw_branch          payload = c mod 2^pw_branch
+        perm_tag  = (msb << (k-1)) | inner_tag
+        parent    = (P^-1[perm_tag] << pw_parent) | payload << (pw_parent-pw_b)
+
+    The P^-1 is what puts the result back in the PARENT's own coordinates:
+    the sandwich, P and P^-1 included, is the block B that the two Aligns
+    surround, which is why equation (2) is checked against the whole emitted
+    circuit rather than against the controlled gates alone.
+
+    Returns None when the branch does not fit the parent's payload field.
+    """
+    from lang.types import tag_width as _tw, payload_width as _pw
+    sub_tw = _tw(sub_ty) if isinstance(sub_ty, Plus) else 0
+    pw_b = _pw(sub_ty) if isinstance(sub_ty, Plus) else width(sub_ty)
+    pw_parent = n_qubits - k
+    if pw_b > pw_parent or sub_tw > k - 1:
+        return None
+    out = []
+    for c in codes:
+        it = c >> pw_b
+        pl = c & ((1 << pw_b) - 1)
+        perm_tag = (msb << (k - 1)) | it
+        if perm_tag >= len(P_inv):
+            return None
+        out.append((P_inv[perm_tag] << pw_parent) | (pl << (pw_parent - pw_b)))
+    return tuple(out)
 
 
 def _plusmap_placement(n_qubits, k):
@@ -1749,45 +1833,60 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             if k > 0 and tp != tuple(range(n_summands)):
                 _emit_tag_perm_unitary(circ, p, tp, k, offset, explain, log)
 
-    def _plusmap_align_plan(t, arts, k, parent_in, parent_out):
+    def _plusmap_align_plan(t, arts, k, parent_in, parent_out,
+                            placement_fn=None, P_inv=None,
+                            payload_base_override=None):
         """Build the occurrence's plan, or FAIL CLOSED.
 
-        Called only for an in-scope boundary (closed k<=1, equal registers,
-        both sides sector-described). For such a boundary a plan is owed: if
-        one cannot be built the parent cannot honour
-        A_pre J^- = K^-  /  A_post K^+ = J^+, and returning None here would
-        silently emit the pre-repair circuit under a boundary that claims
-        otherwise. So this raises instead.
+        Called for an in-scope CLOSED boundary -- equal registers, both sides
+        sector-described, first-order -- on either the k<=1 or the Strategy A
+        path. For such a boundary a plan is owed: if one cannot be built the
+        parent cannot honour A_pre J^- = K^- / A_post K^+ = J^+, and returning
+        None would silently emit the pre-repair circuit under a boundary that
+        claims otherwise. So this raises instead.
+
+        `placement_fn(sector, artifact_n)` returns that branch's
+        `local_to_block` tuple, which is the single authority consumed by the
+        lift, by the lifted ports and by the emitted commands.
         """
         n = parent_in.n_qubits
         tag_wires, payload_base = _plusmap_placement(n, k)
+        if payload_base_override is not None:
+            payload_base = payload_base_override
+        pw_parent = n - k
+        if placement_fn is None:
+            def placement_fn(_sector, artifact_n, _pb=payload_base):
+                return tuple(_pb + i for i in range(artifact_n))
 
         def _fail(why):
             raise UnsupportedFrame(
                 f"PlusMap: cannot construct the occurrence align plan "
-                f"({why}). The boundary is closed, k<=1 and sector-described, "
-                f"so a plan is required; refusing to emit an unaligned "
-                f"circuit under it. Failing closed before emission.")
+                f"({why}). The boundary is closed and sector-described, so a "
+                f"plan is required; refusing to emit an unaligned circuit "
+                f"under it. Failing closed before emission.")
 
         pls, pre, mid = [], [], []
         summ_in = [t.ty_left, t.ty_right]
         summ_out = [type_of(t.left)[1], type_of(t.right)[1]]
         for tv, a in enumerate(arts):
             wi, wo = a.fin.n_qubits, a.fout.n_qubits
-            Km = _lift_codes(a.fin.codes, tv, n, k, wi)
-            Kp = _lift_codes(a.fout.codes, tv, n, k, wo)
-            if Km is None or Kp is None:
+            l2b = placement_fn(tv, max(wi, wo))
+            if l2b is None or any(wr >= n for wr in l2b):
                 _fail(f"branch {tv} artifact width {max(wi, wo)} does not fit "
-                      f"the payload field of a {n}-qubit parent")
+                      f"a {n}-qubit parent")
+            Km = _lift_via_placement(a.fin.codes, tv, n, l2b[:wi],
+                                     P_inv, pw_parent)
+            Kp = _lift_via_placement(a.fout.codes, tv, n, l2b[:wo],
+                                     P_inv, pw_parent)
+            if Km is None or Kp is None:
+                _fail(f"branch {tv} does not lift into the parent register")
             pls.append(BranchPlacement(
                 index=tv, tag_value=tv, tag_wires=tag_wires,
                 payload_base=payload_base, width=max(wi, wo),
                 logical_in=summ_in[tv], logical_out=summ_out[tv],
-                K_minus=Km, K_plus=Kp,
-                ports_in=tuple(_lift_port(pt, payload_base)
-                               for pt in a.fin.ports),
-                ports_out=tuple(_lift_port(pt, payload_base)
-                                for pt in a.fout.ports)))
+                K_minus=Km, K_plus=Kp, local_to_block=l2b,
+                ports_in=tuple(_lift_port(pt, l2b) for pt in a.fin.ports),
+                ports_out=tuple(_lift_port(pt, l2b) for pt in a.fout.ports)))
             pre.extend(Km)
             mid.extend(Kp)
 
@@ -2861,6 +2960,36 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             tw_left = tw_fn(t.ty_left) if isinstance(t.ty_left, Plus) else 0
             tw_right = tw_fn(t.ty_right) if isinstance(t.ty_right, Plus) else 0
 
+            # --- Strategy A boundary transport -------------------------
+            # Same three equations as the closed k<=1 path; only the lift
+            # differs, because a branch that is itself a sum puts its inner
+            # tag in the PARENT's tag register rather than in the payload
+            # field. Scope is decided by the same explicit predicate, and once
+            # in scope the plan is owed (it raises rather than degrading).
+            _sa_in, _sa_out = parent_in, parent_out
+            _sa_plan = None
+            _sa_dp, _sa_cp = type_of(t)
+            if (_sa_in is not None and _sa_out is not None
+                    and _sa_in.n_qubits == _sa_out.n_qubits
+                    and bool(_sa_in.sectors) and bool(_sa_out.sectors)
+                    and _first_order(_sa_dp) and _first_order(_sa_cp)):
+                _P_inv = [0] * dim
+                for _a, _b in enumerate(P_tup):
+                    _P_inv[_b] = _a
+                _sub_tys = (t.ty_left, t.ty_right)
+
+                def _sa_placement(sector, artifact_n, _st=_sub_tys, _k=k):
+                    return _strategy_a_local_to_block(_st[sector], artifact_n, _k)
+
+                _sa_plan = _plusmap_align_plan(
+                    t, (_left_art, _right_art), k, _sa_in, _sa_out,
+                    placement_fn=_sa_placement, P_inv=tuple(_P_inv),
+                    payload_base_override=k)
+                _plan_sink[_cur_occ[0]] = _sa_plan
+                # (1) A_pre, before the P sandwich
+                _emit_frame_align(_sa_in, _sa_plan.F_pre, offset,
+                                  _sa_plan.n_qubits, where="A_pre (Strategy A)")
+
             # Step 1: Emit P (tag permutation) if non-identity
             if not is_identity_P:
                 _emit_tag_perm_unitary(circ, p, P_tup, k, offset, explain, log)
@@ -2874,8 +3003,15 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             msb_phys = p.apply_new_to_old(offset)
 
             if left_cmds:
-                left_wm = lambda w, stw=tw_left: p.apply_new_to_old(
-                    _sub_wire_to_full(w, stw, offset, k))
+                # When a plan exists its placement is THE authority; only the
+                # unplanned path falls back to the formula.
+                if _sa_plan is not None:
+                    _pl0 = _sa_plan.placements[0]
+                    left_wm = lambda w, _q=_pl0: p.apply_new_to_old(
+                        offset + _q.wire(w))
+                else:
+                    left_wm = lambda w, stw=tw_left: p.apply_new_to_old(
+                        _sub_wire_to_full(w, stw, offset, k))
                 # Extra anti-control qubits: q[1..k-1-tw_left] (the inner tag
                 # bits before the sub-circuit's bits, which are at the end).
                 n_extra_left = k - 1 - tw_left
@@ -2884,8 +3020,13 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 _emit_controlled_branch(msb_phys, left_cmds, left_wm,
                                         anti=True, extra_anti_qubits=extras_left)
             if right_cmds:
-                right_wm = lambda w, stw=tw_right: p.apply_new_to_old(
-                    _sub_wire_to_full(w, stw, offset, k))
+                if _sa_plan is not None:
+                    _pl1 = _sa_plan.placements[1]
+                    right_wm = lambda w, _q=_pl1: p.apply_new_to_old(
+                        offset + _q.wire(w))
+                else:
+                    right_wm = lambda w, stw=tw_right: p.apply_new_to_old(
+                        _sub_wire_to_full(w, stw, offset, k))
                 n_extra_right = k - 1 - tw_right
                 extras_right = [p.apply_new_to_old(offset + 1 + i)
                                 for i in range(n_extra_right)] if n_extra_right > 0 else None
@@ -2916,6 +3057,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 for i in range(dim):
                     P_inv[P_tup[i]] = i
                 _emit_tag_perm_unitary(circ, p, tuple(P_inv), k, offset, explain, log)
+
+            # (3) A_post, after P^-1: the sandwich as a whole is the block B
+            if _sa_plan is not None:
+                _emit_frame_align(_sa_plan.F_mid, _sa_out, offset,
+                                  _sa_plan.n_qubits, where="A_post (Strategy A)")
 
             if explain:
                 log.append(f"PlusMap(k={k}, Strategy A): n_left={n_left}, n_right={n_right}, "
@@ -3491,12 +3637,24 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             msb_phys = p.apply_new_to_old(offset)
 
             if left_cmds:
-                left_wm = lambda w, stw=tw_left: p.apply_new_to_old(
-                    _sub_wire_to_full(w, stw, offset, k))
+                # When a plan exists its placement is THE authority; only the
+                # unplanned path falls back to the formula.
+                if _sa_plan is not None:
+                    _pl0 = _sa_plan.placements[0]
+                    left_wm = lambda w, _q=_pl0: p.apply_new_to_old(
+                        offset + _q.wire(w))
+                else:
+                    left_wm = lambda w, stw=tw_left: p.apply_new_to_old(
+                        _sub_wire_to_full(w, stw, offset, k))
                 _emit_controlled_branch(msb_phys, left_cmds, left_wm, anti=True)
             if right_cmds:
-                right_wm = lambda w, stw=tw_right: p.apply_new_to_old(
-                    _sub_wire_to_full(w, stw, offset, k))
+                if _sa_plan is not None:
+                    _pl1 = _sa_plan.placements[1]
+                    right_wm = lambda w, _q=_pl1: p.apply_new_to_old(
+                        offset + _q.wire(w))
+                else:
+                    right_wm = lambda w, stw=tw_right: p.apply_new_to_old(
+                        _sub_wire_to_full(w, stw, offset, k))
                 _emit_controlled_branch(msb_phys, right_cmds, right_wm)
 
             # Promote branch-accumulated global phases to exact-tag relative

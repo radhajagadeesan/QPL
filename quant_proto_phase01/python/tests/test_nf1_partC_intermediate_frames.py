@@ -565,7 +565,10 @@ def test_plan_failure_raises_before_mutating_the_parent(materialize, monkeypatch
     t = PlusMap(IA, Ten(Plus(I, I), q), Hg(0, IA), DistL(I, I, q))
     assert compile(t, materialize=materialize).circuit.n_qubits == 3
 
-    monkeypatch.setattr(TP, "_lift_codes", lambda *a, **k: None)
+    # Patch the symbol the plan ACTUALLY calls. (It was `_lift_codes` before
+    # the placement tuple became the single authority; patching a symbol the
+    # planner no longer consults would make this test vacuous.)
+    monkeypatch.setattr(TP, "_lift_via_placement", lambda *a, **k: None)
 
     touched = []
     for meth in ("add_gate", "add_toffolibox", "X"):
@@ -622,3 +625,64 @@ def test_V_after_a_pending_nontrivial_wire_permutation(materialize):
     np.testing.assert_allclose(
         semantic_action(r.input_frame, U, r.output_frame),
         np.kron(A, np.eye(5)), atol=ATOL, rtol=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Strategy A: local_to_block is the placement authority
+# ---------------------------------------------------------------------------
+
+def Q_witness():
+    """Strategy A (k=2). Its right branch is itself a sum, so that branch's
+    inner tag lives in the PARENT's tag register."""
+    from lang.terms import UndistL
+    return PlusMap(IA, Plus(IA, IA), Id(IA), UndistL(I, I, q))
+
+
+def test_strategy_A_right_placement_is_1_2_not_2_3():
+    """Q's right branch maps branch wires 0,1 to parent-local wires 1,2.
+
+    `payload_base + i` would say (2, 3): wrong, because wire 0 of that branch
+    is its inner TAG bit, which sits at k-1 inside the parent's tag register,
+    not at k. This is exactly the case where a second copy of the placement
+    formula could drift from the first without any circuit changing shape.
+    """
+    plan = _plan_for(Q_witness())
+    right = plan.placements[1]
+    assert right.local_to_block == (1, 2), right.local_to_block
+    assert (right.wire(0), right.wire(1)) == (1, 2)
+    assert right.local_to_block != (2, 3), "the payload_base+i answer is wrong here"
+    assert plan.placements[0].local_to_block == (2,), plan.placements[0].local_to_block
+
+
+def test_strategy_A_wire_reads_local_to_block():
+    """BranchPlacement.wire is a lookup, not a recomputation."""
+    for t in (Q_witness(), V_witness(), P0_witness(), W_witness()):
+        plan = _plan_for(t)
+        for pl in plan.placements:
+            assert tuple(pl.wire(i) for i in range(len(pl.local_to_block))) \
+                == pl.local_to_block
+
+
+def test_strategy_A_K_frames_and_exactness():
+    """Q: pre-Align identity, post-Align non-identity -- P's mirror."""
+    from compile.frames import semantic_dim
+    plan = _plan_for(Q_witness())
+    fin, fout = select_frames(Q_witness())
+    assert plan.K_minus == ((0, 1), (2, 3, 4, 5)), plan.K_minus
+    assert plan.K_plus == ((0, 1), (2, 3, 4, 5)), plan.K_plus
+    assert tuple(tuple(s.codes) for s in fin.sectors) == ((0, 1), (2, 3, 4, 5))
+    assert tuple(tuple(s.codes) for s in fout.sectors) == ((0, 2), (4, 5, 6, 7))
+    for i, pl in enumerate(plan.placements):
+        assert len(pl.K_minus) == semantic_dim(pl.logical_in)
+        assert len(pl.K_plus) == semantic_dim(pl.logical_out)
+
+
+@pytest.mark.parametrize("materialize", MODES)
+def test_Q_is_exact_identity(materialize):
+    r = compile(Q_witness(), materialize=materialize)
+    U = r.circuit.get_unitary()
+    assert leakage(r.input_frame, U, r.output_frame) < ATOL
+    assert abs(r.global_phase) < 1e-12
+    np.testing.assert_allclose(
+        semantic_action(r.input_frame, U, r.output_frame),
+        np.eye(6), atol=ATOL, rtol=0.0)
