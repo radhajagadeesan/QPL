@@ -5,11 +5,18 @@
 This is a **stabilization checkpoint**, not a release candidate. It retains
 explicit red correctness counterexamples by design. It is **not** Zenodo-ready.
 
-Witnesses live in `python/tests/test_release_safety.py`. Every executable gate
-runs both materialization modes, uses the artifact's own recorded frames,
-compares against an independently constructed expected matrix, checks the
-actual global phase, and uses `rtol=0` with `atol=1e-10`. A passing count is
+Witnesses live in `python/tests/test_release_safety.py`. A passing count is
 not evidence; each entry below is an exact counterexample or it is not a gate.
+
+**Two kinds of check, not to be conflated:**
+
+* **Semantic gates** — run both materialization modes, use the artifact's own
+  recorded frames, compare against an independently constructed expected
+  matrix, check the actual global phase, `rtol=0`, `atol=1e-10`. These are
+  A, C, D, G and the three closed controls.
+* **Compile-only non-rejection checks** — assert only that the guard does not
+  reject a valid placement. They make **no** action, phase or leakage claim
+  and must never be described as "exact".
 
 ---
 
@@ -17,7 +24,7 @@ not evidence; each entry below is an exact counterexample or it is not a gate.
 
 | category | witnesses |
 |---|---|
-| SUPPORTED | A, G |
+| SUPPORTED | A, G, and the closed controls `H⊕I`, `I⊕X`, `H⊕S` |
 | KNOWN RED | C, D |
 | FAILS CLOSED | F (after the guard) |
 | UNRESOLVED | E |
@@ -38,6 +45,10 @@ not evidence; each entry below is an exact counterexample or it is not a gate.
 | **E** qswitch η | F / T | ok | **not evaluable** | — | — | 14 qubits, in dim 1, out dim 16384 |
 | **F** ctrl_ho | F / T | **UnsupportedFrame** | unevaluated | — | — | rejected before emission |
 | **G** captured fn | F / T | ok | exact `H` | 0 | 0 | in = out = `(0,1)` |
+| control `H⊕I` | F / T | ok | exact `H⊕I` | 0 | 0 | truthful |
+| control `I⊕X` | F / T | ok | exact `I⊕X` | 0 | 0 | truthful |
+| control `H⊕S` | F / T | ok | exact `H⊕S` | 0 | 0 | truthful |
+| guard non-rejection ×2 | F / T | ok | *compile-only — no claim* | — | — | — |
 
 ---
 
@@ -104,6 +115,11 @@ Three separate facts, kept apart:
 Smallest captured-function case, `(λf. λp. f p) H`, applied to a qubit: exact
 `H`, zero leakage, zero phase, truthful frames, both modes.
 
+The gate requires success and exactness. An earlier version also accepted
+`UnsupportedFrame`; that escape hatch has been removed. On a witness that
+demonstrably works, accepting a refusal would silently absorb a future
+regression into "failed closed".
+
 ---
 
 ## The guard
@@ -118,6 +134,10 @@ list — and rejects:
 * a physical wire claimed by two different roles;
 * an operation that would receive the same physical wire twice.
 
+It runs **immediately before the offending command-bearing branch is
+emitted** — not before all compilation globally. Compilation of the enclosing
+term proceeds normally until that branch is reached.
+
 Its diagnostic is deterministic and names the construct, the wire and the two
 conflicting roles:
 
@@ -127,6 +147,20 @@ and the context placement [0, 1, 2, 3]. The derivation does not identify
 that coordinate with itself, so the branch cannot be emitted. Failing
 closed before emission.
 ```
+
+**Guard-path coverage.** Instrumenting `_check_open_placement` shows which
+witnesses actually reach it:
+
+| witness | reaches the guard |
+|---|---|
+| direct open `PlusMap` with `env` (the two non-rejection checks) | yes — `PlusMap left` |
+| F1 ctrl_ho | yes — `PlusMap right`, and it fires |
+| closed controls `H⊕I`, `I⊕X`, `H⊕S` | **no** |
+
+The closed controls are therefore **semantic regression controls** proving the
+guard commit changed no working circuit — they are not guard-path coverage,
+and are not claimed to be. All three are exact in both modes: `H⊕I`, `I⊕X`,
+and `H⊕S` (both branches open, `H` on the left summand and `S` on the right).
 
 No successful circuit changed: the legacy suite is 734 passed, identical to
 the baseline.

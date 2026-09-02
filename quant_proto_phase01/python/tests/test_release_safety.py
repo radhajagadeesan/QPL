@@ -325,18 +325,16 @@ def _captured_witness():
 
 
 @pytest.mark.parametrize("materialize", MODES)
-def test_G_captured_function_exact_or_fail_closed(materialize):
-    """Either independently exact with truthful frames, or UnsupportedFrame
-    BEFORE any partial circuit. IndexError / ValueError / a leaking circuit /
-    canonical fallback are all failures."""
-    term = _captured_witness()
-    try:
-        r, U, sem = _framed(term, materialize)
-    except UnsupportedFrame:
-        return                      # acceptable: failed closed
-    except (IndexError, ValueError, RuntimeError) as e:
-        pytest.fail(f"G: unsafe path raised {type(e).__name__}: {e} -- "
-                    f"expected UnsupportedFrame before emission")
+def test_G_captured_function_is_exact(materialize):
+    """SEMANTIC GATE. This witness is SUPPORTED at the baseline, so nothing
+    weaker than exactness is accepted: it must compile, and give exactly H
+    with zero phase and zero leakage in both modes.
+
+    The earlier version also accepted UnsupportedFrame. That was wrong here --
+    an escape hatch on a witness that demonstrably works would silently
+    absorb a future regression into "failed closed".
+    """
+    r, U, sem = _framed(_captured_witness(), materialize)
     _assert_exact(r, U, sem, H_M, where="G")
 
 
@@ -349,9 +347,14 @@ def _use(name):
 
 
 @pytest.mark.parametrize("materialize", MODES)
-def test_guard_valid_open_branch_still_compiles_exactly(materialize):
-    """The closest VALID open branch -- disjoint payload and context -- still
-    compiles, with unchanged exact semantics."""
+def test_guard_valid_open_branch_is_not_rejected(materialize):
+    """COMPILE-ONLY NON-REJECTION CHECK -- not a semantic gate.
+
+    The closest VALID open branch (payload and context disjoint) must not be
+    rejected by the guard. No action, phase or leakage is asserted here, so
+    this must not be described as "exact"; the semantic gates are A, D, G and
+    the closed controls below.
+    """
     pm = PlusMap(q, q, _use("f"), Id(q))
     r = compile(pm, env={"f": [2, 3]}, materialize=materialize)
     assert r.circuit is not None
@@ -359,9 +362,12 @@ def test_guard_valid_open_branch_still_compiles_exactly(materialize):
 
 
 @pytest.mark.parametrize("materialize", MODES)
-def test_guard_coherent_sharing_open_branch_still_compiles(materialize):
-    """Both branches borrowing the SAME context is legitimate sharing, not an
-    overlap, and must not be rejected."""
+def test_guard_coherent_sharing_open_branch_is_not_rejected(materialize):
+    """COMPILE-ONLY NON-REJECTION CHECK -- not a semantic gate.
+
+    Both branches borrowing the SAME context is legitimate sharing, not an
+    overlap, so the guard must not reject it. No action/phase/leakage claim.
+    """
     pm = PlusMap(q, q, _use("f"), _use("f"))
     r = compile(pm, env={"f": [2, 3]}, materialize=materialize)
     assert r.circuit is not None
@@ -371,27 +377,50 @@ def _value_lam(nm, gate):
     return Lam(nm, q, q, Seq(Var(nm, q), gate))
 
 
+Z2Q = Plus(q, q)
+
+
+def _one_open_control(side, vn, gate):
+    pm = (PlusMap(q, q, _use("f"), Id(q)) if side == "left"
+          else PlusMap(q, q, Id(q), _use("f")))
+    inner = Lam("p", Z2Q, Z2Q, Seq(Var("p", Z2Q), pm))
+    outer = Lam("f", qq, Arrow(Z2Q, Z2Q), inner)
+    return Apply(Apply(outer, _value_lam(vn, gate(0, q))), Id(Z2Q))
+
+
+def _both_open_control():
+    """Both branches open: H on the left summand, S on the right."""
+    pm = PlusMap(q, q, _use("f"), _use("g"))
+    inner = Lam("p", Z2Q, Z2Q, Seq(Var("p", Z2Q), pm))
+    middle = Lam("g", qq, Arrow(Z2Q, Z2Q), inner)
+    outer = Lam("f", qq, Arrow(qq, Arrow(Z2Q, Z2Q)), middle)
+    return Apply(Apply(Apply(outer, _value_lam("hx", Hg(0, q))),
+                       _value_lam("sx", Sg(0, q))), Id(Z2Q))
+
+
+def _blk(u, v):
+    return np.block([[u, np.zeros((2, 2))], [np.zeros((2, 2)), v]])
+
+
 CLOSED_CONTROLS = [
-    ("H+I", "hx", Hg, np.block([[H_M, np.zeros((2, 2))],
-                                [np.zeros((2, 2)), I2]])),
-    ("I+X", "xx", Xg, np.block([[I2, np.zeros((2, 2))],
-                                [np.zeros((2, 2)), X_M]])),
+    ("H+I", lambda: _one_open_control("left", "hx", Hg), _blk(H_M, I2)),
+    ("I+X", lambda: _one_open_control("right", "xx", Xg), _blk(I2, X_M)),
+    ("H+S", _both_open_control, _blk(H_M, S_M)),
 ]
 
 
 @pytest.mark.parametrize("materialize", MODES)
-@pytest.mark.parametrize("name,vn,gate,expected", CLOSED_CONTROLS,
+@pytest.mark.parametrize("name,build,expected", CLOSED_CONTROLS,
                          ids=[c[0] for c in CLOSED_CONTROLS])
-def test_guard_closed_controls_remain_exact(name, vn, gate, expected,
-                                            materialize):
-    """The closed controls the guard must not touch."""
-    z2q = Plus(q, q)
-    if name == "H+I":
-        pm = PlusMap(q, q, _use("f"), Id(q))
-    else:
-        pm = PlusMap(q, q, Id(q), _use("f"))
-    inner = Lam("p", z2q, z2q, Seq(Var("p", z2q), pm))
-    outer = Lam("f", qq, Arrow(z2q, z2q), inner)
-    term = Apply(Apply(outer, _value_lam(vn, gate(0, q))), Id(z2q))
-    r, U, sem = _framed(term, materialize)
-    _assert_exact(r, U, sem, expected, where=f"guard/{name}")
+def test_closed_controls_remain_exact(name, build, expected, materialize):
+    """SEMANTIC GATES. Exact action, zero phase, zero leakage, both modes.
+
+    NOTE ON COVERAGE: these three do NOT reach `_check_open_placement` --
+    verified by instrumenting it, which reports no invocation for any of them.
+    They are semantic regression controls proving the guard commit changed no
+    working circuit; they are NOT guard-path coverage. The guard path itself
+    is exercised by the two non-rejection checks above (which do invoke it,
+    on "PlusMap left") and by F1, which requires it to fire.
+    """
+    r, U, sem = _framed(build(), materialize)
+    _assert_exact(r, U, sem, expected, where=f"control/{name}")
