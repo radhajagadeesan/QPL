@@ -543,6 +543,33 @@ def _check_primitive_frame(t, frame):
         f"circuit leaks out of. Failing closed before emission.")
 
 
+def _as_uniformly_controlled_u2(U):
+    """Recognize a uniformly controlled U2 in the COMPLETED matrix itself.
+
+    Not inferred from pw == 1 or from any type-level property: the test is on
+    the matrix. Every cross-block 2x2 must be exactly zero and every diagonal
+    2x2 must be unitary. Returns the 2^(n-1) diagonal blocks in control-state
+    order, or None.
+    """
+    import numpy as np
+    dim = U.shape[0]
+    if dim < 4 or dim % 2:
+        return None
+    nb = dim // 2
+    blocks = []
+    for a in range(nb):
+        for b in range(nb):
+            blk = U[2 * a:2 * a + 2, 2 * b:2 * b + 2]
+            if a == b:
+                if not np.allclose(blk.conj().T @ blk, np.eye(2),
+                                   atol=1e-10, rtol=0.0):
+                    return None
+            elif not np.allclose(blk, 0, atol=1e-10, rtol=0.0):
+                return None
+        blocks.append(U[2 * a:2 * a + 2, 2 * a:2 * a + 2])
+    return blocks
+
+
 def _plusmap_placement(n_qubits, k):
     """(tag_wires, payload_base) in LOCAL coordinates. The only definition."""
     base = max(k, 1)
@@ -3130,9 +3157,32 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     box = ToffoliBox(perm_pairs, ToffoliBoxSynthStrat.Matching)
                     circ.add_toffolibox(box, phys)
                 else:
-                    raise NotImplementedError(
-                        f"PlusMap full non-permutation unitary for width "
-                        f"{w} > 3 not yet supported")
+                    # Width > 3 and not a permutation. pytket 2.11 has no
+                    # general n-qubit unitary box (the ceiling is
+                    # Unitary3qBox) and no matrix-accepting synthesis pass, so
+                    # the only exact realisations are structured ones. A
+                    # uniformly controlled U2 is recognised from the COMPLETED
+                    # matrix -- cross-blocks zero, diagonal blocks unitary --
+                    # never from pw or the type.
+                    _blocks = _as_uniformly_controlled_u2(U_full)
+                    if _blocks is None:
+                        _sb_fail(
+                            f"width {w} > 3 and the completed block is neither "
+                            f"a permutation nor a uniformly controlled U2; "
+                            f"pytket offers no general {w}-qubit unitary box, "
+                            f"so there is no exact realisation")
+                    from pytket.circuit import (MultiplexedU2Box,
+                                                Unitary1qBox)
+                    _nctrl = w - 1
+                    _map = {}
+                    for _bi, _blk in enumerate(_blocks):
+                        # Control state is big-endian over the leading wires,
+                        # matching phys order: phys[0..w-2] control,
+                        # phys[w-1] target.
+                        _bits = tuple(bool((_bi >> (_nctrl - 1 - _j)) & 1)
+                                      for _j in range(_nctrl))
+                        _map[_bits] = Unitary1qBox(_blk)
+                    circ.add_gate(MultiplexedU2Box(_map), phys)
 
                 if explain:
                     log.append(f"PlusMap(k={k}, Strategy B full unitary): "

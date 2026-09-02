@@ -26,12 +26,13 @@ auto-flatten ever swallowed these they would silently stop testing Strategy B.
 import numpy as np
 import pytest
 
-from lang.types import Q, Plus, payload_width, flatten_plus
+from lang.types import Q, Plus, Ten, payload_width, flatten_plus
 from lang.terms import (Id, Seq, TenTerm, PlusMap, NPlusMap, AssocPlusL,
                         AssocPlusR, H as Hg, S as Sg, X as Xg, T as Tg)
 from compile.to_pytket import (compile, compile_with_artifacts, select_frames,
                                type_of, _try_flatten_plusmap)
-from compile.frames import semantic_action, leakage, pretty
+from compile.frames import (semantic_action, leakage, pretty,
+                            UnsupportedFrame)
 
 q = Q()
 L3 = Plus(Plus(q, q), q)
@@ -609,3 +610,179 @@ def test_forced_bad_branch_action_leaves_the_parent_untouched(materialize, monke
         compile(t, materialize=materialize)
     assert "Strategy B dense placement plan" in str(ei.value), str(ei.value)
     assert boxes == [], f"parent box emitted before failing closed: {boxes}"
+
+
+# ===========================================================================
+# SB51 dense width: structured exact realisation
+#
+# pytket 2.11 has no general n-qubit unitary box (ceiling Unitary3qBox) and no
+# matrix-accepting synthesis pass. A uniformly controlled U2 is an EXACT
+# realisation -- not an approximation, not a workaround.
+#
+# THE SUPPORTED CLASS is stated on the MATRIX, because that is what the
+# recogniser inspects: completed width>3 matrices recognised as uniformly
+# controlled one-qubit U(2) blocks IN THE SELECTED WIRE ORDER. SB51 belongs to
+# that class. Membership is decided by `_as_uniformly_controlled_u2` alone --
+# never by pw, the type, or the plan -- so no statement here should be read as
+# "pw >= 2 is forbidden". The negative witness below proves that ONE
+# nonconforming matrix is rejected by recognition; it says nothing categorical
+# about its payload width.
+# ===========================================================================
+
+@pytest.mark.parametrize("materialize", MODES)
+def test_SB51_emits_a_multiplexed_u2_on_tag_wires(materialize):
+    """Controls are the three tag wires, target is the payload wire."""
+    import re
+    r = compile(SB51_witness(), materialize=materialize)
+    assert r.circuit.n_qubits == 4
+    cmds = r.circuit.get_commands()
+    assert len(cmds) == 1, [str(c) for c in cmds]
+    assert "Multiplexed" in str(cmds[0]), str(cmds[0])
+    wires = [int(x) for x in re.findall(r"q\[(\d+)\]", str(cmds[0]))]
+    assert wires == [0, 1, 2, 3], wires
+
+
+@pytest.mark.parametrize("materialize", MODES)
+def test_SB51_emitted_unitary_equals_the_completed_plan_matrix(materialize):
+    """The circuit realises the plan's own matrix, not something equivalent
+    only on the code space -- the complement must agree too."""
+    plan = strategy_b_plan(SB51_witness())
+    dim = 2 ** plan.n_qubits
+    branches = (SB51_witness().left, SB51_witness().right)
+    expected = np.zeros((dim, dim), complex)
+    for i, br in enumerate(branches):
+        cb = compile(br, materialize=True)
+        G_i = semantic_action(cb.input_frame, cb.circuit.get_unitary(),
+                              cb.output_frame)
+        expected += (_inclusion(plan.K_plus[i], dim) @ G_i
+                     @ _inclusion(plan.K_minus[i], dim).conj().T)
+    for src, dst in zip(plan.free_in, plan.free_out):
+        expected[dst, src] = 1.0
+    r = compile(SB51_witness(), materialize=materialize)
+    np.testing.assert_allclose(r.circuit.get_unitary(), expected,
+                               atol=ATOL, rtol=0.0)
+
+
+def test_SB51_complement_is_identity_on_12_to_15():
+    plan = strategy_b_plan(SB51_witness())
+    assert plan.free_in == (12, 13, 14, 15), plan.free_in
+    assert plan.free_out == (12, 13, 14, 15), plan.free_out
+    U = compile(SB51_witness(), materialize=False).circuit.get_unitary()
+    for c in (12, 13, 14, 15):
+        col = np.zeros(16, complex)
+        col[c] = 1.0
+        np.testing.assert_allclose(U[:, c], col, atol=ATOL, rtol=0.0)
+
+
+def test_control_state_ordering_is_pinned_against_endian_reversal():
+    """A deliberately ASYMMETRIC block set.
+
+    SB51's own blocks are H,S,X,T,I,I,I,I -- reversing the control bit order
+    permutes them, so the emitted unitary would differ. This checks the
+    recogniser and the emitter agree on big-endian control states by
+    reconstructing the expected matrix under BOTH orders and requiring only
+    the big-endian one to match.
+    """
+    from compile.to_pytket import _as_uniformly_controlled_u2
+    U = compile(SB51_witness(), materialize=False).circuit.get_unitary()
+    blocks = _as_uniformly_controlled_u2(U)
+    assert blocks is not None and len(blocks) == 8
+
+    # the block set must not be symmetric under bit reversal, or the test
+    # could not detect an endian error at all
+    rev = [blocks[int(format(i, "03b")[::-1], 2)] for i in range(8)]
+    assert any(not np.allclose(a, b, atol=1e-12)
+               for a, b in zip(blocks, rev)), (
+        "block set is bit-reversal symmetric; endian errors would be invisible")
+
+    def assemble(bs):
+        M = np.zeros((16, 16), complex)
+        for i, b in enumerate(bs):
+            M[2 * i:2 * i + 2, 2 * i:2 * i + 2] = b
+        return M
+
+    np.testing.assert_allclose(U, assemble(blocks), atol=ATOL, rtol=0.0)
+    assert not np.allclose(U, assemble(rev), atol=1e-10), (
+        "reversed control order also matches; ordering is not pinned")
+
+
+def test_recogniser_rejects_a_non_block_diagonal_matrix():
+    from compile.to_pytket import _as_uniformly_controlled_u2
+    U = np.eye(16, dtype=complex)
+    U[[0, 3]] = U[[3, 0]]          # couples two different 2x2 blocks
+    assert _as_uniformly_controlled_u2(U) is None
+    bad = np.eye(16, dtype=complex)
+    bad[0, 0] = 2.0                # diagonal block no longer unitary
+    assert _as_uniformly_controlled_u2(bad) is None
+
+
+def SB51_nonconforming_witness():
+    """A width-4 term whose completed matrix is NOT a uniformly controlled U2.
+
+    It happens to have payload width 2, but that is incidental: recognition
+    inspects the matrix, so this witness demonstrates rejection of one
+    nonconforming structure, not a rule about pw.
+    """
+    qq = Ten(q, q)
+    L3w = Plus(Plus(qq, qq), qq)
+    inner = Seq(AssocPlusL(qq, qq, qq),
+                PlusMap(qq, Plus(qq, qq),
+                        Hg(0, qq),
+                        PlusMap(qq, qq, Sg(0, qq), Xg(0, qq))))
+    return PlusMap(L3w, qq, inner, Tg(0, qq))
+
+
+@pytest.mark.parametrize("materialize", MODES)
+def test_nonconforming_width4_matrix_fails_closed(materialize):
+    """Rejected BY MATRIX RECOGNITION, with the parent circuit untouched.
+
+    The supported class is stated on the matrix, so this pins the mechanism --
+    that `_as_uniformly_controlled_u2` returns None for this block -- rather
+    than asserting anything categorical about payload width.
+    """
+    from pytket.circuit import Circuit
+    import compile.to_pytket as TP
+
+    t = SB51_nonconforming_witness()
+    seen = []
+    orig_rec = TP._as_uniformly_controlled_u2
+
+    def spy(U):
+        r = orig_rec(U)
+        seen.append((U.shape[0], r is None))
+        return r
+
+    boxes = []
+    orig_box = Circuit.add_gate
+
+    def wrap(self, *a, **kw):
+        if self.n_qubits >= 4:
+            boxes.append(str(a[0]) if a else None)
+        return orig_box(self, *a, **kw)
+
+    TP._as_uniformly_controlled_u2 = spy
+    Circuit.add_gate = wrap
+    try:
+        with pytest.raises((UnsupportedFrame, NotImplementedError)) as ei:
+            compile(t, materialize=materialize)
+    finally:
+        TP._as_uniformly_controlled_u2 = orig_rec
+        Circuit.add_gate = orig_box
+
+    assert seen, "recognition was never consulted"
+    assert any(rejected for _, rejected in seen), (
+        f"recognition accepted this matrix: {seen}")
+    assert boxes == [], f"parent circuit mutated before failing closed: {boxes}"
+
+
+def test_the_supported_class_is_decided_by_the_matrix_not_by_pw():
+    """Recognition takes only a matrix. Two blocks of identical payload width
+    are classified differently purely by their structure."""
+    from compile.to_pytket import _as_uniformly_controlled_u2
+    ok = np.zeros((16, 16), complex)
+    for i in range(8):
+        ok[2 * i:2 * i + 2, 2 * i:2 * i + 2] = H_M if i % 3 else X_M
+    assert _as_uniformly_controlled_u2(ok) is not None
+    bad = ok.copy()
+    bad[[0, 3]] = bad[[3, 0]]
+    assert _as_uniformly_controlled_u2(bad) is None
