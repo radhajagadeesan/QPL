@@ -61,6 +61,7 @@ from compile.align import (emit_align, align_as_wire_permutation,
 # Type alias for compilation environment
 # Maps variable names to (start, width) wire ranges in the logical layout
 Env = dict[str, tuple[int, int]]
+from typing import NamedTuple
 from typing_.check import type_of, assert_well_typed, TypeCheckError
 from core.perm import (
     WirePerm, identity, compose, inverse,
@@ -90,6 +91,7 @@ class Artifact:
     output_frame: object
     perm_at_entry: tuple = ()
     perm_at_exit: tuple = ()
+    plan: object = None          # PlusMapAlignPlan, when this occurrence has one
 
     @property
     def n_qubits(self) -> int:
@@ -300,41 +302,171 @@ def _has_spectator_coordinates(t: Term) -> bool:
     return False
 
 
-def _nplusmap_frames(t):
-    """NPlusMap's selection, with SECTORS recorded per summand.
+class BranchPlacement(NamedTuple):
+    """Where ONE branch physically sits inside its parent, in LOCAL wire
+    coordinates (wire 0 is the parent's own first wire).
 
-    The sectors say which codes belong to which branch -- disjoint,
-    exhaustive, and matched to the logical summands, which is what a
-    downstream splice needs in order to align branch-wise.
+    This is the single authority for the placement. Both the frame lifting
+    and the wire map used for emitted commands read `payload_base` from here,
+    so the `max(k,1)` formula exists in exactly one place; when the two were
+    computed separately they could drift apart without any test noticing.
     """
-    from lang.types import build_plus_tree
+    index: int
+    tag_value: int
+    tag_wires: tuple
+    payload_base: int
+    width: int                  # the ARTIFACT's frame width, not width(type)
+    logical_in: object
+    logical_out: object
+    K_minus: tuple
+    K_plus: tuple
+    ports_in: tuple = ()        # lifted Port objects, parent-local wires
+    ports_out: tuple = ()
+
+    def wire(self, local_branch_wire: int) -> int:
+        """Branch-local wire -> parent-local wire."""
+        return self.payload_base + local_branch_wire
+
+
+class PlusMapAlignPlan(NamedTuple):
+    """The occurrence-selected plan for one closed binary PlusMap.
+
+    Retains the TYPED sectors and the lifted branch ports. F_pre and F_mid are
+    deliberately code-only Align operands -- they name coordinates, not
+    ownership -- so the typed metadata lives here rather than being invented
+    onto them. In particular a parent residual port is never copied onto them:
+    V makes exactly such a coordinate live, and claiming it is still residual
+    would be false.
+    """
+    n_qubits: int
+    tag_wires: tuple
+    payload_base: int
+    placements: tuple
+    F_pre: object
+    F_mid: object
+    parent_in: object
+    parent_out: object
+
+    @property
+    def K_minus(self):
+        return tuple(pl.K_minus for pl in self.placements)
+
+    @property
+    def K_plus(self):
+        return tuple(pl.K_plus for pl in self.placements)
+
+
+def _lift_port(pt, payload_base):
+    """A branch Port, shifted into parent-local coordinates.
+
+    Name, logical type, role, wires AND by_sector all survive. Every wire
+    moves by `payload_base`; the by_sector TAG VALUES are left alone, because
+    those index the branch's own inner sectors -- the outer sector is supplied
+    by the enclosing BranchPlacement.tag_value. Rewriting them would conflate
+    two different sum levels.
+    """
+    return Port(
+        name=pt.name, logical=pt.logical, role=pt.role,
+        wires=tuple(w + payload_base for w in pt.wires),
+        by_sector=tuple((tv, tuple(w + payload_base for w in ws))
+                        for tv, ws in pt.by_sector))
+
+
+def _plusmap_placement(n_qubits, k):
+    """(tag_wires, payload_base) in LOCAL coordinates. The only definition."""
+    base = max(k, 1)
+    return tuple(range(k)), base
+
+
+def _lift_codes(codes, tag_value, n_qubits, k, w):
+    """Branch code -> parent code, at the placement above."""
+    _, base = _plusmap_placement(n_qubits, k)
+    if base + w > n_qubits:
+        return None
+    return tuple((tag_value << (n_qubits - k)) | (c << (n_qubits - base - w))
+                 for c in codes)
+
+
+def _sum_sectors(frame, summands):
+    """The ONE sector policy for sum frames -- shared by NPlusMap and PlusMap.
+
+    Sectors say which codes belong to which branch: ordered, typed, disjoint
+    and exhaustive.
+
+    A summand that is itself a sum spans SEVERAL tag words -- in (Z3, Z5) the
+    second spans 3..7 -- so `tag_values` is DERIVED from the codes and the
+    payload width, never assumed to be the summand index.
+
+    Callers must pass the UNWIDENED frame: the derivation is
+    `code >> payload_width`, and widening shifts every code left, so deriving
+    tags after widening records corrupted outer tags. `with_spectators` then
+    shifts the sector codes and carries tag_values through unchanged.
+    """
+    from lang.types import payload_width as _pwf
     from compile.frames import Sector as _Sec
+    pw = _pwf(frame.logical) if isinstance(frame.logical, Plus) else 0
+    secs, at = [], 0
+    for i, sm in enumerate(summands):
+        d = semantic_dim(sm)
+        codes = frame.codes[at:at + d]
+        tags = tuple(sorted({c >> pw for c in codes}))
+        secs.append(_Sec(i, sm, codes, tags))
+        at += d
+    return tuple(secs)
+
+
+def _with_sum_sectors(frame, summands, label):
+    """Re-label `frame` with sectors, preserving its ports.
+
+    ports= is not optional: rebuilding a Frame without it silently drops
+    truthful residual/context metadata.
+
+    If the summands do not tile the frame -- which happens when a summand is
+    Arrow-typed, so its encoding is a wire bundle rather than a sum region --
+    no sectors are recorded. Recording a wrong tiling would be worse than
+    recording none.
+    """
+    if sum(semantic_dim(sm) for sm in summands) != frame.dim:
+        return frame
+    return Frame(logical=frame.logical, n_qubits=frame.n_qubits,
+                 codes=frame.codes, expr=frame.expr, label=label,
+                 sectors=_sum_sectors(frame, summands), ports=frame.ports)
+
+
+def _nplusmap_frames(t):
+    """NPlusMap's selection, with SECTORS recorded per summand."""
+    from lang.types import build_plus_tree
     dom = build_plus_tree(list(t.summand_types))
     cod = build_plus_tree([type_of(br)[1] for br in t.branches])
     fin, fout = canonical_frame(dom), canonical_frame(cod)
-
-    def _sectors(frame, summands):
-        # A summand that is itself a sum spans SEVERAL tag words -- in
-        # (Z3, Z5) the second spans 3..7 -- so tag_values is derived from the
-        # codes rather than assumed to be the summand index.
-        from lang.types import payload_width as _pwf
-        pw = _pwf(frame.logical) if isinstance(frame.logical, Plus) else 0
-        secs, at = [], 0
-        for i, sm in enumerate(summands):
-            d = semantic_dim(sm)
-            codes = frame.codes[at:at + d]
-            tags = tuple(sorted({c >> pw for c in codes}))
-            secs.append(_Sec(i, sm, codes, tags))
-            at += d
-        return tuple(secs)
-
-    fin = Frame(logical=dom, n_qubits=fin.n_qubits, codes=fin.codes,
-                expr=fin.expr, label="NPlusMap in",
-                sectors=_sectors(fin, list(t.summand_types)))
     cods = [type_of(br)[1] for br in t.branches]
-    fout = Frame(logical=cod, n_qubits=fout.n_qubits, codes=fout.codes,
-                 expr=fout.expr, label="NPlusMap out",
-                 sectors=_sectors(fout, cods))
+    return (_with_sum_sectors(fin, list(t.summand_types), "NPlusMap in"),
+            _with_sum_sectors(fout, cods, "NPlusMap out"))
+
+
+def _plusmap_frames(t):
+    """Binary PlusMap's selection, with exactly TWO sectors on each boundary.
+
+    The two boundaries are selected INDEPENDENTLY: neither is inferred from
+    the other, and they are not assumed equal. Their sectors are the parent's
+    occurrence-level inclusions J_L^-, J_R^- (ingress) and J_L^+, J_R^+
+    (egress).
+
+    Code selection is unchanged from the generic canonical path: this adds
+    sectors and nothing else.
+    """
+    d_, c_ = type_of(t)                  # Plus(ty_left, ty_right) -> Plus(cods)
+    fin, fout = canonical_frame(d_), canonical_frame(c_)
+    out_summands = [type_of(t.left)[1], type_of(t.right)[1]]
+    # Sectors BEFORE widening; with_spectators then shifts codes and adds the
+    # residual port itself.
+    fin = _with_sum_sectors(fin, [t.ty_left, t.ty_right], "PlusMap in")
+    fout = _with_sum_sectors(fout, out_summands, "PlusMap out")
+    want = max(fin.n_qubits, fout.n_qubits)
+    if fin.n_qubits < want:
+        fin = with_spectators(fin, want)
+    if fout.n_qubits < want:
+        fout = with_spectators(fout, want)
     return fin, fout
 
 
@@ -504,6 +636,8 @@ def select_frames(t: Term):
 
     if isinstance(t, NPlusMap):
         return _nplusmap_frames(t)
+    if isinstance(t, PlusMap):
+        return _plusmap_frames(t)
 
     if isinstance(t, EncodeQubit):
         return encode_qubit_frames()
@@ -802,9 +936,28 @@ def _compile_branch(branch, *, env=None):
     per-site fixes missed the others; that is why extraction is funnelled here
     rather than repeated at each emitter.
     """
+    a = _compile_branch_artifact(branch, env=env)
+    return a.cmds, a.phase
+
+
+class BranchArtifact(NamedTuple):
+    """One branch, compiled ONCE: its commands, its scalar, and BOTH of its
+    own frames. The frames must travel with the commands -- re-deriving them
+    later from `type_of` gives the declared type's width, which is not the
+    artifact's frame width (DistL(Z3,I,I) declares 2 -> 3 but its artifact
+    frames are 3 and 3), and the branch would then be lifted to the wrong
+    coordinates."""
+    cmds: list
+    phase: float
+    fin: Frame
+    fout: Frame
+
+
+def _compile_branch_artifact(branch, *, env=None):
     sub = compile(branch, materialize=True, env=env) if env is not None \
         else compile(branch, materialize=True)
-    return _get_sub_cmds(sub.circuit), float(sub.circuit.phase)
+    return BranchArtifact(_get_sub_cmds(sub.circuit), float(sub.circuit.phase),
+                          sub.input_frame, sub.output_frame)
 
 
 def _discharge_branch_phase(circ, tag_qubits, tag_values, phase_ht):
@@ -1349,7 +1502,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         prev_occ = _cur_occ[0]
         _cur_occ[0] = occ
         try:
-            _go_body(t, offset, env, is_value=is_value)
+            _go_body(t, offset, env, is_value=is_value,
+                     parent_in=fin, parent_out=fout)
         finally:
             _cur_occ[0] = prev_occ
         # An emitter may report a TRANSPORTED output frame (Seq after Align);
@@ -1357,13 +1511,15 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         fout = _frame_override.pop(occ, fout)
         art = Artifact(term=t, occurrence=occ, offset=offset,
                        input_frame=fin, output_frame=fout,
-                       perm_at_entry=entry, perm_at_exit=tuple(p.new_to_old))
+                       perm_at_entry=entry, perm_at_exit=tuple(p.new_to_old),
+                       plan=_plan_sink.pop(occ, None))
         frame_registry[occ] = art
         artifacts.append(art)
         return art
 
     artifacts = []
     _frame_override = {}
+    _plan_sink = {}
     _cur_occ = [0]
     circ = Circuit(n)
     p = identity(n)
@@ -1593,6 +1749,92 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             if k > 0 and tp != tuple(range(n_summands)):
                 _emit_tag_perm_unitary(circ, p, tp, k, offset, explain, log)
 
+    def _plusmap_align_plan(t, arts, k, parent_in, parent_out):
+        """Build the occurrence's plan, or FAIL CLOSED.
+
+        Called only for an in-scope boundary (closed k<=1, equal registers,
+        both sides sector-described). For such a boundary a plan is owed: if
+        one cannot be built the parent cannot honour
+        A_pre J^- = K^-  /  A_post K^+ = J^+, and returning None here would
+        silently emit the pre-repair circuit under a boundary that claims
+        otherwise. So this raises instead.
+        """
+        n = parent_in.n_qubits
+        tag_wires, payload_base = _plusmap_placement(n, k)
+
+        def _fail(why):
+            raise UnsupportedFrame(
+                f"PlusMap: cannot construct the occurrence align plan "
+                f"({why}). The boundary is closed, k<=1 and sector-described, "
+                f"so a plan is required; refusing to emit an unaligned "
+                f"circuit under it. Failing closed before emission.")
+
+        pls, pre, mid = [], [], []
+        summ_in = [t.ty_left, t.ty_right]
+        summ_out = [type_of(t.left)[1], type_of(t.right)[1]]
+        for tv, a in enumerate(arts):
+            wi, wo = a.fin.n_qubits, a.fout.n_qubits
+            Km = _lift_codes(a.fin.codes, tv, n, k, wi)
+            Kp = _lift_codes(a.fout.codes, tv, n, k, wo)
+            if Km is None or Kp is None:
+                _fail(f"branch {tv} artifact width {max(wi, wo)} does not fit "
+                      f"the payload field of a {n}-qubit parent")
+            pls.append(BranchPlacement(
+                index=tv, tag_value=tv, tag_wires=tag_wires,
+                payload_base=payload_base, width=max(wi, wo),
+                logical_in=summ_in[tv], logical_out=summ_out[tv],
+                K_minus=Km, K_plus=Kp,
+                ports_in=tuple(_lift_port(pt, payload_base)
+                               for pt in a.fin.ports),
+                ports_out=tuple(_lift_port(pt, payload_base)
+                                for pt in a.fout.ports)))
+            pre.extend(Km)
+            mid.extend(Kp)
+
+        if len(set(pre)) != len(pre):
+            _fail("lifted ingress codes are not injective")
+        if len(set(mid)) != len(mid):
+            _fail("lifted egress codes are not injective")
+        if len(pre) != len(parent_in.codes):
+            _fail(f"lifted ingress has {len(pre)} codes but the parent "
+                  f"boundary has {len(parent_in.codes)}")
+        if len(mid) != len(parent_out.codes):
+            _fail(f"lifted egress has {len(mid)} codes but the parent "
+                  f"boundary has {len(parent_out.codes)}")
+        try:
+            # Code-only Align operands. No ports: a parent residual port must
+            # not be copied onto a coordinate a branch has made live.
+            F_pre = Frame(logical=parent_in.logical, n_qubits=n,
+                          codes=tuple(pre), label="PlusMap F_pre")
+            F_mid = Frame(logical=parent_out.logical, n_qubits=n,
+                          codes=tuple(mid), label="PlusMap F_mid")
+        except ValueError as e:
+            _fail(str(e))
+        return PlusMapAlignPlan(
+            n_qubits=n, tag_wires=tag_wires, payload_base=payload_base,
+            placements=tuple(pls), F_pre=F_pre, F_mid=F_mid,
+            parent_in=parent_in, parent_out=parent_out)
+
+    def _emit_frame_align(src, dst, offset, n, *, where):
+        """One coherent whole-register Align. Identity and wire-permutation
+        stay free; anything else is one exact permutation box."""
+        nonlocal p
+        if align_is_identity(src, dst):
+            return 0
+        wp = align_as_wire_permutation(src, dst)
+        if wp is not None:
+            step = embed_local_perm(WirePerm(len(wp), list(wp)), offset)
+            p = compose(step, p)
+            if explain:
+                log.append(f"PlusMap {where}: wire permutation {wp}")
+            return 0
+        phys = [p.apply_new_to_old(offset + i) for i in range(n)]
+        emit_align(circ, phys, src, dst)
+        if explain:
+            log.append(f"PlusMap {where}: {align_permutation(src, dst)} "
+                       f"on wires {phys}")
+        return 1
+
     def _emit_controlled_branch(ctrl_q, sub_cmds, wire_map_fn, anti=False,
                                 extra_anti_qubits=None):
         """Emit each gate controlled on ctrl_q, with wires mapped by wire_map_fn.
@@ -1634,7 +1876,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         if anti:
             circ.X(ctrl_q)
 
-    def _go_body(t: Term, offset: int = 0, env: Env = None, *, is_value: bool = False) -> None:
+    def _go_body(t: Term, offset: int = 0, env: Env = None, *,
+                 is_value: bool = False, parent_in=None, parent_out=None) -> None:
         """Compile term t at given wire offset with variable environment.
 
         Args:
@@ -2194,15 +2437,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             from lang.types import Plus, flatten_plus, tag_width as tw_fn, payload_width
             import math
 
-            # Auto-flatten nested PlusMap to NPlusMap when possible
-            if isinstance(t.ty_left, Plus) or isinstance(t.ty_right, Plus):
-                flat = _try_flatten_plusmap(t)
-                if flat is not None:
-                    # Delegate to NPlusMap compilation
-                    go(flat, offset, env)
-                    return
-                # Fall through to Strategy A for opaque branches
-
             # Compute structure of the sum type
             n_left = len(flatten_plus(t.ty_left)) if isinstance(t.ty_left, Plus) else 1
             n_right = len(flatten_plus(t.ty_right)) if isinstance(t.ty_right, Plus) else 1
@@ -2228,6 +2462,65 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             fv_right_w = sum(width(ty_fv) for n, ty_fv in _ordered_free_vars(t.right) if n in env)
             ctx_left_w = max(left_w - payload_left_w, fv_left_w)
             ctx_right_w = max(right_w - payload_right_w, fv_right_w)
+
+
+            # FAIL CLOSED FIRST. When the parent's ingress and egress
+            # embeddings differ, the branch result has to be carried between
+            # them. On the open path the register also carries context wires
+            # the parent frame does not describe, so that carry cannot be
+            # placed. Decide it HERE -- before any branch is compiled, any
+            # controlled command or phase is emitted, and before delegating to
+            # the flattened NPlusMap. Raising later would leave a partial
+            # circuit behind.
+            if ctx_left_w > 0 or ctx_right_w > 0:
+                _pf_in, _pf_out = select_frames(t)
+                # Only judge a boundary that is genuinely a SUM boundary.
+                # Sectors are recorded exactly when the summands tile the
+                # frame; when they do not -- an Arrow summand encodes as a
+                # wire bundle, so its "dimension" is the whole register -- the
+                # two sides are not comparable as ingress/egress and the
+                # pre-existing path is left alone. The specific wire-conflict
+                # guard downstream still applies there.
+                # TEMPORARY CONTAINMENT -- not a statement about the source.
+                # This does NOT claim the source language has higher-order
+                # sums. It says only that WITHOUT context provenance this
+                # emitter cannot tell a genuine sum-boundary width mismatch
+                # from the artifact of an Arrow-carrying context, and the
+                # downstream wire-conflict guard gives the more specific
+                # diagnostic for the cases that matter today. Remove this
+                # scoping once context provenance exists (the F2 seam); it is
+                # a containment, not an invariant.
+                _d_par, _c_par = type_of(t)
+                _is_sum_boundary = (bool(_pf_in.sectors) and bool(_pf_out.sectors)
+                                    and _first_order(_d_par)
+                                    and _first_order(_c_par))
+                if _is_sum_boundary and (_pf_in.n_qubits != _pf_out.n_qubits
+                                         or _pf_in.dim != _pf_out.dim):
+                    raise UnsupportedFrame(
+                        f"PlusMap (open branches): the parent ingress and "
+                        f"egress are not even comparable "
+                        f"({_pf_in.n_qubits} qubits / dim {_pf_in.dim} versus "
+                        f"{_pf_out.n_qubits} qubits / dim {_pf_out.dim}), so "
+                        f"no carry between them exists and the branches are "
+                        f"open. Failing closed before emission.")
+                if _is_sum_boundary and not align_is_identity(_pf_in, _pf_out):
+                    raise UnsupportedFrame(
+                        f"PlusMap (open branches): the parent ingress "
+                        f"{tuple(_pf_in.codes)} and egress "
+                        f"{tuple(_pf_out.codes)} embeddings differ, so the "
+                        f"branch result must be carried between them, but the "
+                        f"branches are open and the carry cannot be placed "
+                        f"against context wires the parent frame does not "
+                        f"describe. Failing closed before emission.")
+
+            # Auto-flatten nested PlusMap to NPlusMap when possible
+            if isinstance(t.ty_left, Plus) or isinstance(t.ty_right, Plus):
+                flat = _try_flatten_plusmap(t)
+                if flat is not None:
+                    # Delegate to NPlusMap compilation
+                    go(flat, offset, env)
+                    return
+                # Fall through to Strategy A for opaque branches
 
             if ctx_left_w > 0 or ctx_right_w > 0:
                 # Open branches: compile with parent env for free variable routing
@@ -2334,8 +2627,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 if branch_w == 0:
                     # Still compile so we can extract any accumulated global
                     # phase from a GlobalPhase term inside the branch.
-                    _, _ph = _compile_branch(branch)
-                    return [], _ph
+                    _a = _compile_branch_artifact(branch)
+                    return BranchArtifact([], _a.phase, _a.fin, _a.fout)
                 if deferred_fns:
                     parent_phys = [p.apply_new_to_old(payload_base_off + i)
                                    for i in range(branch_w)]
@@ -2344,18 +2637,58 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     if input_val is not None and not isinstance(input_val, Id):
                         modified = _inject_input_value(branch, input_val)
                         modified = _normalize(modified)
-                        return _compile_branch(modified)
-                return _compile_branch(branch)
+                        return _compile_branch_artifact(modified)
+                return _compile_branch_artifact(branch)
 
             payload_base_for_branches = offset + max(k, 1)
-            left_cmds, left_phase = _compile_branch_with_deferred(t.left, left_w, payload_base_for_branches)
-            right_cmds, right_phase = _compile_branch_with_deferred(t.right, right_w, payload_base_for_branches)
+            _left_art = _compile_branch_with_deferred(t.left, left_w, payload_base_for_branches)
+            _right_art = _compile_branch_with_deferred(t.right, right_w, payload_base_for_branches)
+            left_cmds, left_phase = _left_art.cmds, _left_art.phase
+            right_cmds, right_phase = _right_art.cmds, _right_art.phase
 
             if k <= 1:
-                # Simple binary case: 1 outer tag bit
-                tag_phys = p.apply_new_to_old(offset)
-                payload_base = offset + max(k, 1)
+                # Simple binary case: 1 outer tag bit.
+                # The boundary is the one THIS occurrence selected in `go`;
+                # emission never reselects it.
+                _pf_in, _pf_out = parent_in, parent_out
+                _plan = None
+                # IN SCOPE is decided HERE, by an explicit predicate -- never
+                # by a plan failing to build. Once in scope a plan is owed and
+                # `_plusmap_align_plan` raises rather than returning None, so
+                # there is no path on which a missing plan quietly degrades to
+                # the pre-repair circuit.
+                #
+                # `bool(sectors)` alone is not enough: an Arrow-carrying
+                # summand has full-space semantic dimension, so it TILES the
+                # frame and gets sectors, while its frame is a wire bundle
+                # rather than a sum embedding (the abstract-QSwitch boundary
+                # is 64 codes wide for 4 codes of branch). First-order-ness
+                # excludes those. TEMPORARY CONTAINMENT, same as the
+                # open-branch guard: it is what we can decide without context
+                # provenance, not a claim about the source language.
+                _dp, _cp = type_of(t)
+                if (_pf_in is not None and _pf_out is not None
+                        and _pf_in.n_qubits == _pf_out.n_qubits
+                        and bool(_pf_in.sectors) and bool(_pf_out.sectors)
+                        and _first_order(_dp) and _first_order(_cp)):
+                    _plan = _plusmap_align_plan(
+                        t, (_left_art, _right_art), max(k, 1), _pf_in, _pf_out)
+                    _plan_sink[_cur_occ[0]] = _plan
 
+                # ONE placement object feeds both the lifting (inside the
+                # plan) and the wire map below.
+                _pb_local = (_plan.payload_base if _plan is not None
+                             else _plusmap_placement(
+                                 _pf_in.n_qubits if _pf_in is not None
+                                 else offset + 1, k)[1])
+                payload_base = offset + _pb_local
+
+                # (1) A_pre : parent ingress -> where the block expects input
+                if _plan is not None:
+                    _emit_frame_align(_pf_in, _plan.F_pre, offset,
+                                      _plan.n_qubits, where="A_pre")
+
+                tag_phys = p.apply_new_to_old(offset)
                 wire_map = lambda w: p.apply_new_to_old(w + payload_base)
                 if left_cmds:
                     _emit_controlled_branch(tag_phys, left_cmds, wire_map, anti=True)
@@ -2372,6 +2705,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     _emit_exact_tag_phase(circ, [tag_phys], 0, left_phase)
                 if abs(right_phase) > 1e-10:
                     _emit_exact_tag_phase(circ, [tag_phys], 1, right_phase)
+
+                # (3) A_post : where the block left its result -> parent egress
+                if _plan is not None:
+                    _emit_frame_align(_plan.F_mid, _pf_out, offset,
+                                      _plan.n_qubits, where="A_post")
 
                 if explain:
                     log.append(f"PlusMap(k=1): {len(left_cmds)} left gates (anti-ctrl), "

@@ -80,12 +80,16 @@ def _framed(t, m):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("materialize", MODES)
-def test_P_pinned_shape_PRE_REPAIR(materialize):
+def test_P_emits_its_post_align(materialize):
+    """Was: 0 commands, G = I_8, leakage sqrt(2). Those recorded the DEFECT.
+
+    P's branch frames agree, so K^+ = J^- != J^+ and the parent owes exactly
+    one post-Align. No pre-Align: J^- == K^-.
+    """
     r = compile(P_witness(), materialize=materialize)
     assert r.circuit.n_qubits == 3
-    assert len(r.circuit.get_commands()) == 0
-    assert np.allclose(r.circuit.get_unitary(), np.eye(8), atol=1e-12), \
-        "G_P is not I_8"
+    assert len(r.circuit.get_commands()) == 1, [str(c) for c in r.circuit.get_commands()]
+    assert "ToffoliBox" in str(r.circuit.get_commands()[0])
 
 
 @pytest.mark.parametrize("materialize", MODES)
@@ -188,17 +192,13 @@ def P0_witness():
 
 
 @pytest.mark.parametrize("materialize", MODES)
-def test_P0_pinned_facts_PRE_REPAIR(materialize):
-    """Today's behaviour: gate-free, G = I_4, leakage 1. NOT acceptance.
-
-    Every fact here was confirmed by execution before being pinned. All of
-    them are expected to change when the transport is realized.
-    """
+def test_P0_emits_its_post_align(materialize):
+    """Was: 0 commands, G = I_4, leakage 1. Those recorded the DEFECT."""
     r = compile(P0_witness(), materialize=materialize)
     U = r.circuit.get_unitary()
-    assert len(r.circuit.get_commands()) == 0
-    assert np.allclose(U, np.eye(4), atol=1e-12), "G is not I_4"
-    assert abs(leakage(r.input_frame, U, r.output_frame) - 1.0) < 1e-9
+    assert len(r.circuit.get_commands()) == 1, [str(c) for c in r.circuit.get_commands()]
+    assert "ToffoliBox" in str(r.circuit.get_commands()[0])
+    assert leakage(r.input_frame, U, r.output_frame) < ATOL
 
 
 @pytest.mark.parametrize("materialize", MODES)
