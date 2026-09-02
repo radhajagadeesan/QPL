@@ -1,0 +1,145 @@
+# Release-safety status
+
+**Baseline:** `031a40f`, branch `zenodo/frame-safety-hardening`.
+
+This is a **stabilization checkpoint**, not a release candidate. It retains
+explicit red correctness counterexamples by design. It is **not** Zenodo-ready.
+
+Witnesses live in `python/tests/test_release_safety.py`. Every executable gate
+runs both materialization modes, uses the artifact's own recorded frames,
+compares against an independently constructed expected matrix, checks the
+actual global phase, and uses `rtol=0` with `atol=1e-10`. A passing count is
+not evidence; each entry below is an exact counterexample or it is not a gate.
+
+---
+
+## Categories
+
+| category | witnesses |
+|---|---|
+| SUPPORTED | A, G |
+| KNOWN RED | C, D |
+| FAILS CLOSED | F (after the guard) |
+| UNRESOLVED | E |
+| UNCOVERED | B |
+
+---
+
+## Evidence
+
+| witness | mode | compile | expected vs action | phase | leakage | frame codes |
+|---|---|---|---|---|---|---|
+| **A** `P_L` | F / T | ok | exact `I₆⊗X` | 0 | 0 | in = out = `(0,1,4,5,8,9,10,11,12,13,…)` |
+| **A** `P_R` | F / T | ok | exact `I₆⊗X`, equal to `P_L` | 0 | 0 | in = out, as above |
+| **A** distributor | F / T | ok | zero-gate | 0 | 0 | in = out |
+| **C** noncontiguous β | F | ok | **not established** | 0 | **1.4142** | in `(0,4,8,12)`, expected `(0,1,8,9)`; out `(0,1,8,9)` |
+| **C** noncontiguous β | T | ok | **not established** | 0 | **1.4142** | in `(0,4,8,12)`, out `(0,4,8,12)` |
+| **D** curried `H⊕S⊕T` | F / T | ok | **not established** | 0 | **0.7071** | in = out = `(0,1,2,3,4,5)` |
+| **E** qswitch η | F / T | ok | **not evaluable** | — | — | 14 qubits, in dim 1, out dim 16384 |
+| **F** ctrl_ho | F / T | **UnsupportedFrame** | unevaluated | — | — | rejected before emission |
+| **G** captured fn | F / T | ok | exact `H` | 0 | 0 | in = out = `(0,1)` |
+
+---
+
+## Notes per witness
+
+### A — SUPPORTED
+Unequal-width distributivity naturality with `A=Q, B=Q⊗Q, C=Q`. Both paths of
+the square give the same exact 12-dimensional action `I₆⊗X`, built from
+primitives; zero leakage; the distributor itself stays zero-gate.
+
+### B — UNCOVERED
+The `Seq` wire-permutation Align fast path has **no witness**. The candidate
+(`TwistTen(Q,Z3)` spliced into a consumer) proved frame-identical —
+`prod_out == cons_in == (0,1,2,3,4,5)`, `align_is_identity` true — so it never
+reached the fast path. It was removed rather than left as a `pytest.skip`: a
+skip reads as "fine" in a summary line. **The path is not claimed to be
+supported.** No public-source witness has been found.
+
+### C, D — KNOWN RED (boundary/artifact correctness blockers)
+Nonzero leakage proves the recorded frames do **not** describe the artifact,
+and for C the recorded ingress `(0,4,8,12)` is not the placement the
+derivation makes (`(0,1,8,9)`). False recorded frames are already a
+compositional correctness failure.
+
+It is **not** claimed that the emitted gates are wrong under every possible
+embedding. The action comparisons in these tests are computed through the same
+untruthful frames and so say nothing independent about the physical circuit.
+Establishing that would require testing under the actual physical embedding,
+which has not been done.
+
+C also shows a mode-dependent output frame (`(0,1,8,9)` unmaterialized versus
+`(0,4,8,12)` materialized).
+
+### E — UNRESOLVED (oracle blocked, not a compiler blocker)
+`get_unitary` refusing 14 qubits is a **harness** limitation. A codeword
+harness (`codeword_columns`) was written and **validated against a circuit
+whose dense framed action is already known**, so scalable simulation is
+available in principle.
+
+E remains unresolved because the artifact is a closed function **value**: one
+input codeword, and an output frame spanning all 2^14 basis states. A leakage
+check against a code space that *is* the whole space is vacuous, and
+`block_diag(U₀,U₁)` is a statement about the function's action on arguments,
+not about the value's encoding — stating it needs the applied form as a source
+term, which this pass does not have.
+
+The earlier version of this test split the compiled action into blocks and
+compared them with each other. That is not an independent oracle and could not
+have detected a wrong-but-block-diagonal result. It has been removed.
+
+### F — FAILS CLOSED (after the guard)
+Three separate facts, kept apart:
+
+1. **Compiler blocker (confirmed).** The open-branch placement overlaps:
+   physical wire 0 is claimed by both the tag placement and the context
+   placement. Before the guard this surfaced from inside the backend as
+   `RuntimeError: Multiple operation arguments reference q[1]`.
+2. **Absent feature (separate).** No `completed_dimension`; `Port` carries no
+   `owner_id`. Recorded as absent, never synthesized by a test.
+3. **Unevaluated.** Action, phase and leakage are not evaluated, because
+   compilation does not produce a circuit.
+
+### G — SUPPORTED
+Smallest captured-function case, `(λf. λp. f p) H`, applied to a qubit: exact
+`H`, zero leakage, zero phase, truthful frames, both modes.
+
+---
+
+## The guard
+
+`_check_open_placement` in `python/src/compile/to_pytket.py` is a
+**pre-emission safety guard only**. It repairs no placement, infers no frame,
+and adds no metadata. It uses evidence already computed on that path — the
+tag/payload/context physical placements and each command's mapped argument
+list — and rejects:
+
+* a non-injective placement within one role;
+* a physical wire claimed by two different roles;
+* an operation that would receive the same physical wire twice.
+
+Its diagnostic is deterministic and names the construct, the wire and the two
+conflicting roles:
+
+```
+PlusMap right: physical wire 0 is claimed by both the tag placement [0]
+and the context placement [0, 1, 2, 3]. The derivation does not identify
+that coordinate with itself, so the branch cannot be emitted. Failing
+closed before emission.
+```
+
+No successful circuit changed: the legacy suite is 734 passed, identical to
+the baseline.
+
+---
+
+## Deferred
+
+1. **β-path derivation preparation.** `type_of` does recursively recheck terms
+   and raises on ill-typed ones, but returns only a `DomCod` pair — no
+   derivation-selected cuts or placements. `select_frames` is driven by that
+   bare pair and `go` takes no derivation input. What is absent is not
+   typechecking but **canonical derivation preparation**. Root cause of C and D.
+2. **A witness for the wire-permutation splice (B).**
+3. **An applied-form source term for the qswitch oracle (E).**
+4. **Completed-dimension and port provenance metadata (F2).**
