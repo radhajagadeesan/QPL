@@ -1299,6 +1299,443 @@ class TypedBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class ChartFactor:
+    """One factor of a boundary chart, with its own identity.
+
+    `codes` are the factor's OWN ordered codes in its OWN premise-local
+    address space. Two factors from different artifacts may both start at
+    local wire 0; that is not a collision, it is two namespaces.
+    """
+    name: str
+    owner: object                 # the artifact / premise this factor is of
+    n_qubits: int
+    codes: Tuple[int, ...]
+
+    @property
+    def dim(self) -> int:
+        return len(self.codes)
+
+
+@dataclass(frozen=True, slots=True)
+class ChartRoute:
+    """The recorded r^+- of a boundary chart: Repart_r( Par(parts...) ).
+
+    `embed` is AUTHORITATIVE and is the whole of the encoding: it is the one
+    joint injective map
+
+        (head coordinate, tail coordinate)  ->  ambient code
+
+    lexicographic in the ordered `parts`. It is deliberately not a pair of raw
+    wire groups, because after Repart the joint encoding may be correlated and
+    need not be expressible as disjoint wire tuples.
+
+    `kind` says which Repart was scheduled, and therefore whether `embed` can
+    be RECOMPUTED from the schedule rather than merely compared with itself:
+
+      "scatter"  each factor was laid on its own ambient wires, so
+                 `placements` is the schedule and the codes can be rebuilt
+                 from it independently of `embed`.
+      "opaque"   some other Repart. `embed` is then the only description
+                 there is; reconstruction is unavailable and says so.
+
+    `placements` is the scatter schedule and NOTHING MORE. For a correlated
+    Repart it is empty, and it must never be read as defining the chart's
+    support or its complement in general -- only a scatter licenses that,
+    and only because the scatter schedule says so.
+    """
+    label: str = ""
+    parts: Tuple[ChartFactor, ...] = ()     # ordered factor identities
+    embed: Tuple[int, ...] = ()             # product index -> ambient code
+    kind: str = "opaque"
+    placements: Tuple[Tuple[int, ...], ...] = ()
+    n_qubits: int = 0
+
+    @property
+    def reconstructible(self) -> bool:
+        return self.kind == "scatter" and len(self.placements) == len(self.parts)
+
+    def decode(self, product_index):
+        """(operand coordinate, residual coordinate) for a product index."""
+        if len(self.parts) != 2:
+            raise ProvenanceError("route does not carry two factors")
+        d2 = self.parts[1].dim
+        return divmod(product_index, d2)
+
+    def check_schedule(self):
+        """Widths, placement lengths, wire range and disjointness.
+
+        These are properties of the RECORDED SCHEDULE alone. None of them
+        consults `embed`, so none of them can be satisfied by a chart merely
+        agreeing with itself.
+        """
+        if len(self.parts) != 2:
+            raise ProvenanceError(
+                f"route {self.label}: {len(self.parts)} factors, want 2")
+        if self.n_qubits <= 0:
+            raise ProvenanceError(
+                f"route {self.label}: no ambient register width recorded")
+        for f in self.parts:
+            if f.dim == 0:
+                raise ProvenanceError(f"route {self.label}: factor {f.name} "
+                                      f"is empty")
+            if len(set(f.codes)) != f.dim:
+                raise ProvenanceError(
+                    f"route {self.label}: factor {f.name} repeats a code")
+            for c in f.codes:
+                if not (0 <= c < (1 << f.n_qubits)):
+                    raise ProvenanceError(
+                        f"route {self.label}: factor {f.name} code {c} "
+                        f"outside its own {f.n_qubits}-qubit space")
+        if self.kind == "scatter":
+            if len(self.placements) != len(self.parts):
+                raise ProvenanceError(
+                    f"route {self.label}: {len(self.placements)} placements "
+                    f"for {len(self.parts)} factors")
+            seen = set()
+            for f, g in zip(self.parts, self.placements):
+                if len(g) != f.n_qubits:
+                    raise ProvenanceError(
+                        f"route {self.label}: factor {f.name} is "
+                        f"{f.n_qubits} qubits wide but its placement names "
+                        f"{len(g)} wires {g}")
+                for w in g:
+                    if not (0 <= w < self.n_qubits):
+                        raise ProvenanceError(
+                            f"route {self.label}: placement wire {w} outside "
+                            f"the {self.n_qubits}-qubit register")
+                    if w in seen:
+                        raise ProvenanceError(
+                            f"route {self.label}: wire {w} is placed twice")
+                    seen.add(w)
+        elif self.placements:
+            raise ProvenanceError(
+                f"route {self.label}: a {self.kind!r} repart recorded "
+                f"scatter placements; they would not describe it")
+        return True
+
+    def reconstruct(self):
+        """Recompute the ambient codes FROM THE SCHEDULE.
+
+        This is the independent check: it never reads `embed`, so an `embed`
+        that does not come from the recorded schedule is caught instead of
+        confirming itself.
+        """
+        if not self.reconstructible:
+            raise ProvenanceError(
+                f"route {self.label}: a {self.kind!r} repart cannot be "
+                f"reconstructed from its schedule")
+        head, tail = self.parts
+        hw, tw = self.placements
+        n = self.n_qubits
+        out = []
+        for a in head.codes:
+            base = 0
+            for i, w in enumerate(hw):
+                if (a >> (head.n_qubits - 1 - i)) & 1:
+                    base |= 1 << (n - 1 - w)
+            for b in tail.codes:
+                c = base
+                for i, w in enumerate(tw):
+                    if (b >> (tail.n_qubits - 1 - i)) & 1:
+                        c |= 1 << (n - 1 - w)
+                out.append(c)
+        return tuple(out)
+
+    def decode_ambient(self, code):
+        """(head coordinate, tail coordinate) read OUT OF THE AMBIENT CODE.
+
+        Independent of the code's position in `embed`: the factor bits are
+        extracted at the scheduled wires and looked up in each factor's own
+        ordered codes.
+        """
+        if not self.reconstructible:
+            raise ProvenanceError(
+                f"route {self.label}: a {self.kind!r} repart cannot be "
+                f"decoded from its schedule")
+        n = self.n_qubits
+        out = []
+        for f, g in zip(self.parts, self.placements):
+            v = 0
+            for i, w in enumerate(g):
+                v |= ((code >> (n - 1 - w)) & 1) << (f.n_qubits - 1 - i)
+            if v not in f.codes:
+                raise ProvenanceError(
+                    f"route {self.label}: ambient code {code} carries {v} on "
+                    f"factor {f.name}, which is not one of its codes "
+                    f"{f.codes}")
+            out.append(f.codes.index(v))
+        return tuple(out)
+
+
+@dataclass(frozen=True, slots=True)
+class BoundaryChart:
+    """A derivation-selected boundary chart, ALONGSIDE the logical Frame.
+
+    Frame keeps its logical interface and its cardinality invariant: for
+    `h y` the result type stays Q (dim 2). The selected chart is a different
+    object of dimension 4 = S_y (x) Y_Q, so neither has to lie about the other.
+
+    `codes` is ORDERED, and the order is what encodes the factorisation --
+    reading it as an unordered set loses exactly the distinction between
+    U_y (x) yank_Q and yank_Q (x) U_y.
+    """
+    n_qubits: int
+    codes: Tuple[int, ...]
+    route: Optional[ChartRoute] = None
+    label: str = ""
+    space: str = "local"     # "local": premise-local addresses; "ambient":
+                             # already placed in the compiled register
+
+    @property
+    def dim(self) -> int:
+        return len(self.codes)
+
+    def isometry(self):
+        """The ordered embedding of the chart into the ambient register.
+
+        Column j is the chart's j-th basis vector, so the ORDER of `codes`
+        carries the factorisation -- which is what distinguishes
+        U_y (x) yank_Q from yank_Q (x) U_y.
+        """
+        import numpy as _np
+        M = _np.zeros((1 << self.n_qubits, len(self.codes)), dtype=complex)
+        for j, c in enumerate(self.codes):
+            M[c, j] = 1.0
+        return M
+
+    def decode(self, ambient_code):
+        """Recover (head coordinate, tail coordinate) from an ambient code.
+
+        Read out of the code's BITS at the scheduled wires when the Repart
+        allows it; only an opaque Repart falls back to the code's position.
+        """
+        if self.route is None or not self.route.parts:
+            raise ProvenanceError(f"chart {self.label}: no factor identities")
+        if self.route.reconstructible:
+            return self.route.decode_ambient(ambient_code)
+        return self.route.decode(self.codes.index(ambient_code))
+
+    def validate_joint(self):
+        """Check the chart AGAINST ITS RECORDED SCHEDULE, not against itself.
+
+        `embed` and `codes` come from the same construction, so comparing
+        them proves nothing on its own. The load-bearing steps here are the
+        schedule checks (widths, placement lengths, wire range, disjointness)
+        and, when the Repart is reconstructible, recomputing the ambient
+        codes from the schedule and decoding each code out of its bits.
+        """
+        r = self.route
+        if r is None or len(r.parts) != 2:
+            raise ProvenanceError(f"chart {self.label}: no two-factor route")
+        r.check_schedule()
+        h, t = r.parts
+        if self.dim != h.dim * t.dim:
+            raise ProvenanceError(
+                f"chart {self.label}: dim {self.dim} != {h.dim}*{t.dim}")
+        if len(set(self.codes)) != len(self.codes):
+            raise ProvenanceError(f"chart {self.label}: codes not injective")
+        if r.n_qubits != self.n_qubits:
+            raise ProvenanceError(
+                f"chart {self.label}: the route is over {r.n_qubits} wires "
+                f"but the chart is over {self.n_qubits}")
+        for c in self.codes:
+            if not (0 <= c < (1 << self.n_qubits)):
+                raise ProvenanceError(
+                    f"chart {self.label}: code {c} outside the register")
+        if tuple(r.embed) != tuple(self.codes):
+            raise ProvenanceError(
+                f"chart {self.label}: the recorded route does not reproduce "
+                f"chart.codes")
+        if r.reconstructible:
+            rebuilt = r.reconstruct()
+            if rebuilt != tuple(self.codes):
+                raise ProvenanceError(
+                    f"chart {self.label}: rebuilding the recorded "
+                    f"{r.kind} schedule gives {rebuilt}, not the chart's "
+                    f"{tuple(self.codes)}")
+            for j, c in enumerate(self.codes):
+                if r.decode_ambient(c) != r.decode(j):
+                    raise ProvenanceError(
+                        f"chart {self.label}: code {c} decodes out of its "
+                        f"bits as {r.decode_ambient(c)} but sits at product "
+                        f"position {r.decode(j)}")
+        return True
+
+    def transport(self, new_to_old):
+        """Carry an AMBIENT chart through a wire permutation.
+
+        Exactly the frame rule (`apply_wire_perm`): new wire j reads what old
+        wire `new_to_old[j]` carried. A premise-local chart has no ambient
+        wires to move, so transporting one is refused rather than silently
+        treated as a no-op.
+        """
+        if self.space != "ambient":
+            raise ProvenanceError(
+                f"chart {self.label}: only an ambient chart can be "
+                f"transported, this one is {self.space!r}")
+        n = self.n_qubits
+        new_to_old = tuple(new_to_old)
+        if sorted(new_to_old) != list(range(n)):
+            raise ProvenanceError(
+                f"chart {self.label}: {tuple(new_to_old)} is not a "
+                f"permutation of {n} wires")
+        codes = tuple(permute_index(c, new_to_old, n) for c in self.codes)
+        route = self.route
+        if route is not None:
+            route = replace(route, embed=codes, placements=tuple(
+                tuple(new_to_old.index(w) for w in g)
+                for g in route.placements))
+        return replace(self, codes=codes, route=route)
+
+    def __post_init__(self):
+        if len(set(self.codes)) != len(self.codes):
+            raise ProvenanceError(
+                f"chart {self.label}: codes are not distinct {self.codes}")
+        for c in self.codes:
+            if not (0 <= c < (1 << self.n_qubits)):
+                raise ProvenanceError(
+                    f"chart {self.label}: code {c} outside a "
+                    f"{self.n_qubits}-qubit register")
+
+
+def chart_of_frame(frame: "Frame", space: str = "local") -> "BoundaryChart":
+    """The default chart: an ordinary boundary IS its own selected chart.
+
+    The codes are the frame's own. `space` says whether those addresses are
+    premise-local (the default -- nothing has told us where this premise
+    sits) or already the compiled register's, which only a caller holding the
+    whole register may assert.
+    """
+    return BoundaryChart(n_qubits=frame.n_qubits, codes=tuple(frame.codes),
+                         label=f"{frame.label}=frame", space=space)
+
+
+def par_then_repart(head, tail, repart, n_qubits, route_label="",
+                    placements=(), kind="opaque"):
+    """Repart_r( Par(head, tail) ), with NAMESPACED premise addresses.
+
+    Par builds the product workspace with disjoint premise injections --
+    iota_1(k) = k and iota_2(k) = q_head + k -- so a head-local wire 0 and a
+    tail-local wire 0 are different addresses, not a collision. The two
+    factors' ACTUAL ordered codes are tensored; the head is never expanded
+    into a dense 2^k space.
+
+    Repart then applies the recorded code-domain pullback to reach the ambient
+    encoding. The result may be correlated: the factors need NOT occupy
+    disjoint raw wire tuples. It is represented as ONE joint injective map
+
+        (head coordinate, tail coordinate) -> ambient code
+
+    with both factor identities and their order retained.
+    """
+    pairs = [(a, b) for a in range(head.dim) for b in range(tail.dim)]
+    embed = []
+    for a, b in pairs:
+        embed.append(repart(head.codes[a], tail.codes[b]))
+    if len(set(embed)) != len(embed):
+        raise ProvenanceError(
+            f"chart {route_label}: the recorded repart is not injective on "
+            f"the product -- {len(embed)} ordered pairs collapse to "
+            f"{len(set(embed))} ambient codes")
+    route = ChartRoute(label=route_label, parts=(head, tail),
+                       embed=tuple(embed), kind=kind, n_qubits=n_qubits,
+                       placements=tuple(tuple(g) for g in placements))
+    chart = BoundaryChart(n_qubits=n_qubits, codes=tuple(embed), route=route,
+                          label=route_label, space="ambient")
+    if chart.dim != head.dim * tail.dim:
+        raise ProvenanceError(
+            f"chart {route_label}: dim {chart.dim} != "
+            f"{head.dim}*{tail.dim}")
+    return chart
+
+
+def localize_scatter(chart):
+    """Re-read an AMBIENT scatter chart as a premise-local one, plus wires.
+
+    Returns `(n_qubits, codes, wires)`: the chart's own ordered codes packed
+    into one contiguous local address space, and the ambient wires that space
+    sits on. Everything comes from the RECORDED schedule -- the factor codes
+    and their placements -- so no bit-variation is inspected and no support
+    is guessed. Scattering the result back onto `wires` reproduces the
+    chart's ambient codes exactly, in the same order.
+
+    A chart whose Repart is not a scatter has no recorded support to
+    localise, and says so rather than falling back to the whole register.
+    """
+    r = chart.route
+    if chart.space != "ambient":
+        raise ProvenanceError(
+            f"chart {chart.label}: only an ambient chart is localised, this "
+            f"one is {chart.space!r}")
+    if r is None or not r.reconstructible:
+        raise ProvenanceError(
+            f"chart {chart.label}: its Repart is "
+            f"{'unrecorded' if r is None else repr(r.kind)}, so it records "
+            f"no support to place a further factor beside")
+    r.check_schedule()
+    wires = tuple(w for g in r.placements for w in g)
+    head, tail = r.parts
+    codes = tuple((a << tail.n_qubits) | b
+                  for a in head.codes for b in tail.codes)
+    return len(wires), codes, wires
+
+
+def scatter_repart(head_wires, tail_wires, n_qubits):
+    """The Repart that lays two premise-local factors on ambient wires.
+
+    Returns `(repart, placements)`. This is ONE possible repart -- the simple
+    scatter -- and `par_then_repart` still checks its injectivity on the
+    product rather than trusting it, so a repart that collides two ordered
+    pairs is refused instead of silently truncating the chart.
+    """
+    head_wires = tuple(head_wires)
+    tail_wires = tuple(tail_wires)
+
+    def repart(hc, tc):
+        c = 0
+        for i, w in enumerate(head_wires):
+            if (hc >> (len(head_wires) - 1 - i)) & 1:
+                c |= 1 << (n_qubits - 1 - w)
+        for i, w in enumerate(tail_wires):
+            if (tc >> (len(tail_wires) - 1 - i)) & 1:
+                c |= 1 << (n_qubits - 1 - w)
+        return c
+
+    return repart, (head_wires, tail_wires)
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedBoundary:
+    """The derivation-selected boundary of ONE occurrence.
+
+    Independent ingress and egress ordered charts, each carrying its own joint
+    injective embedding into the compiled register. The two sides are never
+    identified: `S_y^-` and `S_y^+` are different charts on different
+    coordinates even when they have the same type.
+
+    `origin` says WHICH rule produced this boundary, and is required. An
+    ordinary occurrence says so explicitly (`"frame-default"`); a missing
+    special rule can therefore never masquerade as the default, because the
+    occurrences that have a rule are checked for having recorded one.
+    """
+    ingress: BoundaryChart
+    egress: BoundaryChart
+    origin: str
+
+    @staticmethod
+    def from_frames(frame_in, frame_out, origin="frame-default",
+                    space="local"):
+        """The explicit default: this occurrence's boundary IS its frames."""
+        return SelectedBoundary(ingress=chart_of_frame(frame_in, space),
+                                egress=chart_of_frame(frame_out, space),
+                                origin=origin)
+
+    def transport_egress(self, new_to_old):
+        """Carry only the egress through a permutation applied after it."""
+        return replace(self, egress=self.egress.transport(new_to_old))
+
+
+@dataclass(frozen=True, slots=True)
 class SelectionContext:
     """The derivation context a boundary is selected IN.
 

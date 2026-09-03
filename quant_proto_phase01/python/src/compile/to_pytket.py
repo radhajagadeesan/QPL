@@ -47,11 +47,15 @@ from lang.terms import (
     Sum,
 )
 from lang.types import width, Arrow, Unit, Plus, Ten, pretty as _pretty_ty
-from dataclasses import dataclass as _dc_alias
+from dataclasses import dataclass as _dc_alias, replace as _dc_replace
 from compile.frames import (Frame, Sector, Port, canonical_frame,
                             ProvenanceScope, ProvenanceError, TypedBinding,
                             NeedsBranchPreparation, plan_open_occurrence,
                             BranchInputs, SelectionContext, EMPTY_SELECTION,
+                            BoundaryChart, ChartRoute, ChartFactor,
+                            chart_of_frame, par_then_repart, scatter_repart,
+                            localize_scatter,
+                            SelectedBoundary,
                             frames_agree, semantic_dim,
                             apply_wire_perm, with_spectators,
                             distl_frames, encode_qubit_frames,
@@ -97,6 +101,15 @@ class Artifact:
     plan: object = None          # PlusMapAlignPlan, when this occurrence has one
     cut_id: object = None        # this OCCURRENCE's cut lineage, minted per visit
     placement: object = None     # G2: the shadow OccurrencePlacement, if any
+    # The derivation-selected boundary of THIS occurrence, resolved before the
+    # artifact is built. Never a deferred description to be interpreted later.
+    selected_boundary: object = None
+    # The ambient wires this occurrence's INPUT boundary arrives on and its
+    # OUTPUT boundary leaves on, in local order. Recorded independently: the
+    # two are NOT the same tuple, and a structural relabeller (TwistTen,
+    # DistR, Seq, Lam) reorders one relative to the other.
+    ingress_wires: tuple = ()
+    egress_wires: tuple = ()
 
     @property
     def n_qubits(self) -> int:
@@ -129,6 +142,7 @@ class Compiled:
     input_ports: tuple = ()
     output_ports: tuple = ()
     global_phase: float = 0.0
+    selected_boundary: object = None
 
 
 # --- Auto-flatten helpers for nested PlusMap → NPlusMap conversion ---
@@ -1190,6 +1204,8 @@ class BranchArtifact(NamedTuple):
     fin: Frame
     fout: Frame
     circuit: object = None      # the SAME compilation, for its exact unitary
+    # preserved from that one nested compilation, already resolved
+    selected_boundary: object = None
 
     @property
     def unitary(self):
@@ -1214,7 +1230,8 @@ def _compile_branch_artifact(branch, *, env=None, scope=None):
         if env is not None \
         else compile(branch, materialize=True, _prov_scope=scope)
     return BranchArtifact(_get_sub_cmds(sub.circuit), float(sub.circuit.phase),
-                          sub.input_frame, sub.output_frame, sub.circuit)
+                          sub.input_frame, sub.output_frame, sub.circuit,
+                          selected_boundary=sub.selected_boundary)
 
 
 def _discharge_branch_phase(circ, tag_qubits, tag_values, phase_ht):
@@ -1656,6 +1673,47 @@ def _subterms(t: Term):
     # Otherwise no subterms.
 
 
+def _is_neutral_spine(t: Term) -> bool:
+    """Is this a canonical neutral variable spine?
+
+        neutral ::= Var | Apply(neutral, normal_argument)
+
+    Decided from the DERIVATION SHAPE alone -- never from widths, frames,
+    fixtures or observed placements. The whole spine is walked before any
+    emission, so a non-neutral head buried under applications is refused
+    before its argument or head is compiled.
+
+    The `normal_argument` side is enforced by this same guard: compiling an
+    inner application runs it again on that application's own head.
+    """
+    while isinstance(t, Apply):
+        t = t.f
+    return isinstance(t, Var)
+
+
+def _slot_wires(perm, offset, w):
+    """The ambient wires a width-`w` slot at `offset` names under `perm`.
+
+    Empty when the slot does not fit the register: a boundary wider than the
+    register is not placed by this rule, and saying so is better than
+    returning a truncated tuple that reads as a placement.
+    """
+    if w < 0 or offset < 0 or offset + w > len(perm):
+        return ()
+    return tuple(perm[offset + i] for i in range(w))
+
+
+def _has_boundary_rule(t: Term) -> bool:
+    """Terms whose selected boundary is NOT simply their frames.
+
+    `Apply` builds the AppCut chart; `LetPair` transports its body's. Every
+    other term defaults, and says so. Listing them here is what makes the
+    default explicit: an occurrence in this set that records nothing is a
+    rule that failed to fire, and is rejected rather than quietly defaulted.
+    """
+    return isinstance(t, (Apply, LetPair))
+
+
 def compile_with_artifacts(term: Term, *, materialize: bool = False,
                            explain: bool = False, env: Env = None):
     """`compile`, plus every occurrence artifact produced along the way.
@@ -1777,12 +1835,42 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         # An emitter may report a TRANSPORTED output frame (Seq after Align);
         # that effective frame, not the selected one, is what propagates.
         fout = _frame_override.pop(occ, fout)
+        # The selected boundary is resolved HERE, per occurrence, before the
+        # artifact exists -- never left as a description for the root to
+        # interpret. An occurrence whose term has a selected-boundary rule
+        # must have recorded one; otherwise a rule that silently failed to
+        # fire would be indistinguishable from the ordinary default.
+        _sb = _boundary_sink.pop(occ, None)
+        if _sb is None:
+            if _has_boundary_rule(t):
+                raise TypeCheckError(
+                    f"{type(t).__name__} has a selected-boundary rule but "
+                    f"recorded no boundary for occurrence {occ}; a missing "
+                    f"rule must not fall through to the frame default "
+                    f"(docs/COMPILER_INVARIANTS.md)")
+            _sb = SelectedBoundary.from_frames(fin, fout)
+        elif isinstance(_sb, str):
+            # An explicit request for the default, with the reason recorded.
+            _sb = SelectedBoundary.from_frames(fin, fout, origin=_sb)
+        # The two placements, derived SEPARATELY. The egress is the slot this
+        # occurrence leaves its result on; the ingress is where its input
+        # arrived, which for a term that CLAIMS a slot (Var binding a context
+        # resource, Seq inheriting its producer's) is not the entry naming of
+        # that slot -- those emitters record their own and the default is
+        # used otherwise.
+        _exit = tuple(p.new_to_old)
+        _egr_w = _slot_wires(_exit, offset, fout.n_qubits)
+        _ing_w = _placement_sink.pop(occ, None)
+        if _ing_w is None:
+            _ing_w = _slot_wires(entry, offset, fin.n_qubits)
         art = Artifact(term=t, occurrence=occ, offset=offset,
                        input_frame=fin, output_frame=fout,
                        perm_at_entry=entry, perm_at_exit=tuple(p.new_to_old),
                        plan=_plan_sink.pop(occ, None),
                        cut_id=_cut_ids[occ],
-                       placement=_shadow_plans.pop(occ, None))
+                       placement=_shadow_plans.pop(occ, None),
+                       selected_boundary=_sb,
+                       ingress_wires=_ing_w, egress_wires=_egr_w)
         frame_registry[occ] = art
         artifacts.append(art)
         return art
@@ -1794,6 +1882,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
     _prov = _prov_scope if _prov_scope is not None else ProvenanceScope()
     _binding_cache = {}
     _shadow_plans = {}
+    _boundary_sink = {}
+    _placement_sink = {}
     _planner_observed = _PLANNER_OBSERVED
     _cur_occ = [0]
     circ = Circuit(n)
@@ -2279,6 +2369,10 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             return
         if isinstance(t, Seq):
             a_f = go(t.f, offset, env)
+            # A composite's input boundary is its PRODUCER's, wherever that
+            # arrived; the slot naming at Seq's own entry describes the stage
+            # before the producer claimed anything.
+            _placement_sink[_cur_occ[0]] = a_f.ingress_wires
             try:
                 g_in, g_out = select_frames(t.g)
             except UnsupportedFrame:
@@ -4325,6 +4419,10 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             # variable, to preserve deferred semantics (qswitch / select_2).
             reduced = _peel_apply_chain(t, term_env)
             if reduced is not None:
+                # The cut is peeled away before emission, so this occurrence
+                # has no AppCut boundary. Said explicitly, with the reason, so
+                # it is not mistaken for a rule that failed to fire.
+                _boundary_sink[_cur_occ[0]] = "appcut:peeled"
                 go(_normalize(reduced), offset, env)
                 return
 
@@ -4353,9 +4451,39 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 x_phys = [p.new_to_old[offset + i] for i in range(wA)]
                 new_env = {**env, lam.name: x_phys}
                 go(lam.body, offset, new_env)
+                # β-reduction ELIMINATES the cut, so there is no AppCut
+                # boundary to build here. Recorded explicitly.
+                _boundary_sink[_cur_occ[0]] = "appcut:beta-reduced"
                 if explain:
                     log.append(f"Apply (β-reduce '{lam.name}'): arg;body, x phys={x_phys}")
                 return
+
+            # ---- Canonical-form precondition, BEFORE any emission ---------
+            #
+            # The reference emitter is defined on canonical normal
+            # derivations, in which an application's head is a neutral
+            # variable spine. A head like
+            #
+            #     Seq(Var h, WireIdentity, TwistTen, WireIdentity)
+            #
+            # typechecks and reaches here, but it relabels the head's own
+            # bundle, so its residual boundary is not the resource it was at
+            # the cut -- Y_B^- and Y_B^+ genuinely part company and the
+            # selected boundary leaks. Part H does not widen to cover such a
+            # head; it refuses it, and the source/NF layer is what guarantees
+            # one never arrives.
+            #
+            # Checked here -- after the beta/Lam cases are ruled out, and
+            # before the argument, the head, or the circuit is touched -- so
+            # the refusal costs no emission and leaves nothing half-built.
+            if not _is_neutral_spine(t.f):
+                raise UnsupportedFrame(
+                    f"AppCut requires a canonical neutral variable spine as "
+                    f"its head (neutral ::= Var | Apply(neutral, "
+                    f"normal_argument)), but this head is "
+                    f"{type(t.f).__name__}. The reference emitter is defined "
+                    f"on canonical normal derivations; normalize the term "
+                    f"before compiling it.")
 
             # General case: full boundary splicing with function layout
             # 1. Compile arg at offset - fills A_slot wires
@@ -4364,12 +4492,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
 
             # Compile arg first - produces A on wires [offset..offset+wA)
             # This fills the A_slot that f will read from
-            go(t.arg, offset, env)
+            _a_arg = go(t.arg, offset, env)
 
             # Compile f - operates on wires [offset..offset+wA+wB)
             # f's A_slot is [offset..offset+wA), B_slot is [offset+wA..offset+wA+wB)
             # For Lam, the body+swap makes B_slot contain the result
-            go(t.f, offset, env)
+            _a_fun = go(t.f, offset, env)
 
             # After f: result is on B_slot [offset+wA..offset+wA+wB)
             # But Apply's output type is B (width wB), so we need to
@@ -4378,6 +4506,127 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             # This is the inverse of Lam's routing.
             # Lam did: rotate left by wB (body output [0..wB) → [wA..wA+wB))
             # Apply undoes: rotate right by wB (B_slot [wA..wA+wB) → [0..wB))
+            # ---- AppCut selected boundary --------------------------------
+            #
+            #     B_hy^+-  =  (r_1^+-)^-1 [ S_y^+- (x) Y_B^+- ]
+            #
+            # The head is CONSUMED: it contributes no factor and no residual
+            # port. What is retained is the operand package S_y and the
+            # residual result boundary Y_B, operand first.
+            #
+            # THE TWO POLARITIES ARE BUILT SEPARATELY, from the two premises'
+            # OWN recorded schedules -- never one snapshot reused:
+            #
+            #   S_y^-  the argument's ingress chart on its ingress placement
+            #   S_y^+  the argument's egress  chart on its egress  placement
+            #   Y_B^-  the head bundle's ingress placement, B half
+            #   Y_B^+  the head bundle's egress  placement, B half
+            #
+            # A structural relabeller (TwistTen, DistR, Seq, Lam) reorders a
+            # premise's ingress placement relative to its egress placement,
+            # so these are four distinct tuples in general.
+            #
+            # Y_B's CODES are the canonical boundary of the residual type B,
+            # read off the head's own Arrow type; the same codes on both
+            # polarities is what yank_B says, while the two PLACEMENTS stay
+            # independent. Nothing is read from `env` here, nothing is
+            # inferred from widths, varying bits or a matrix fit, and the
+            # operand's syntax is never inspected.
+            _reg = len(p.new_to_old)   # `n` is shadowed inside this emitter
+            _sb_arg = _a_arg.selected_boundary
+            if _sb_arg is None:
+                raise TypeCheckError(
+                    "Apply: the AppCut boundary needs the argument's "
+                    "selected boundary, which was not recorded")
+            _yank_B = canonical_frame(B, label="Y_B")
+            if _yank_B.n_qubits != wB:
+                raise TypeCheckError(
+                    f"Apply: the canonical boundary of B is "
+                    f"{_yank_B.n_qubits} qubits but the B interface is {wB} "
+                    f"wide")
+            def _head_bundle_wires(side, rec):
+                """The ambient wires carrying the head's A-oB bundle.
+
+                Two recorded sources for the SAME thing, in canonical bundle
+                order, so `[wA:]` is the residual boundary either way:
+
+                  * the head artifact's own placement, when it records one
+                    shaped like the bundle (a variable head does);
+                  * when the head is itself an application, the Y factor of
+                    its recorded AppCut route -- which IS the residual
+                    boundary of its result type, i.e. this bundle.
+
+                Nothing else is consulted. A head that records neither is an
+                unreached case and says so.
+                """
+                if len(rec) == wA + wB:
+                    return tuple(rec)
+                _sb_f = _a_fun.selected_boundary
+                _ch = (None if _sb_f is None else
+                       (_sb_f.ingress if side == "ingress" else _sb_f.egress))
+                if (_ch is not None and _ch.space == "ambient"
+                        and _ch.route is not None and _ch.route.reconstructible
+                        and len(_ch.route.placements) == 2
+                        and len(_ch.route.placements[1]) == wA + wB):
+                    return tuple(_ch.route.placements[1])
+                raise TypeCheckError(
+                    f"Apply: the head's {side} bundle placement is not "
+                    f"recorded -- its own placement names {len(rec)} wires "
+                    f"for a {wA}+{wB} bundle, and it carries no AppCut route "
+                    f"whose residual factor is that bundle. The residual "
+                    f"boundary Y_B cannot be split off it")
+
+            _head_in = _head_bundle_wires("ingress", _a_fun.ingress_wires)
+            _head_out = _head_bundle_wires("egress", _a_fun.egress_wires)
+
+            def _operand_factor(chart, wires, side):
+                """The operand premise as ONE factor, on ONE polarity.
+
+                A premise-local chart is placed at the argument artifact's
+                own recorded placement for THIS polarity. A nested AppCut's
+                chart is already AMBIENT, and is localised from its own
+                recorded scatter schedule -- its support is the wires that
+                schedule names, never "the whole register" and never the
+                wires whose bits happen to vary.
+                """
+                if chart.space == "ambient":
+                    nq, codes, w = localize_scatter(chart)
+                    return nq, codes, w
+                if len(wires) != chart.n_qubits:
+                    raise TypeCheckError(
+                        f"Apply: the operand's {side} chart is "
+                        f"{chart.n_qubits} qubits but its recorded {side} "
+                        f"placement names {len(wires)} wires {wires}")
+                return chart.n_qubits, tuple(chart.codes), tuple(wires)
+
+            def _appcut_side(label, arg_chart, arg_wires, head_wires, side):
+                # Two NAMESPACED premises. S_y's addresses belong to the
+                # argument artifact and Y_B's to the head; a local wire 0 in
+                # each is two addresses, not a collision. Only the ambient
+                # pullback can collide, and par_then_repart refuses it when
+                # it does.
+                _nq, _codes, _wires = _operand_factor(arg_chart, arg_wires,
+                                                      side)
+                head = ChartFactor(name="S_y", owner=_a_arg.cut_id,
+                                   n_qubits=_nq, codes=_codes)
+                tail = ChartFactor(name="Y_B", owner=_cut_ids[_cur_occ[0]],
+                                   n_qubits=_yank_B.n_qubits,
+                                   codes=tuple(_yank_B.codes))
+                rep, places = scatter_repart(_wires, head_wires[wA:], _reg)
+                ch = par_then_repart(head, tail, rep, _reg, label,
+                                     placements=places, kind="scatter")
+                ch.validate_joint()
+                return ch
+
+            _boundary_sink[_cur_occ[0]] = SelectedBoundary(
+                ingress=_appcut_side("r_1^-", _sb_arg.ingress,
+                                     _a_arg.ingress_wires,
+                                     _head_in, "ingress"),
+                egress=_appcut_side("r_1^+", _sb_arg.egress,
+                                    _a_arg.egress_wires,
+                                    _head_out, "egress"),
+                origin="appcut")
+
             total_width = wA + wB
             if total_width > 0 and wB > 0:
                 # Inverse rotation: [wA, wA+1, ..., wA+wB-1, 0, 1, ..., wA-1]
@@ -4402,6 +4651,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             if t.name in env:
                 phys_list = env[t.name]
                 var_width = len(phys_list)
+                # A Var does not CONSUME the slot at `offset`; it BINDS a
+                # context resource and routes it there. So its input boundary
+                # arrives on the binder's wires, not on whatever the slot was
+                # naming at entry. The emitter that knows this records it.
+                _placement_sink[_cur_occ[0]] = tuple(phys_list)
                 if var_width > 0:
                     inv_p = inverse(p)
                     curr_positions = [inv_p.new_to_old[ph] for ph in phys_list]
@@ -4463,6 +4717,14 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 term_env[t.y] = pair_term.snd
 
             go(t.body, offset, new_env)
+            # LetPair has NO selected-boundary rule yet. Copying the body's
+            # boundary up whenever it happened to be ambient would be an
+            # unearned general claim about tensor elimination: LetPair's own
+            # ingress is the PAIR, not the body's input, and the rule that
+            # relates them is TenPack, which is a later phase. So this stays
+            # on the explicit frame default and says why. Part H reads the
+            # AppCut occurrence's own artifact instead.
+            _boundary_sink[_cur_occ[0]] = "letpair:frame-default(TenPack pending)"
             if explain:
                 log.append(f"LetPair: {t.x} phys={x_phys}, "
                           f"{t.y} phys={y_phys}, body at offset {offset}")
@@ -4472,12 +4734,29 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
 
     go(term, env=env if env else {})
 
+    _pre_swap = tuple(p.new_to_old)
     if materialize:
         swaps = swaps_for_perm(p)
         apply_swaps(circ, swaps)
         if explain:
             log.append(f"Materialize swaps={swaps}")
         p = identity(n)
+
+    # Materialising appends a swap network AFTER every occurrence has been
+    # emitted, so it moves the egress of every boundary already placed in the
+    # register -- and nothing else, since the ingress is read before the
+    # circuit runs. Every artifact is re-expressed in the FINAL circuit's
+    # coordinates here, so no consumer has to know the transport existed.
+    if materialize and list(_pre_swap) != list(range(n)):
+        _moved = []
+        for _a in artifacts:
+            _sb_a = _a.selected_boundary
+            if _sb_a is not None and _sb_a.egress.space == "ambient":
+                _a = _dc_replace(
+                    _a, selected_boundary=_sb_a.transport_egress(_pre_swap))
+            _moved.append(_a)
+        artifacts = _moved
+        frame_registry = {a.occurrence: a for a in artifacts}
 
     if _artifact_sink is not None:
         _artifact_sink["artifacts"] = artifacts
@@ -4544,9 +4823,24 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             f"emitter's selection is wrong; spectators must be selected "
             f"explicitly (docs/COMPILER_INVARIANTS.md).")
 
+    # The compilation's selected boundary is the ROOT occurrence's, already
+    # resolved. A boundary placed in the register survives as it is, except
+    # that materialising appends a swap network AFTER the emission, which
+    # moves the egress and nothing else. A boundary that defaulted is rebuilt
+    # from the FINAL root frames, so it agrees with input_frame/output_frame
+    # after the spectator, context and pending-permutation steps above.
+    _sel = _root.selected_boundary
+    if _sel is not None and _sel.egress.space == "ambient":
+        pass          # already in the final circuit's coordinates above
+    else:
+        _sel = SelectedBoundary.from_frames(
+            _fin, _fout,
+            origin=(_sel.origin if _sel is not None else "frame-default"),
+            space="ambient")
     return Compiled(circuit=circ, perm=p, log=(log if explain else None),
                     input_frame=_fin, output_frame=_fout,
                     input_ports=_pin, output_ports=_pout,
-                    global_phase=float(circ.phase))
+                    global_phase=float(circ.phase),
+                    selected_boundary=_sel)
 
 
