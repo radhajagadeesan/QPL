@@ -334,10 +334,10 @@ def test_H12_two_premise_local_wire_zeros_give_four_distinct_labels():
     head = ChartFactor(name="S_y", owner="cut:operand", n_qubits=1,
                        codes=(0, 1))
     tail = ChartFactor(name="Y_B", owner="cut:application", n_qubits=1,
-                       codes=(0, 1))
+                       codes=(0, 1), role="residual", logical=q)
     assert head.codes == tail.codes and head.n_qubits == tail.n_qubits
-    rep, places = scatter_repart((2,), (1,), 3)
-    ch = par_then_repart(head, tail, rep, 3, "r", placements=places,
+    rep, places = scatter_repart(((2,), (1,)), 3)
+    ch = par_then_repart((head, tail), rep, 3, "r", placements=places,
                          kind="scatter")
     assert ch.dim == 4 and len(set(ch.codes)) == 4, (
         "two local wire-0 factors collapsed into fewer than four labels")
@@ -350,10 +350,11 @@ def test_H12b_a_genuinely_colliding_repart_is_refused():
     a repart that lands two ordered pairs on one code must be rejected, not
     silently truncated to a smaller chart."""
     head = ChartFactor(name="S_y", owner="cut:a", n_qubits=1, codes=(0, 1))
-    tail = ChartFactor(name="Y_B", owner="cut:b", n_qubits=1, codes=(0, 1))
-    rep, places = scatter_repart((2,), (2,), 3)     # SAME ambient wire
+    tail = ChartFactor(name="Y_B", owner="cut:b", n_qubits=1,
+                       codes=(0, 1), role="residual", logical=q)
+    rep, places = scatter_repart(((2,), (2,)), 3)     # SAME ambient wire
     with pytest.raises(ProvenanceError) as e:
-        par_then_repart(head, tail, rep, 3, "r", placements=places,
+        par_then_repart((head, tail), rep, 3, "r", placements=places,
                         kind="scatter")
     assert "injective" in str(e.value)
 
@@ -368,16 +369,16 @@ def test_H13_sparse_child_order_is_preserved():
     sparse = ChartFactor(name="S_y", owner="cut:operand", n_qubits=3,
                          codes=(5, 0, 3))
     tail = ChartFactor(name="Y_B", owner="cut:application", n_qubits=1,
-                       codes=(0, 1))
-    rep, places = scatter_repart((0, 1, 2), (3,), 4)
-    ch = par_then_repart(sparse, tail, rep, 4, "r", placements=places,
+                       codes=(0, 1), role="residual", logical=q)
+    rep, places = scatter_repart(((0, 1, 2), (3,)), 4)
+    ch = par_then_repart((sparse, tail), rep, 4, "r", placements=places,
                          kind="scatter")
     assert ch.codes == (10, 11, 0, 1, 6, 7), (
         f"the child's order (5,0,3) was not preserved: {ch.codes}")
     reordered = ChartFactor(name="S_y", owner="cut:operand", n_qubits=3,
                             codes=(0, 3, 5))
-    other = par_then_repart(reordered, tail, rep, 4, "r", placements=places,
-                            kind="scatter")
+    other = par_then_repart((reordered, tail), rep, 4, "r",
+                            placements=places, kind="scatter")
     assert other.codes != ch.codes
 
 
@@ -749,27 +750,27 @@ def test_H22_an_unequal_width_operand_fails_closed_with_a_named_reason():
     assert "recorded ingress placement" in msg and "chart is 2 qubits" in msg
 
 
-def test_H23_letpair_has_no_selected_boundary_rule_yet():
-    """Part H is AppCut. LetPair stays on the EXPLICIT frame default.
+def test_H23_letpair_root_is_a_splice_of_producer_and_tenpacked_body():
+    """SUPERSEDED the frame-default LetPair.
 
-    Copying the body's boundary up whenever it happened to be ambient would
-    be an unearned general claim about tensor elimination: LetPair's ingress
-    is the PAIR, not the body's input. That relation is TenPack's, in a later
-    phase, and until then the default says so in its origin.
+    LetPair no longer defaults: its root is Splice(pair, TenPack(body)), so
+    the producer is matched rather than ignored and the binder schedules are
+    recorded per polarity. Part H still reads the APPLICATION's own artifact
+    for AppCut claims -- see Part I for the LetPair rule itself.
     """
     r = compile(W_ID(), materialize=False)
     sb = r.selected_boundary
-    assert sb.origin == "letpair:frame-default(TenPack pending)", (
-        f"LetPair must not claim a selected-boundary rule; got {sb.origin!r}")
-    assert sb.ingress.codes == tuple(r.input_frame.codes)
-    assert sb.egress.codes == tuple(r.output_frame.codes)
-    assert sb.ingress.dim == r.input_frame.dim
+    assert sb.origin == "letpair:splice", (
+        f"the root must come from a Splice, got {sb.origin!r}")
+    assert sb.packing is not None, "no TenPack binder schedule recorded"
+    assert sb.ingress.dim == 4 and sb.egress.dim == 4, (
+        "the root now carries the application's accumulated spine boundary")
+
 
 # ---------------------------------------------------------------------------
 # ctrl_ho: the corrected parent boundary is 80, as 64 (+) 16
 # ---------------------------------------------------------------------------
 #
-# The withdrawn target was 256, from the wrong "typed h residual" reading.
 # Use-block opposite-context completion gives, per branch:
 #
 #     u0 : S_y (x) Y_Q                 dim 2*2      =  4
@@ -783,7 +784,8 @@ def test_H23_letpair_has_no_selected_boundary_rule_yet():
 #
 #     parent = left (+) right          dim 64+16    = 80   on BOTH polarities
 #
-# The outer lambda repartitions polarity only and does not alter this.
+# Part I now pins u0 = 4 and u1 = 16 as the ctrl_ho BRANCH ROOTS; consuming
+# them is the next phase, so H11 below stays red.
 
 CTRL_HO_U0 = 4
 CTRL_HO_U1 = 16

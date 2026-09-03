@@ -55,7 +55,8 @@ from compile.frames import (Frame, Sector, Port, canonical_frame,
                             BoundaryChart, ChartRoute, ChartFactor,
                             chart_of_frame, par_then_repart, scatter_repart,
                             localize_scatter,
-                            SelectedBoundary,
+                            SelectedBoundary, TenPackSchedule,
+                            tenpack, tensor_splice,
                             frames_agree, semantic_dim,
                             apply_wire_perm, with_spectators,
                             distl_frames, encode_qubit_frames,
@@ -1691,6 +1692,51 @@ def _is_neutral_spine(t: Term) -> bool:
     return isinstance(t, Var)
 
 
+def _ambient_chart(chart, wires, n):
+    """A premise-local chart lifted onto its OWN recorded ambient wires.
+
+    A chart that is already ambient is returned as it stands. Nothing is
+    inferred: the placement is the artifact's own record for that polarity.
+    """
+    if chart.space == "ambient":
+        if chart.n_qubits != n:
+            raise TypeCheckError(
+                f"an ambient chart spans {chart.n_qubits} wires, not {n}")
+        return chart
+    wires = tuple(wires)
+    if len(wires) != chart.n_qubits:
+        raise TypeCheckError(
+            f"the chart is {chart.n_qubits} qubits but its recorded "
+            f"placement names {len(wires)} wires {wires}")
+    f = ChartFactor(name=chart.label or "port", owner=None,
+                    n_qubits=chart.n_qubits, codes=tuple(chart.codes))
+    rep, places = scatter_repart((wires,), n)
+    return par_then_repart((f,), rep, n, chart.label or "port",
+                           placements=places, kind="scatter")
+
+
+def _child_factor(chart, wires, name, owner, logical, side, role="operand"):
+    """One immediate child's selected chart, as ONE ordered factor.
+
+    A premise-local chart sits at the child artifact's own recorded placement
+    for THIS polarity. A chart that is already AMBIENT is localised from its
+    own recorded scatter schedule, so its support is what that schedule
+    names -- never the whole register, never the wires whose bits vary.
+    Sparse order is carried through untouched.
+    """
+    if chart.space == "ambient":
+        nq, codes, w = localize_scatter(chart)
+    else:
+        if len(wires) != chart.n_qubits:
+            raise TypeCheckError(
+                f"{name}: the {side} chart is {chart.n_qubits} qubits but "
+                f"its recorded {side} placement names {len(wires)} wires "
+                f"{tuple(wires)}")
+        nq, codes, w = chart.n_qubits, tuple(chart.codes), tuple(wires)
+    return ChartFactor(name=name, owner=owner, n_qubits=nq, codes=codes,
+                       role=role, logical=logical), w
+
+
 def _slot_wires(perm, offset, w):
     """The ambient wires a width-`w` slot at `offset` names under `perm`.
 
@@ -1706,12 +1752,14 @@ def _slot_wires(perm, offset, w):
 def _has_boundary_rule(t: Term) -> bool:
     """Terms whose selected boundary is NOT simply their frames.
 
-    `Apply` builds the AppCut chart; `LetPair` transports its body's. Every
-    other term defaults, and says so. Listing them here is what makes the
-    default explicit: an occurrence in this set that records nothing is a
-    rule that failed to fire, and is rejected rather than quietly defaulted.
+    `Apply` builds the accumulated variable-spine chart, `Pair` the Par of
+    its children, `LetPair` the Splice of its producer with its TenPacked
+    body. Every other term defaults, and says so. Listing them here is what
+    makes the default explicit: an occurrence in this set that records
+    nothing is a rule that failed to fire, and is rejected rather than
+    quietly defaulted.
     """
-    return isinstance(t, (Apply, LetPair))
+    return isinstance(t, (Apply, Pair, LetPair))
 
 
 def compile_with_artifacts(term: Term, *, materialize: bool = False,
@@ -2141,6 +2189,140 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     owner_id=scope.owner(), intro_cut=scope.cut())
             out.append(_binding_cache[key])
         return tuple(out)
+
+    def _letpair_splice(pair_art, body_art, sched, offset, pw):
+        """Splice_{A(x)B}( pair_art , TenPack_N(body_art) ).
+
+        TenPack is GATE-FREE: it repackages the body's two binder resources
+        as the single pair coordinate p, per polarity,
+
+            p^e |-> p^e theta^e,   r_p^e = r_x^e followed by r_y^e,
+
+        leaving the body's selected chart -- its cardinality, its sparse
+        order, its factor identities and its complementary ranges --
+        untouched. The Splice then matches the producer's A(x)B port against
+        that schedule and consumes it, so the pair producer is not ignored:
+        a Var that ROUTED its wires is honoured through its own recorded
+        egress placement rather than through slot indices.
+
+        The two polarities are built independently and each is checked
+        against ITS OWN defining slot read, so using one polarity's schedule
+        on the other side is refused rather than silently accepted.
+        """
+        reg = len(p.new_to_old)
+        body_sb = body_art.selected_boundary
+        if body_sb is None:
+            raise TypeCheckError(
+                f"LetPair: the body occurrence {body_art.occurrence} "
+                f"({type(body_art.term).__name__}) records no selected "
+                f"boundary, so there is nothing to TenPack")
+        if pair_art.selected_boundary is None:
+            raise TypeCheckError(
+                "LetPair: the pair producer records no selected boundary")
+
+        for side in ("ingress", "egress"):
+            r_p = sched.check(side, reg)
+            if len(r_p) != pw:
+                raise TypeCheckError(
+                    f"LetPair: the {side} binder schedule names {len(r_p)} "
+                    f"wires for a {pw}-wide pair")
+            placed = set(r_p) | set(sched.complement(side))
+            if placed != set(range(reg)):
+                raise TypeCheckError(
+                    f"LetPair: the {side} schedule and its complement cover "
+                    f"{sorted(placed)}, not the whole {reg}-wire register; a "
+                    f"complementary range was dropped")
+
+        # The matched A(x)B port: what the producer actually hands over, from
+        # the producer's OWN recorded egress placement. theta is DERIVED from
+        # the two orders rather than assumed to be the identity, so a
+        # producer that delivers the port in a different order is packed
+        # through a real re-addressing instead of being rejected or ignored.
+        matched = tuple(pair_art.egress_wires)
+        r_p_in = sched.r_p("ingress")
+        if set(matched) != set(r_p_in) or len(matched) != len(r_p_in):
+            raise TypeCheckError(
+                f"LetPair: the producer hands over {matched} but the binder "
+                f"schedule is {r_p_in}; the A(x)B port and the pair "
+                f"coordinate must be the same resource")
+        theta_in = tuple(r_p_in.index(w) for w in matched)
+        theta_out = tuple(range(len(sched.r_p("egress"))))
+
+        # The body's charts as they sit in the register. A body that
+        # defaulted to its Frame records premise-local codes, so it is lifted
+        # through the body artifact's OWN recorded placement for each
+        # polarity -- not through the other polarity's, and not through a
+        # width guess.
+        body_in = _ambient_chart(body_sb.ingress, body_art.ingress_wires, reg)
+        body_out = _ambient_chart(body_sb.egress, body_art.egress_wires, reg)
+
+        # TenPack: re-address each polarity through its OWN theta. Gate-free.
+        packed_in = tenpack(body_in, r_p_in, theta_in)
+        packed_out = tenpack(body_out, sched.r_p("egress"), theta_out)
+
+        # Splice: compose the producer's selected output cut with the packed
+        # body input cut, so the external negative boundary is the PRODUCER's
+        # selected ingress pulled back along that correspondence.
+        prod_in = _ambient_chart(pair_art.selected_boundary.ingress,
+                                 pair_art.ingress_wires, reg)
+        prod_out = _ambient_chart(pair_art.selected_boundary.egress,
+                                  pair_art.egress_wires, reg)
+        ing, egr = tensor_splice(prod_in, prod_out, packed_in, packed_out,
+                                 matched)
+        return SelectedBoundary(ingress=ing, egress=egr,
+                                origin="letpair:splice", packing=sched)
+
+    def _par_boundary(children, occ, label):
+        """Par of the immediate children's selected boundaries, in order.
+
+        Both polarities are built independently from each child's OWN
+        ingress/egress chart and its OWN recorded ingress/egress placement.
+        The schedule is validated against the resulting embed rather than
+        assumed, so a placement that does not lay the factors where the codes
+        say is refused.
+        """
+        reg = len(p.new_to_old)
+
+        def side(which):
+            factors, places = [], []
+            for a in children:
+                sb = a.selected_boundary
+                if sb is None:
+                    raise TypeCheckError(
+                        f"{label}: child occurrence {a.occurrence} "
+                        f"({type(a.term).__name__}) records no selected "
+                        f"boundary")
+                ch = sb.ingress if which == "ingress" else sb.egress
+                wires = (a.ingress_wires if which == "ingress"
+                         else a.egress_wires)
+                # Par is ASSOCIATIVE, so a child that is itself a product
+                # contributes its OWN ordered factors, with their identities,
+                # roles, types and placements intact. Collapsing it into one
+                # anonymous factor would keep the dimension and lose exactly
+                # what tells S_h (x) Y_Endo from S_h (x) S_y (x) Y_Q.
+                if (ch.space == "ambient" and ch.route is not None
+                        and ch.route.reconstructible):
+                    ch.route.check_schedule()
+                    factors.extend(ch.route.parts)
+                    places.extend(ch.route.placements)
+                    continue
+                f, w = _child_factor(
+                    ch, wires, name=f"S_{type(a.term).__name__}",
+                    owner=a.cut_id, logical=(a.input_frame.logical
+                                             if which == "ingress"
+                                             else a.output_frame.logical),
+                    side=which)
+                factors.append(f)
+                places.append(w)
+            rep, places = scatter_repart(places, reg)
+            ch = par_then_repart(tuple(factors), rep, reg,
+                                 f"{label}^{'-' if which == 'ingress' else '+'}",
+                                 placements=places, kind="scatter")
+            ch.validate_joint()
+            return ch
+
+        return SelectedBoundary(ingress=side("ingress"),
+                                egress=side("egress"), origin=label)
 
     def _plan_open_occurrence_for(t, parent_in, parent_out, free_names,
                                   k_in, k_out, env_, branches=()):
@@ -4552,30 +4734,86 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
 
                   * the head artifact's own placement, when it records one
                     shaped like the bundle (a variable head does);
-                  * when the head is itself an application, the Y factor of
-                    its recorded AppCut route -- which IS the residual
-                    boundary of its result type, i.e. this bundle.
+                  * when the head is itself an application, the placement of
+                    its route's TERMINAL RESIDUAL factor -- identified by its
+                    recorded role, never by position or dimension -- which is
+                    the residual boundary of its result type, i.e. this
+                    bundle.
 
                 Nothing else is consulted. A head that records neither is an
                 unreached case and says so.
                 """
                 if len(rec) == wA + wB:
                     return tuple(rec)
-                _sb_f = _a_fun.selected_boundary
-                _ch = (None if _sb_f is None else
-                       (_sb_f.ingress if side == "ingress" else _sb_f.egress))
-                if (_ch is not None and _ch.space == "ambient"
-                        and _ch.route is not None and _ch.route.reconstructible
-                        and len(_ch.route.placements) == 2
-                        and len(_ch.route.placements[1]) == wA + wB):
-                    return tuple(_ch.route.placements[1])
+                _ch = _head_chart(side)
+                if _ch is not None and _ch.route is not None \
+                        and _ch.route.reconstructible and _ch.route.is_spine():
+                    _res = _ch.route.residual
+                    _i = _ch.route.parts.index(_res)
+                    _pl = _ch.route.placements[_i]
+                    if len(_pl) == wA + wB:
+                        return tuple(_pl)
                 raise TypeCheckError(
                     f"Apply: the head's {side} bundle placement is not "
                     f"recorded -- its own placement names {len(rec)} wires "
-                    f"for a {wA}+{wB} bundle, and it carries no AppCut route "
-                    f"whose residual factor is that bundle. The residual "
+                    f"for a {wA}+{wB} bundle, and it carries no spine route "
+                    f"whose terminal residual is that bundle. The residual "
                     f"boundary Y_B cannot be split off it")
 
+            def _head_chart(side):
+                _sb_f = _a_fun.selected_boundary
+                if _sb_f is None:
+                    return None
+                return _sb_f.ingress if side == "ingress" else _sb_f.egress
+
+            def _prefix(side):
+                """The head spine's ACCUMULATED operand factors, with their
+                recorded placements on THIS polarity.
+
+                    B_j^+- = (r_j^+-)^-1 [S_1 (x) ... (x) S_j (x) Y_Tj]
+
+                so an application keeps every operand factor its head already
+                accumulated, and replaces only the head's terminal residual
+                Y_{A-oB} with its own result residual Y_B. A Var head has no
+                prefix. Discarding the prefix would give S_y (x) Y_B, which
+                is a DIFFERENT chart that can have the same dimension.
+                """
+                ch = _head_chart(side)
+                if ch is None or ch.route is None or not ch.route.parts:
+                    return (), ()                 # a variable head: no prefix
+                rt = ch.route
+                if not (rt.reconstructible and rt.is_spine()):
+                    raise TypeCheckError(
+                        f"Apply: the head records a {side} boundary that is "
+                        f"not a canonical spine, so its operand prefix "
+                        f"cannot be carried")
+                res = rt.residual
+                # The terminal residual is replaced only when its RECORDED
+                # logical type is the head's own arrow type. Equal dimension
+                # is not evidence: S_h (x) Y_Endo and S_h (x) S_y (x) Y_Q are
+                # both dimension 16.
+                if res.logical != f_cod:
+                    raise TypeCheckError(
+                        f"Apply: the head's terminal residual is typed "
+                        f"{res.logical}, not the head's codomain {f_cod}; "
+                        f"refusing to replace a residual the derivation does "
+                        f"not identify with this application's head")
+                keep = tuple((f, pl) for f, pl in zip(rt.parts, rt.placements)
+                             if f is not res)
+                return tuple(f for f, _ in keep), tuple(pl for _, pl in keep)
+
+            _reg = len(p.new_to_old)   # `n` is shadowed inside this emitter
+            _sb_arg = _a_arg.selected_boundary
+            if _sb_arg is None:
+                raise TypeCheckError(
+                    "Apply: the AppCut boundary needs the argument's "
+                    "selected boundary, which was not recorded")
+            _yank_B = canonical_frame(B, label="Y_B")
+            if _yank_B.n_qubits != wB:
+                raise TypeCheckError(
+                    f"Apply: the canonical boundary of B is "
+                    f"{_yank_B.n_qubits} qubits but the B interface is {wB} "
+                    f"wide")
             _head_in = _head_bundle_wires("ingress", _a_fun.ingress_wires)
             _head_out = _head_bundle_wires("egress", _a_fun.egress_wires)
 
@@ -4583,15 +4821,14 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 """The operand premise as ONE factor, on ONE polarity.
 
                 A premise-local chart is placed at the argument artifact's
-                own recorded placement for THIS polarity. A nested AppCut's
-                chart is already AMBIENT, and is localised from its own
-                recorded scatter schedule -- its support is the wires that
-                schedule names, never "the whole register" and never the
-                wires whose bits happen to vary.
+                own recorded placement for THIS polarity. A nested chart is
+                already AMBIENT, and is localised from its own recorded
+                scatter schedule -- its support is the wires that schedule
+                names, never "the whole register" and never the wires whose
+                bits happen to vary.
                 """
                 if chart.space == "ambient":
-                    nq, codes, w = localize_scatter(chart)
-                    return nq, codes, w
+                    return localize_scatter(chart)
                 if len(wires) != chart.n_qubits:
                     raise TypeCheckError(
                         f"Apply: the operand's {side} chart is "
@@ -4600,20 +4837,24 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 return chart.n_qubits, tuple(chart.codes), tuple(wires)
 
             def _appcut_side(label, arg_chart, arg_wires, head_wires, side):
-                # Two NAMESPACED premises. S_y's addresses belong to the
-                # argument artifact and Y_B's to the head; a local wire 0 in
-                # each is two addresses, not a collision. Only the ambient
-                # pullback can collide, and par_then_repart refuses it when
-                # it does.
+                # Every premise is NAMESPACED: an accumulated operand, the new
+                # operand and the residual each address their own local wire 0
+                # without collision. Only the ambient pullback can collide,
+                # and par_then_repart refuses it when it does.
+                pre_f, pre_pl = _prefix(side)
                 _nq, _codes, _wires = _operand_factor(arg_chart, arg_wires,
                                                       side)
-                head = ChartFactor(name="S_y", owner=_a_arg.cut_id,
-                                   n_qubits=_nq, codes=_codes)
-                tail = ChartFactor(name="Y_B", owner=_cut_ids[_cur_occ[0]],
-                                   n_qubits=_yank_B.n_qubits,
-                                   codes=tuple(_yank_B.codes))
-                rep, places = scatter_repart(_wires, head_wires[wA:], _reg)
-                ch = par_then_repart(head, tail, rep, _reg, label,
+                new_operand = ChartFactor(name="S_y", owner=_a_arg.cut_id,
+                                          n_qubits=_nq, codes=_codes,
+                                          role="operand", logical=A)
+                residual = ChartFactor(name="Y_B", owner=_cut_ids[_cur_occ[0]],
+                                       n_qubits=_yank_B.n_qubits,
+                                       codes=tuple(_yank_B.codes),
+                                       role="residual", logical=B)
+                factors = pre_f + (new_operand, residual)
+                places = pre_pl + (_wires, tuple(head_wires[wA:]))
+                rep, places = scatter_repart(places, _reg)
+                ch = par_then_repart(factors, rep, _reg, label,
                                      placements=places, kind="scatter")
                 ch.validate_joint()
                 return ch
@@ -4687,8 +4928,24 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             # its children are also values. This defers Lam body compilation.
             _, fst_cod = type_of(t.fst)
             fst_w = width(fst_cod)
-            go(t.fst, offset, env, is_value=is_value)
-            go(t.snd, offset + fst_w, env, is_value=is_value)
+            _a_fst = go(t.fst, offset, env, is_value=is_value)
+            _a_snd = go(t.snd, offset + fst_w, env, is_value=is_value)
+
+            # ---- Emit(Pair(R1,R2)) = Par(Emit(R1), Emit(R2)) -------------
+            #
+            # The selected boundary is the ORDERED product of the two
+            # immediate children's own selected charts -- fst then snd -- on
+            # each polarity independently, reparted through this Pair's own
+            # recorded offsets. The exact Artifact objects returned by go()
+            # above are the ones consumed; neither child is recompiled and
+            # neither chart is rebuilt from a Frame, a type or a width.
+            #
+            # A Unit child is a genuine dimension-1 factor on zero wires. It
+            # is kept, not dropped: 1 x 4 and 4 are the same number but not
+            # the same chart, and dropping it would lose the factor's
+            # identity and provenance.
+            _boundary_sink[_cur_occ[0]] = _par_boundary(
+                (_a_fst, _a_snd), _cur_occ[0], "par")
             if explain:
                 log.append(f"Pair: fst at offset {offset}, snd at offset {offset + fst_w}")
             return
@@ -4699,7 +4956,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             # Always compile the pair (even if it's a Var — Var handles its own routing).
             # Bind x and y using PHYSICAL wire positions so env entries remain stable
             # across subsequent perm compositions.
-            go(t.pair, offset, env)
+            _a_pair = go(t.pair, offset, env)
 
             # After pair: output is at logical [offset..offset+wX+wY).
             # Store physical positions (full list) for perm-stable bindings.
@@ -4707,6 +4964,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             y_width = width(t.ty_y)
             x_phys = [p.new_to_old[offset + i] for i in range(x_width)]
             y_phys = [p.new_to_old[offset + x_width + i] for i in range(y_width)]
+            # r_x^- and r_y^- : the binder schedules AS THE BODY RECEIVES
+            # THEM. Recorded here, at binder introduction, which is the
+            # derivation site -- not recovered later from occurrence order.
+            _rx_in, _ry_in = tuple(x_phys), tuple(y_phys)
+            _comp_in = tuple(w for w in range(len(p.new_to_old))
+                             if w not in set(_rx_in) | set(_ry_in))
             new_env = {**env, t.x: x_phys, t.y: y_phys}
 
             # Propagate term_env: if the pair's term is a known Pair,
@@ -4716,15 +4979,21 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 term_env[t.x] = pair_term.fst
                 term_env[t.y] = pair_term.snd
 
-            go(t.body, offset, new_env)
-            # LetPair has NO selected-boundary rule yet. Copying the body's
-            # boundary up whenever it happened to be ambient would be an
-            # unearned general claim about tensor elimination: LetPair's own
-            # ingress is the PAIR, not the body's input, and the rule that
-            # relates them is TenPack, which is a later phase. So this stays
-            # on the explicit frame default and says why. Part H reads the
-            # AppCut occurrence's own artifact instead.
-            _boundary_sink[_cur_occ[0]] = "letpair:frame-default(TenPack pending)"
+            _a_body = go(t.body, offset, new_env)
+            # r_x^+ and r_y^+ : the SAME slot read again, at the body's exit.
+            # Recorded independently of the negative side; nothing here reads
+            # x_phys/y_phys, which belong to the other polarity.
+            _rx_out = tuple(p.new_to_old[offset + i] for i in range(x_width))
+            _ry_out = tuple(p.new_to_old[offset + x_width + i]
+                            for i in range(y_width))
+            _comp_out = tuple(w for w in range(len(p.new_to_old))
+                              if w not in set(_rx_out) | set(_ry_out))
+            _sched = TenPackSchedule(
+                r_x_in=_rx_in, r_y_in=_ry_in,
+                r_x_out=_rx_out, r_y_out=_ry_out,
+                complement_in=_comp_in, complement_out=_comp_out)
+            _boundary_sink[_cur_occ[0]] = _letpair_splice(
+                _a_pair, _a_body, _sched, offset, x_width + y_width)
             if explain:
                 log.append(f"LetPair: {t.x} phys={x_phys}, "
                           f"{t.y} phys={y_phys}, body at offset {offset}")

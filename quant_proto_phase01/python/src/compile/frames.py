@@ -1305,15 +1305,32 @@ class ChartFactor:
     `codes` are the factor's OWN ordered codes in its OWN premise-local
     address space. Two factors from different artifacts may both start at
     local wire 0; that is not a collision, it is two namespaces.
+
+    `role` and `logical` are the DERIVATION-LEVEL discriminators. A variable
+    spine accumulates operand factors and carries exactly one terminal
+    residual yank, and the terminal one is identified by its recorded role
+    and its logical type -- never by its name, its dimension, its wire count
+    or its position being "last but one". Two factors of equal dimension can
+    be an operand and a residual of different types, which is exactly the
+    ctrl_ho trap: S_h (x) Y_Endo and S_h (x) S_y (x) Y_Q are both dimension
+    16 and are different charts.
     """
     name: str
     owner: object                 # the artifact / premise this factor is of
     n_qubits: int
     codes: Tuple[int, ...]
+    role: str = "operand"         # "operand" | "residual"
+    logical: object = None        # the factor's derivation-level type
 
     @property
     def dim(self) -> int:
         return len(self.codes)
+
+    def __post_init__(self):
+        if self.role not in ("operand", "residual"):
+            raise ProvenanceError(
+                f"chart factor {self.name!r} has role {self.role!r}; a spine "
+                f"factor is an operand or the terminal residual")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1355,11 +1372,53 @@ class ChartRoute:
         return self.kind == "scatter" and len(self.placements) == len(self.parts)
 
     def decode(self, product_index):
-        """(operand coordinate, residual coordinate) for a product index."""
-        if len(self.parts) != 2:
-            raise ProvenanceError("route does not carry two factors")
-        d2 = self.parts[1].dim
-        return divmod(product_index, d2)
+        """The ordered factor coordinates for a product index.
+
+        Mixed radix over the ordered `parts`, FIRST factor most significant,
+        so the spine's application order is what the index means.
+        """
+        if not self.parts:
+            raise ProvenanceError("route carries no factors")
+        out = []
+        for f in reversed(self.parts):
+            product_index, r = divmod(product_index, f.dim)
+            out.append(r)
+        if product_index:
+            raise ProvenanceError(
+                f"route {self.label}: product index out of range")
+        return tuple(reversed(out))
+
+    @property
+    def operands(self):
+        """The accumulated operand factors, in application order."""
+        return tuple(f for f in self.parts if f.role == "operand")
+
+    @property
+    def residual(self):
+        """The one terminal residual yank factor, by RECORDED ROLE.
+
+        Not "the last one", not "the one whose dimension matches": a spine
+        with the wrong terminal residual has the same length and can have the
+        same dimension.
+        """
+        res = [f for f in self.parts if f.role == "residual"]
+        if len(res) != 1:
+            raise ProvenanceError(
+                f"route {self.label}: {len(res)} residual factors, want "
+                f"exactly one terminal yank")
+        if self.parts[-1] is not res[0]:
+            raise ProvenanceError(
+                f"route {self.label}: the residual factor {res[0].name!r} is "
+                f"not terminal; a spine ends in its result yank")
+        return res[0]
+
+    def is_spine(self) -> bool:
+        """A canonical variable spine: operands then one terminal residual."""
+        if not self.parts:
+            return False
+        if any(f.role != "operand" for f in self.parts[:-1]):
+            return False
+        return self.parts[-1].role == "residual"
 
     def check_schedule(self):
         """Widths, placement lengths, wire range and disjointness.
@@ -1368,12 +1427,12 @@ class ChartRoute:
         consults `embed`, so none of them can be satisfied by a chart merely
         agreeing with itself.
         """
-        if len(self.parts) != 2:
+        if not self.parts:
+            raise ProvenanceError(f"route {self.label}: no factors recorded")
+        if self.n_qubits < 0:
             raise ProvenanceError(
-                f"route {self.label}: {len(self.parts)} factors, want 2")
-        if self.n_qubits <= 0:
-            raise ProvenanceError(
-                f"route {self.label}: no ambient register width recorded")
+                f"route {self.label}: negative register width "
+                f"{self.n_qubits}")
         for f in self.parts:
             if f.dim == 0:
                 raise ProvenanceError(f"route {self.label}: factor {f.name} "
@@ -1424,21 +1483,18 @@ class ChartRoute:
             raise ProvenanceError(
                 f"route {self.label}: a {self.kind!r} repart cannot be "
                 f"reconstructed from its schedule")
-        head, tail = self.parts
-        hw, tw = self.placements
         n = self.n_qubits
-        out = []
-        for a in head.codes:
-            base = 0
-            for i, w in enumerate(hw):
-                if (a >> (head.n_qubits - 1 - i)) & 1:
-                    base |= 1 << (n - 1 - w)
-            for b in tail.codes:
-                c = base
-                for i, w in enumerate(tw):
-                    if (b >> (tail.n_qubits - 1 - i)) & 1:
-                        c |= 1 << (n - 1 - w)
-                out.append(c)
+
+        def _place(code, f, wires):
+            c = 0
+            for i, w in enumerate(wires):
+                if (code >> (f.n_qubits - 1 - i)) & 1:
+                    c |= 1 << (n - 1 - w)
+            return c
+
+        out = [0]
+        for f, wires in zip(self.parts, self.placements):
+            out = [base | _place(cd, f, wires) for base in out for cd in f.codes]
         return tuple(out)
 
     def decode_ambient(self, code):
@@ -1525,13 +1581,16 @@ class BoundaryChart:
         codes from the schedule and decoding each code out of its bits.
         """
         r = self.route
-        if r is None or len(r.parts) != 2:
-            raise ProvenanceError(f"chart {self.label}: no two-factor route")
+        if r is None or not r.parts:
+            raise ProvenanceError(f"chart {self.label}: no factored route")
         r.check_schedule()
-        h, t = r.parts
-        if self.dim != h.dim * t.dim:
+        want = 1
+        for f in r.parts:
+            want *= f.dim
+        if self.dim != want:
             raise ProvenanceError(
-                f"chart {self.label}: dim {self.dim} != {h.dim}*{t.dim}")
+                f"chart {self.label}: dim {self.dim} != "
+                f"{'*'.join(str(f.dim) for f in r.parts)}")
         if len(set(self.codes)) != len(self.codes):
             raise ProvenanceError(f"chart {self.label}: codes not injective")
         if r.n_qubits != self.n_qubits:
@@ -1610,42 +1669,49 @@ def chart_of_frame(frame: "Frame", space: str = "local") -> "BoundaryChart":
                          label=f"{frame.label}=frame", space=space)
 
 
-def par_then_repart(head, tail, repart, n_qubits, route_label="",
+def par_then_repart(factors, repart, n_qubits, route_label="",
                     placements=(), kind="opaque"):
-    """Repart_r( Par(head, tail) ), with NAMESPACED premise addresses.
+    """Repart_r( Par(factors...) ), with NAMESPACED premise addresses.
 
-    Par builds the product workspace with disjoint premise injections --
-    iota_1(k) = k and iota_2(k) = q_head + k -- so a head-local wire 0 and a
-    tail-local wire 0 are different addresses, not a collision. The two
-    factors' ACTUAL ordered codes are tensored; the head is never expanded
-    into a dense 2^k space.
+    Par builds the product workspace with disjoint premise injections, so a
+    local wire 0 in each factor is a different address, not a collision. Each
+    factor's ACTUAL ordered codes are tensored; none is expanded into a dense
+    2^k space.
 
-    Repart then applies the recorded code-domain pullback to reach the ambient
-    encoding. The result may be correlated: the factors need NOT occupy
-    disjoint raw wire tuples. It is represented as ONE joint injective map
+    The product is lexicographic with the FIRST factor most significant, so a
+    variable spine's application order is what the index means. Repart then
+    applies the recorded code-domain pullback to reach the ambient encoding.
+    The result may be correlated: the factors need NOT occupy disjoint raw
+    wire tuples. It is one joint injective map
 
-        (head coordinate, tail coordinate) -> ambient code
+        (factor coordinates...) -> ambient code
 
-    with both factor identities and their order retained.
+    with every factor identity, role and type retained, in order.
     """
-    pairs = [(a, b) for a in range(head.dim) for b in range(tail.dim)]
-    embed = []
-    for a, b in pairs:
-        embed.append(repart(head.codes[a], tail.codes[b]))
+    factors = tuple(factors)
+    if not factors:
+        raise ProvenanceError(f"chart {route_label}: Par of no factors")
+    combos = [()]
+    for f in factors:
+        combos = [c + (cd,) for c in combos for cd in f.codes]
+    embed = [repart(*c) for c in combos]
     if len(set(embed)) != len(embed):
         raise ProvenanceError(
             f"chart {route_label}: the recorded repart is not injective on "
-            f"the product -- {len(embed)} ordered pairs collapse to "
+            f"the product -- {len(embed)} ordered tuples collapse to "
             f"{len(set(embed))} ambient codes")
-    route = ChartRoute(label=route_label, parts=(head, tail),
+    route = ChartRoute(label=route_label, parts=factors,
                        embed=tuple(embed), kind=kind, n_qubits=n_qubits,
                        placements=tuple(tuple(g) for g in placements))
     chart = BoundaryChart(n_qubits=n_qubits, codes=tuple(embed), route=route,
                           label=route_label, space="ambient")
-    if chart.dim != head.dim * tail.dim:
+    want = 1
+    for f in factors:
+        want *= f.dim
+    if chart.dim != want:
         raise ProvenanceError(
             f"chart {route_label}: dim {chart.dim} != "
-            f"{head.dim}*{tail.dim}")
+            f"{'*'.join(str(f.dim) for f in factors)}")
     return chart
 
 
@@ -1674,34 +1740,232 @@ def localize_scatter(chart):
             f"no support to place a further factor beside")
     r.check_schedule()
     wires = tuple(w for g in r.placements for w in g)
-    head, tail = r.parts
-    codes = tuple((a << tail.n_qubits) | b
-                  for a in head.codes for b in tail.codes)
-    return len(wires), codes, wires
+    codes = []
+    for combo in _ordered_product(r.parts):
+        c = 0
+        shift = 0
+        for f, cd in zip(reversed(r.parts), reversed(combo)):
+            c |= cd << shift
+            shift += f.n_qubits
+        codes.append(c)
+    return len(wires), tuple(codes), wires
 
 
-def scatter_repart(head_wires, tail_wires, n_qubits):
-    """The Repart that lays two premise-local factors on ambient wires.
+def _ordered_product(parts):
+    combos = [()]
+    for f in parts:
+        combos = [c + (cd,) for c in combos for cd in f.codes]
+    return combos
+
+
+def scatter_repart(placements, n_qubits):
+    """The Repart that lays premise-local factors on ambient wires.
 
     Returns `(repart, placements)`. This is ONE possible repart -- the simple
     scatter -- and `par_then_repart` still checks its injectivity on the
     product rather than trusting it, so a repart that collides two ordered
-    pairs is refused instead of silently truncating the chart.
+    tuples is refused instead of silently truncating the chart.
     """
-    head_wires = tuple(head_wires)
-    tail_wires = tuple(tail_wires)
+    groups = tuple(tuple(g) for g in placements)
 
-    def repart(hc, tc):
+    def repart(*codes):
+        if len(codes) != len(groups):
+            raise ProvenanceError(
+                f"scatter: {len(codes)} factor codes for {len(groups)} "
+                f"placements")
         c = 0
-        for i, w in enumerate(head_wires):
-            if (hc >> (len(head_wires) - 1 - i)) & 1:
-                c |= 1 << (n_qubits - 1 - w)
-        for i, w in enumerate(tail_wires):
-            if (tc >> (len(tail_wires) - 1 - i)) & 1:
-                c |= 1 << (n_qubits - 1 - w)
+        for cd, g in zip(codes, groups):
+            for i, w in enumerate(g):
+                if (cd >> (len(g) - 1 - i)) & 1:
+                    c |= 1 << (n_qubits - 1 - w)
         return c
 
-    return repart, (head_wires, tail_wires)
+    return repart, groups
+
+
+def _bits_on(code, wires, n):
+    """The sub-code carried on `wires`, read in THEIR order."""
+    v = 0
+    for i, w in enumerate(wires):
+        v |= ((code >> (n - 1 - w)) & 1) << (len(wires) - 1 - i)
+    return v
+
+
+def tenpack(chart, r_p, theta):
+    """p^e |-> p^e theta^e, on ONE polarity. GATE-FREE.
+
+    `r_p` is this polarity's binder schedule (ambient wires, x then y) and
+    `theta` is a permutation of range(len(r_p)): ambient wire `r_p[i]` is
+    re-addressed to `r_p[theta[i]]`.
+
+    Only the ADDRESSING of the binder coordinate changes. Cardinality, factor
+    order, factor identity, ownership, sparse code order and every wire
+    outside `r_p` are untouched -- that is what gate-free means here. The
+    identity theta is a genuine no-op, so a derivation whose producer already
+    hands the port over in binder order is unaffected.
+    """
+    r = chart.route
+    if r is None or not r.reconstructible:
+        raise ProvenanceError(
+            f"chart {chart.label}: TenPack needs a recorded scatter schedule "
+            f"to re-address, this one is "
+            f"{'unrecorded' if r is None else repr(r.kind)}")
+    r.check_schedule()
+    r_p = tuple(r_p)
+    theta = tuple(theta)
+    if sorted(theta) != list(range(len(r_p))):
+        raise ProvenanceError(
+            f"TenPack: theta {theta} is not a permutation of the {len(r_p)} "
+            f"binder slots")
+    if len(set(r_p)) != len(r_p):
+        raise ProvenanceError(
+            f"TenPack: the binder schedule {r_p} repeats a wire")
+    for w in r_p:
+        if not (0 <= w < chart.n_qubits):
+            raise ProvenanceError(
+                f"TenPack: binder wire {w} outside a {chart.n_qubits}-wire "
+                f"register")
+    move = {w: w for w in range(chart.n_qubits)}
+    for i, w in enumerate(r_p):
+        move[w] = r_p[theta[i]]
+    places = tuple(tuple(move[w] for w in g) for g in r.placements)
+    rep, places = scatter_repart(places, chart.n_qubits)
+    packed = par_then_repart(r.parts, rep, chart.n_qubits, r.label,
+                             placements=places, kind="scatter")
+    packed.validate_joint()
+    return packed
+
+
+def tensor_splice(prod_in, prod_out, body_in, body_out, port_wires):
+    """Splice_{A(x)B}( producer , TenPack(body) ).
+
+    The producer's selected OUTPUT cut is matched against the packed body's
+    selected INPUT cut on the A(x)B port -- by their RECORDED ORDERED codes,
+    not by equal raw wire tuples -- and the external negative boundary is the
+    producer's selected INGRESS at the matched positions. The external
+    positive boundary is the packed body's egress, because the producer is
+    consumed by the cut and exports nothing.
+
+    Returns `(ingress, egress)`.
+    """
+    n = body_in.n_qubits
+    port = tuple(port_wires)
+    if prod_in.dim != prod_out.dim:
+        raise ProvenanceError(
+            f"Splice: the producer's ingress ({prod_in.dim}) and egress "
+            f"({prod_out.dim}) charts have different dimensions, so they "
+            f"record no correspondence to pull back along")
+    for ch, nm in ((prod_in, "producer ingress"), (prod_out, "producer "
+                                                             "egress")):
+        if ch.n_qubits != n:
+            raise ProvenanceError(
+                f"Splice: {nm} spans {ch.n_qubits} wires but the body spans "
+                f"{n}")
+    mask = 0
+    for w in port:
+        mask |= 1 << (n - 1 - w)
+    out_local = [_bits_on(c, port, n) for c in prod_out.codes]
+    codes = []
+    for bc in body_in.codes:
+        v = _bits_on(bc, port, n)
+        try:
+            k = out_local.index(v)
+        except ValueError:
+            raise ProvenanceError(
+                f"Splice: the packed body selects {v} on the A(x)B port, "
+                f"which the producer cannot supply -- its output codes there "
+                f"are {sorted(set(out_local))}")
+        rest = bc & ~mask
+        pin = prod_in.codes[k]
+        if pin & rest:
+            raise ProvenanceError(
+                f"Splice: the producer's ingress code {pin} overlaps the "
+                f"body's non-port selection {rest}; the two premises are not "
+                f"on disjoint resources")
+        codes.append(rest | pin)
+    if len(set(codes)) != len(codes):
+        raise ProvenanceError(
+            f"Splice: the composed ingress is not injective -- "
+            f"{len(codes)} selections collapse to {len(set(codes))}")
+
+    rt = body_in.route
+    route = ChartRoute(label=f"{rt.label}|splice", parts=rt.parts,
+                       embed=tuple(codes), kind=rt.kind,
+                       n_qubits=n, placements=rt.placements)
+    if route.reconstructible and route.reconstruct() != tuple(codes):
+        # The pullback is no longer a plain scatter of the body's factors.
+        # Recorded as correlated rather than described by a schedule that
+        # does not rebuild it.
+        route = ChartRoute(label=f"{rt.label}|splice", parts=rt.parts,
+                           embed=tuple(codes), kind="opaque", n_qubits=n)
+    ingress = BoundaryChart(n_qubits=n, codes=tuple(codes), route=route,
+                            label=route.label, space="ambient")
+    ingress.validate_joint()
+    return ingress, body_out
+
+
+@dataclass(frozen=True, slots=True)
+class TenPackSchedule:
+    """The binder schedules a canonical LetPair derivation records.
+
+    Four tuples, TWO PER POLARITY, recorded at their own moments: the x and y
+    binder placements as the body receives them, and again as the body leaves
+    them. They are never derived from one another -- reusing the negative
+    schedule on the positive side is the mistake this record exists to make
+    visible.
+
+        r_p^e = r_x^e followed by r_y^e          (x PRECEDES y)
+    """
+    r_x_in: Tuple[int, ...]
+    r_y_in: Tuple[int, ...]
+    r_x_out: Tuple[int, ...]
+    r_y_out: Tuple[int, ...]
+    complement_in: Tuple[int, ...] = ()
+    complement_out: Tuple[int, ...] = ()
+
+    def r_p(self, side: str) -> Tuple[int, ...]:
+        if side == "ingress":
+            return tuple(self.r_x_in) + tuple(self.r_y_in)
+        if side == "egress":
+            return tuple(self.r_x_out) + tuple(self.r_y_out)
+        raise ProvenanceError(f"unknown polarity {side!r}")
+
+    def complement(self, side: str) -> Tuple[int, ...]:
+        return tuple(self.complement_in if side == "ingress"
+                     else self.complement_out)
+
+    def check(self, side: str, ambient: int):
+        """Injectivity, range, and x-before-y, on ONE polarity."""
+        rx = tuple(self.r_x_in if side == "ingress" else self.r_x_out)
+        ry = tuple(self.r_y_in if side == "ingress" else self.r_y_out)
+        r_p = rx + ry
+        comp = self.complement(side)
+        # An EMPTY schedule is a genuine zero-wire pair (Unit (x) Unit), not
+        # a missing one; what is refused is a malformed one.
+        if len(set(r_p)) != len(r_p):
+            raise ProvenanceError(
+                f"TenPack {side}: the binder schedule {r_p} is not "
+                f"injective -- x and y would share a coordinate")
+        if len(set(comp)) != len(comp):
+            raise ProvenanceError(
+                f"TenPack {side}: the complement {comp} repeats a wire")
+        both = set(r_p) & set(comp)
+        if both:
+            raise ProvenanceError(
+                f"TenPack {side}: wire(s) {sorted(both)} are in both the "
+                f"binder schedule and its complement")
+        for label, ws in (("binder", r_p), ("complement", comp)):
+            for w in ws:
+                if not (0 <= w < ambient):
+                    raise ProvenanceError(
+                        f"TenPack {side}: {label} wire {w} outside an "
+                        f"ambient register of {ambient}")
+        # NOTE: "x precedes y" is not checkable here -- r_p is BUILT as
+        # rx + ry, so any test of it against itself is a tautology. The
+        # order is enforced where it is observable: the Splice matches r_p
+        # against the producer's own recorded A(x)B port placement, which a
+        # reversed schedule fails.
+        return r_p
 
 
 @dataclass(frozen=True, slots=True)
@@ -1721,6 +1985,10 @@ class SelectedBoundary:
     ingress: BoundaryChart
     egress: BoundaryChart
     origin: str
+    # The TenPack binder schedules, when this boundary came through one.
+    # Carried so a consumer can see WHICH schedule packed it, rather than
+    # having to trust that the two polarities were kept apart.
+    packing: object = None
 
     @staticmethod
     def from_frames(frame_in, frame_out, origin="frame-default",
