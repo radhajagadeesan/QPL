@@ -49,6 +49,7 @@ from lang.terms import (
 from lang.types import width, Arrow, Unit, Plus, Ten, pretty as _pretty_ty
 from dataclasses import dataclass as _dc_alias
 from compile.frames import (Frame, Sector, Port, canonical_frame,
+                            ProvenanceScope, ProvenanceError,
                             frames_agree, semantic_dim,
                             apply_wire_perm, with_spectators,
                             distl_frames, encode_qubit_frames,
@@ -92,6 +93,7 @@ class Artifact:
     perm_at_entry: tuple = ()
     perm_at_exit: tuple = ()
     plan: object = None          # PlusMapAlignPlan, when this occurrence has one
+    cut_id: object = None        # this OCCURRENCE's cut lineage, minted per visit
 
     @property
     def n_qubits(self) -> int:
@@ -379,7 +381,8 @@ def _lift_port(pt, local_to_block):
         return tuple(local_to_block[w] for w in ws)
     return Port(name=pt.name, logical=pt.logical, role=pt.role,
                 wires=mv(pt.wires),
-                by_sector=tuple((tv, mv(ws)) for tv, ws in pt.by_sector))
+                by_sector=tuple((tv, mv(ws)) for tv, ws in pt.by_sector),
+                owner_id=pt.owner_id, cut_id=pt.cut_id)
 
 
 def _lift_via_placement(codes, tag_value, n_qubits, local_to_block,
@@ -1717,6 +1720,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         """Emit `t` and return its EFFECTIVE artifact for this occurrence."""
         occ = _occurrence[0]
         _occurrence[0] += 1
+        # Minted per VISIT, so two occurrences of one AST object never share a
+        # cut lineage. Identity of the term object is deliberately not used.
+        # Forked per VISIT from the compile-scoped namespace, so two
+        # occurrences of one AST object never share a cut lineage and two
+        # sibling subcompiles cannot collide.
+        _cut_ids[occ] = _prov.fork().cut()
         try:
             fin, fout = select_frames(t)
         except UnsupportedFrame:
@@ -1738,7 +1747,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         art = Artifact(term=t, occurrence=occ, offset=offset,
                        input_frame=fin, output_frame=fout,
                        perm_at_entry=entry, perm_at_exit=tuple(p.new_to_old),
-                       plan=_plan_sink.pop(occ, None))
+                       plan=_plan_sink.pop(occ, None),
+                       cut_id=_cut_ids[occ])
         frame_registry[occ] = art
         artifacts.append(art)
         return art
@@ -1746,6 +1756,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
     artifacts = []
     _frame_override = {}
     _plan_sink = {}
+    _cut_ids = {}
+    _prov = ProvenanceScope()
     _cur_occ = [0]
     circ = Circuit(n)
     p = identity(n)

@@ -158,6 +158,121 @@ class Sector:
 PORT_ROLES = ("main", "payload", "tag", "context", "residual")
 
 
+# --- provenance identity ---------------------------------------------------
+#
+# Ownership and cut lineage are MINTED, never inferred. Two binders of the same
+# type get different owners; two occurrences of one AST object get different
+# cuts. Nothing here reads a type, a name, a wire, or a bit pattern -- those
+# were exactly the inference routes that produced untruthful artifacts.
+
+class ProvenanceScope:
+    """Deterministic, compile-scoped provenance namespace.
+
+    A module-global counter would make identities depend on whatever was
+    compiled before, so the same derivation would serialize differently across
+    runs and separately compiled branch artifacts could collide when combined.
+
+    Instead each compilation owns a root scope and FORKS a child per
+    occurrence. An identity is the scope's path plus a local ordinal:
+
+        own:0.2.1     cut:0.2.1
+
+    Reproducible, because it depends only on the traversal of the derivation.
+    Collision-free across siblings, because their paths differ. Distinct for
+    two occurrences of one AST object, because each visit forks its own scope.
+    No type, name, wire or bit geometry participates -- those were exactly the
+    inference routes that produced untruthful artifacts.
+    """
+
+    __slots__ = ("path", "_mints", "_forks")
+
+    def __init__(self, path: Tuple[int, ...] = ()):
+        self.path = tuple(path)
+        self._mints = 0
+        self._forks = 0
+
+    def fork(self) -> "ProvenanceScope":
+        """A child namespace. Siblings are disjoint by construction."""
+        self._forks += 1
+        return ProvenanceScope(self.path + (self._forks,))
+
+    def _next(self, kind: str) -> str:
+        self._mints += 1
+        tail = ".".join(str(x) for x in self.path + (self._mints,))
+        return f"{kind}:{tail}"
+
+    def owner(self) -> str:
+        """A fresh binder identity within this scope."""
+        return self._next("own")
+
+    def cut(self) -> str:
+        """A fresh cut identity within this scope."""
+        return self._next("cut")
+
+    def __repr__(self):
+        return f"ProvenanceScope({'.'.join(str(x) for x in self.path) or '/'})"
+
+
+class ProvenanceError(Exception):
+    """Missing, duplicated or ambiguous ownership / cut lineage."""
+
+
+def completion_factor(port: "Port") -> int:
+    """How much a live port multiplies the completed dimension.
+
+    A true Unit spectator contributes 1. Anything else contributes its own
+    semantic dimension -- f : Q-oQ contributes 4, EndoOp contributes 16.
+    """
+    if isinstance(port.logical, Unit):
+        return 1
+    return semantic_dim(port.logical)
+
+
+def completed_dimension(frame: "Frame") -> int:
+    """frame.dim times each DISTINCT live completion factor, once.
+
+    Distinctness is decided by recorded provenance -- (owner_id, cut_id) --
+    and by nothing else. Never by type, name, wires or basis geometry: two
+    equal-typed binders are two resources, and one binder mentioned twice is
+    one resource.
+
+    Raises rather than guessing on missing provenance, conflicting ownership,
+    or a sector-conditioned context (an outer context must be represented once,
+    unconditionally, not per sector).
+    """
+    total = frame.dim
+    seen = {}
+    for p in frame.ports:
+        if p.role not in ("context", "residual"):
+            continue
+        factor = completion_factor(p)
+        if factor == 1:
+            continue                      # true Unit/padding spectator
+        if p.owner_id is None or p.cut_id is None:
+            raise ProvenanceError(
+                f"live {p.role} port {p.name!r} of type "
+                f"{pretty(p.logical)} has no "
+                f"{'owner_id' if p.owner_id is None else 'cut_id'}; the "
+                f"completed dimension cannot be computed without provenance, "
+                f"and inferring it from type or wires is what produced "
+                f"untruthful artifacts")
+        if p.by_sector:
+            raise ProvenanceError(
+                f"live {p.role} port {p.name!r} is sector-conditioned "
+                f"{p.by_sector}; an outer context must be represented once, "
+                f"unconditionally, not copied per sector")
+        key = (p.owner_id, p.cut_id)
+        if key in seen:
+            if seen[key] != factor:
+                raise ProvenanceError(
+                    f"owner {p.owner_id} at cut {p.cut_id} appears with "
+                    f"conflicting completion factors {seen[key]} and {factor}")
+            continue                      # one resource mentioned twice
+        seen[key] = factor
+        total *= factor
+    return total
+
+
 @dataclass(frozen=True)
 class Port:
     """A placement of a sub-interface within a frame.
@@ -178,6 +293,8 @@ class Port:
     wires: Tuple[int, ...] = ()
     role: str = "main"
     by_sector: Tuple[Tuple[int, Tuple[int, ...]], ...] = ()
+    owner_id: Optional[str] = None      # which BINDER owns this resource
+    cut_id: Optional[str] = None        # which CUT this placement belongs to
 
     def __post_init__(self):
         if self.role not in PORT_ROLES:
@@ -218,7 +335,8 @@ class Port:
     def to_json(self) -> dict:
         return {"name": self.name, "logical": ty_to_json(self.logical),
                 "wires": list(self.wires), "role": self.role,
-                "by_sector": [[t, list(w)] for t, w in self.by_sector]}
+                "by_sector": [[t, list(w)] for t, w in self.by_sector],
+                "owner_id": self.owner_id, "cut_id": self.cut_id}
 
     @staticmethod
     def from_json(j: dict) -> "Port":
@@ -226,7 +344,9 @@ class Port:
                     tuple(int(w) for w in j.get("wires", [])),
                     j.get("role", "main"),
                     tuple((int(t), tuple(int(x) for x in w))
-                          for t, w in j.get("by_sector", [])))
+                          for t, w in j.get("by_sector", [])),
+                    owner_id=j.get("owner_id"),
+                    cut_id=j.get("cut_id"))
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +669,11 @@ class Frame:
         """Semantic dimension (number of valid codewords)."""
         return len(self.codes)
 
+    @property
+    def completed_dimension(self) -> int:
+        """`dim` completed by each distinct live context/residual factor."""
+        return completed_dimension(self)
+
     def encode(self, label: int) -> int:
         """Physical basis index of semantic basis label `label`."""
         return self.codes[label]
@@ -677,10 +802,13 @@ def tensor_frame(left: Frame, right: Frame, label: str = "") -> Frame:
         Port(f"r.{pt.name}", pt.logical,
              tuple(w + left.n_qubits for w in pt.wires), pt.role,
              tuple((tg, tuple(w + left.n_qubits for w in ws))
-                   for tg, ws in pt.by_sector))
+                   for tg, ws in pt.by_sector),
+             owner_id=pt.owner_id, cut_id=pt.cut_id)
         for pt in right.ports)
     lports = tuple(Port(f"l.{pt.name}", pt.logical, pt.wires, pt.role,
-                        pt.by_sector) for pt in left.ports)
+                        pt.by_sector,
+                        owner_id=pt.owner_id, cut_id=pt.cut_id)
+                   for pt in left.ports)
     return Frame(
         logical=Ten(left.logical, right.logical),
         n_qubits=left.n_qubits + right.n_qubits,
@@ -846,7 +974,8 @@ def apply_wire_perm(frame: "Frame", new_to_old, label: str = "") -> "Frame":
     ports = tuple(
         Port(prt.name, prt.logical,
              tuple(inv[w] for w in prt.wires), prt.role,
-             tuple((t, tuple(inv[w] for w in ws)) for t, ws in prt.by_sector))
+             tuple((t, tuple(inv[w] for w in ws)) for t, ws in prt.by_sector),
+             owner_id=prt.owner_id, cut_id=prt.cut_id)
         for prt in frame.ports)
     return Frame(logical=frame.logical, n_qubits=n, codes=codes,
                  expr=FCompose(frame.expr, FWirePerm(tuple(new_to_old))),
@@ -1060,3 +1189,111 @@ def distributor_frames(a: Ty, b: Ty, c: Ty, ctor: str):
     if ctor.startswith("Undist"):
         fin, fout = fout, fin
     return fin, fout
+
+
+# ---------------------------------------------------------------------------
+# Occurrence placement (Stage G1: data model only -- nothing consults it yet)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class SidePlacement:
+    """ONE boundary side of an occurrence: ingress or egress.
+
+    The two sides are represented independently -- separate cut ids, separate
+    local-to-ambient injections, separate reservations, separate ports. Every
+    transport phase so far turned on the fact that inferring one side from the
+    other is wrong, and a single shared `local_to_ambient` would rebuild
+    exactly that mistake.
+
+    The reservations are what let the main placement be selected AROUND an
+    owned context: a context port on wire 0 is representable simply by putting
+    tag/main/payload elsewhere.
+    """
+    cut_id: str
+    ambient_width: int
+    local_to_ambient: Tuple[int, ...] = ()
+    tag_wires: Tuple[int, ...] = ()
+    main_wires: Tuple[int, ...] = ()
+    payload_wires: Tuple[int, ...] = ()
+    ports: Tuple[Port, ...] = ()
+
+    def __post_init__(self):
+        n = self.ambient_width
+        if not isinstance(n, int) or n < 0:
+            raise ProvenanceError(f"bad ambient width {n!r}")
+        if not self.cut_id:
+            raise ProvenanceError("a side placement carries no cut_id")
+
+        def _check(name, ws):
+            if len(set(ws)) != len(ws):
+                raise ProvenanceError(f"{name} is not injective: {ws}")
+            for w in ws:
+                if not (0 <= w < n):
+                    raise ProvenanceError(
+                        f"{name} claims wire {w} outside an ambient register "
+                        f"of {n}")
+
+        _check("local_to_ambient", self.local_to_ambient)
+        reserved = {}
+        for name, ws in (("tag", self.tag_wires), ("main", self.main_wires),
+                         ("payload", self.payload_wires)):
+            _check(name, ws)
+            for w in ws:
+                if w in reserved:
+                    raise ProvenanceError(
+                        f"wire {w} is reserved by both {reserved[w]} and "
+                        f"{name}")
+                reserved[w] = name
+
+        claimed = {}
+        for p in self.ports:
+            live = not isinstance(p.logical, Unit)
+            if live and (p.owner_id is None or p.cut_id is None):
+                raise ProvenanceError(
+                    f"live port {p.name!r} carries no owner_id/cut_id")
+            if p.cut_id is not None and p.cut_id != self.cut_id:
+                raise ProvenanceError(
+                    f"port {p.name!r} belongs to cut {p.cut_id} but sits on "
+                    f"the side whose cut is {self.cut_id}")
+            key = (p.owner_id, p.cut_id)
+            for w in p.all_wires():
+                if not (0 <= w < n):
+                    raise ProvenanceError(
+                        f"port {p.name!r} claims wire {w} outside the ambient "
+                        f"register")
+                if live and w in reserved:
+                    raise ProvenanceError(
+                        f"live completion port {p.name!r} collides with this "
+                        f"side's {reserved[w]} coordinate at wire {w}")
+                prev = claimed.get(w)
+                if prev is not None and prev != key:
+                    raise ProvenanceError(
+                        f"wire {w} is claimed by two distinct owner/cut pairs "
+                        f"{prev} and {key}")
+                claimed[w] = key
+
+    def ambient(self, local_wire: int) -> int:
+        """Local wire -> ambient wire. A lookup, never a recomputation."""
+        return self.local_to_ambient[local_wire]
+
+
+@dataclass(frozen=True, slots=True)
+class OccurrencePlacement:
+    """Where one occurrence's LOCAL frames sit inside an ambient register.
+
+    The branch artifact's own frames stay local; ambient context lives here,
+    never in the branch-local `Frame.codes`.
+    """
+    ingress: SidePlacement
+    egress: SidePlacement
+
+    def __post_init__(self):
+        if self.ingress.ambient_width != self.egress.ambient_width:
+            raise ProvenanceError(
+                f"ingress and egress disagree on the ambient register "
+                f"({self.ingress.ambient_width} vs "
+                f"{self.egress.ambient_width})")
+
+    @property
+    def ambient_width(self) -> int:
+        return self.ingress.ambient_width
