@@ -1836,72 +1836,191 @@ def tenpack(chart, r_p, theta):
     return packed
 
 
-def tensor_splice(prod_in, prod_out, body_in, body_out, port_wires):
+def check_spine_residual(route, expected_cod, where=""):
+    """The terminal residual must be the head's own codomain.
+
+    A pure, directly testable guard: equal dimension is never evidence, so an
+    application refuses to replace a terminal residual the derivation does
+    not identify with its head. Returns the residual factor.
+    """
+    res = route.residual
+    if res.logical != expected_cod:
+        raise ProvenanceError(
+            f"{where or 'spine'}: the terminal residual is typed "
+            f"{pretty(res.logical) if res.logical is not None else None}, "
+            f"not the head's codomain "
+            f"{pretty(expected_cod) if expected_cod is not None else None}; "
+            f"refusing to replace a residual the derivation does not "
+            f"identify with this application's head")
+    return res
+
+
+def _matched_factor(chart, tensor_ty, where):
+    """The producer factor the tensor cut consumes.
+
+    Identified by RECORDED STRUCTURE -- the unique factor whose role is
+    "residual" and whose logical type is the tensor being eliminated. Never
+    by width, dimension, varying bits, name or position: a producer may carry
+    unmatched operand factors of the same dimension, and in a neutral
+    application it does.
+    """
+    r = chart.route
+    if r is None or not r.parts:
+        raise ProvenanceError(
+            f"{where}: the producer records no factored boundary, so the "
+            f"tensor port cannot be identified")
+    hits = [i for i, f in enumerate(r.parts)
+            if f.role == "residual" and f.logical == tensor_ty]
+    if not hits:
+        raise ProvenanceError(
+            f"{where}: no producer factor is a residual of type "
+            f"{pretty(tensor_ty)}; its factors are "
+            f"{[(f.name, f.role, pretty(f.logical) if f.logical is not None else None) for f in r.parts]}")
+    if len(hits) > 1:
+        raise ProvenanceError(
+            f"{where}: {len(hits)} producer factors are classified as the "
+            f"residual of type {pretty(tensor_ty)}; the derivation does not "
+            f"say which one the cut consumes")
+    return hits[0]
+
+
+def tensor_splice(prod_in, prod_out, body_in, body_out, tensor_ty):
     """Splice_{A(x)B}( producer , TenPack(body) ).
 
-    The producer's selected OUTPUT cut is matched against the packed body's
-    selected INPUT cut on the A(x)B port -- by their RECORDED ORDERED codes,
-    not by equal raw wire tuples -- and the external negative boundary is the
-    producer's selected INGRESS at the matched positions. The external
-    positive boundary is the packed body's egress, because the producer is
-    consumed by the cut and exports nothing.
+    The producer's boundary is NOT assumed to be the tensor port. Its matched
+    factor is located by recorded role and logical type; every other producer
+    factor is an unmatched prefix that must survive the cut. This is the
+    ordinary case, not an exotic one: a neutral application `f a` producing
+    A(x)B has boundary S_a (x) Y_{A(x)B}, and only Y is consumed.
+
+    The composition is a RELATIONAL JOIN on the matched port:
+
+        producer-prefix x matched-port    join    matched-port x body
+        =====================================================
+                  producer-prefix x body
+
+    Because each port label occurs once per prefix coordinate, that
+    projection is deliberately many-to-one, and a first-match lookup would
+    silently keep one prefix coordinate and drop the rest.
 
     Returns `(ingress, egress)`.
     """
     n = body_in.n_qubits
-    port = tuple(port_wires)
     if prod_in.dim != prod_out.dim:
         raise ProvenanceError(
             f"Splice: the producer's ingress ({prod_in.dim}) and egress "
             f"({prod_out.dim}) charts have different dimensions, so they "
             f"record no correspondence to pull back along")
-    for ch, nm in ((prod_in, "producer ingress"), (prod_out, "producer "
-                                                             "egress")):
+    for ch, nm in ((prod_in, "producer ingress"), (prod_out, "producer egress"),
+                   (body_out, "body egress")):
         if ch.n_qubits != n:
             raise ProvenanceError(
                 f"Splice: {nm} spans {ch.n_qubits} wires but the body spans "
                 f"{n}")
+    m = _matched_factor(prod_out, tensor_ty, "Splice egress")
+    m_in = _matched_factor(prod_in, tensor_ty, "Splice ingress")
+    if m_in != m:
+        raise ProvenanceError(
+            f"Splice: the matched tensor factor is at position {m_in} on the "
+            f"producer's ingress and {m} on its egress; the two polarities "
+            f"do not agree on what the cut consumes")
+    ro, ri = prod_out.route, prod_in.route
+    port = tuple(ro.placements[m])
+    if tuple(ri.placements[m]) != port:
+        raise ProvenanceError(
+            f"Splice: the matched factor sits on {ri.placements[m]} at "
+            f"ingress and {port} at egress; a cut consumes one resource")
+
     mask = 0
     for w in port:
         mask |= 1 << (n - 1 - w)
-    out_local = [_bits_on(c, port, n) for c in prod_out.codes]
+    # Group the producer's positions by the port label they carry. The groups
+    # are the prefix coordinates for that label, IN PRODUCER ORDER.
+    by_label = {}
+    for k, c in enumerate(prod_out.codes):
+        by_label.setdefault(_bits_on(c, port, n), []).append(k)
+
     codes = []
+    pairs = []
     for bc in body_in.codes:
         v = _bits_on(bc, port, n)
-        try:
-            k = out_local.index(v)
-        except ValueError:
+        ks = by_label.get(v)
+        if not ks:
             raise ProvenanceError(
                 f"Splice: the packed body selects {v} on the A(x)B port, "
-                f"which the producer cannot supply -- its output codes there "
-                f"are {sorted(set(out_local))}")
-        rest = bc & ~mask
-        pin = prod_in.codes[k]
-        if pin & rest:
-            raise ProvenanceError(
-                f"Splice: the producer's ingress code {pin} overlaps the "
-                f"body's non-port selection {rest}; the two premises are not "
-                f"on disjoint resources")
-        codes.append(rest | pin)
+                f"which the producer cannot supply -- its output labels "
+                f"there are {sorted(by_label)}")
+        pairs.append((bc, ks))
+    # producer-prefix MAJOR, body minor: the surviving producer factors lead.
+    width = len(next(iter(by_label.values())))
+    for j in range(width):
+        for bc, ks in pairs:
+            if len(ks) != width:
+                raise ProvenanceError(
+                    f"Splice: the producer's port projection is uneven "
+                    f"({len(ks)} against {width} positions); the prefix does "
+                    f"not factor through the port")
+            rest = bc & ~mask
+            pin = prod_in.codes[ks[j]]
+            if pin & rest:
+                raise ProvenanceError(
+                    f"Splice: the producer's ingress code {pin} overlaps the "
+                    f"body's non-port selection {rest}; the two premises are "
+                    f"not on disjoint resources")
+            codes.append(pin | rest)
     if len(set(codes)) != len(codes):
         raise ProvenanceError(
             f"Splice: the composed ingress is not injective -- "
             f"{len(codes)} selections collapse to {len(set(codes))}")
 
-    rt = body_in.route
-    route = ChartRoute(label=f"{rt.label}|splice", parts=rt.parts,
-                       embed=tuple(codes), kind=rt.kind,
-                       n_qubits=n, placements=rt.placements)
-    if route.reconstructible and route.reconstruct() != tuple(codes):
-        # The pullback is no longer a plain scatter of the body's factors.
-        # Recorded as correlated rather than described by a schedule that
-        # does not rebuild it.
-        route = ChartRoute(label=f"{rt.label}|splice", parts=rt.parts,
+    prefix_in = tuple(f for i, f in enumerate(ri.parts) if i != m)
+    prefix_in_pl = tuple(pl for i, pl in enumerate(ri.placements) if i != m)
+    prefix_out = tuple(f for i, f in enumerate(ro.parts) if i != m)
+    prefix_out_pl = tuple(pl for i, pl in enumerate(ro.placements) if i != m)
+
+    ingress = _joined_chart(codes, prefix_in + body_in.route.parts,
+                            prefix_in_pl + body_in.route.placements, n,
+                            f"{body_in.route.label}|splice")
+    # The egress keeps the producer's surviving factors beside the body's own
+    # output; the matched port was consumed by the cut and exports nothing.
+    egress = _par_of(prefix_out + body_out.route.parts,
+                     prefix_out_pl + body_out.route.placements, n,
+                     f"{body_out.route.label}|splice", body_out)
+    return ingress, egress
+
+
+def _joined_chart(codes, parts, placements, n, label):
+    """A chart on `codes`, described by `parts` when the schedule rebuilds it.
+
+    A join need not stay a plain scatter of its factors; when it does not, the
+    encoding is recorded as correlated rather than described by a schedule
+    that does not reproduce it.
+    """
+    route = ChartRoute(label=label, parts=tuple(parts), embed=tuple(codes),
+                       kind="scatter", n_qubits=n,
+                       placements=tuple(placements))
+    try:
+        ok = route.reconstruct() == tuple(codes)
+    except ProvenanceError:
+        ok = False
+    if not ok:
+        route = ChartRoute(label=label, parts=tuple(parts),
                            embed=tuple(codes), kind="opaque", n_qubits=n)
-    ingress = BoundaryChart(n_qubits=n, codes=tuple(codes), route=route,
-                            label=route.label, space="ambient")
-    ingress.validate_joint()
-    return ingress, body_out
+    ch = BoundaryChart(n_qubits=n, codes=tuple(codes), route=route,
+                       label=label, space="ambient")
+    ch.validate_joint()
+    return ch
+
+
+def _par_of(parts, placements, n, label, fallback):
+    """Par of the surviving producer factors with the body's own factors."""
+    if not parts:
+        return fallback
+    rep, pl = scatter_repart(placements, n)
+    ch = par_then_repart(tuple(parts), rep, n, label, placements=pl,
+                         kind="scatter")
+    ch.validate_joint()
+    return ch
 
 
 @dataclass(frozen=True, slots=True)

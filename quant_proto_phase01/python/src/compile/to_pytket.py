@@ -57,6 +57,7 @@ from compile.frames import (Frame, Sector, Port, canonical_frame,
                             localize_scatter,
                             SelectedBoundary, TenPackSchedule,
                             tenpack, tensor_splice,
+                            _matched_factor, check_spine_residual,
                             frames_agree, semantic_dim,
                             apply_wire_perm, with_spectators,
                             distl_frames, encode_qubit_frames,
@@ -1692,7 +1693,7 @@ def _is_neutral_spine(t: Term) -> bool:
     return isinstance(t, Var)
 
 
-def _ambient_chart(chart, wires, n):
+def _ambient_chart(chart, wires, n, logical=None):
     """A premise-local chart lifted onto its OWN recorded ambient wires.
 
     A chart that is already ambient is returned as it stands. Nothing is
@@ -1709,7 +1710,8 @@ def _ambient_chart(chart, wires, n):
             f"the chart is {chart.n_qubits} qubits but its recorded "
             f"placement names {len(wires)} wires {wires}")
     f = ChartFactor(name=chart.label or "port", owner=None,
-                    n_qubits=chart.n_qubits, codes=tuple(chart.codes))
+                    n_qubits=chart.n_qubits, codes=tuple(chart.codes),
+                    role="residual", logical=logical)
     rep, places = scatter_repart((wires,), n)
     return par_then_repart((f,), rep, n, chart.label or "port",
                            placements=places, kind="scatter")
@@ -2190,7 +2192,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             out.append(_binding_cache[key])
         return tuple(out)
 
-    def _letpair_splice(pair_art, body_art, sched, offset, pw):
+    def _letpair_splice(pair_art, body_art, sched, offset, pw,
+                        tensor_ty):
         """Splice_{A(x)B}( pair_art , TenPack_N(body_art) ).
 
         TenPack is GATE-FREE: it repackages the body's two binder resources
@@ -2238,13 +2241,26 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         # the two orders rather than assumed to be the identity, so a
         # producer that delivers the port in a different order is packed
         # through a real re-addressing instead of being rejected or ignored.
-        matched = tuple(pair_art.egress_wires)
+        # The A(x)B port is the producer's MATCHED FACTOR, not its whole
+        # selected boundary: a neutral application `f a` producing A(x)B has
+        # boundary S_a (x) Y_{A(x)B}, and only Y is consumed. The factor is
+        # located by recorded role and logical type, and its own recorded
+        # placement is the port.
+        prod_in = _ambient_chart(pair_art.selected_boundary.ingress,
+                                 pair_art.ingress_wires, reg,
+                                 logical=pair_art.input_frame.logical)
+        prod_out = _ambient_chart(pair_art.selected_boundary.egress,
+                                  pair_art.egress_wires, reg,
+                                  logical=pair_art.output_frame.logical)
+        _mi = _matched_factor(prod_out, tensor_ty, "LetPair")
+        matched = tuple(prod_out.route.placements[_mi])
         r_p_in = sched.r_p("ingress")
         if set(matched) != set(r_p_in) or len(matched) != len(r_p_in):
             raise TypeCheckError(
-                f"LetPair: the producer hands over {matched} but the binder "
-                f"schedule is {r_p_in}; the A(x)B port and the pair "
-                f"coordinate must be the same resource")
+                f"LetPair: the producer's matched {pretty(tensor_ty)} factor "
+                f"sits on {matched} but the binder schedule is {r_p_in}; the "
+                f"A(x)B port and the pair coordinate must be the same "
+                f"resource")
         theta_in = tuple(r_p_in.index(w) for w in matched)
         theta_out = tuple(range(len(sched.r_p("egress"))))
 
@@ -2260,15 +2276,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         packed_in = tenpack(body_in, r_p_in, theta_in)
         packed_out = tenpack(body_out, sched.r_p("egress"), theta_out)
 
-        # Splice: compose the producer's selected output cut with the packed
-        # body input cut, so the external negative boundary is the PRODUCER's
-        # selected ingress pulled back along that correspondence.
-        prod_in = _ambient_chart(pair_art.selected_boundary.ingress,
-                                 pair_art.ingress_wires, reg)
-        prod_out = _ambient_chart(pair_art.selected_boundary.egress,
-                                  pair_art.egress_wires, reg)
+        # Splice: join the producer's selected output cut with the packed
+        # body input cut on the matched port, so the external negative
+        # boundary is the producer's selected ingress and every unmatched
+        # producer factor survives.
         ing, egr = tensor_splice(prod_in, prod_out, packed_in, packed_out,
-                                 matched)
+                                 tensor_ty)
         return SelectedBoundary(ingress=ing, egress=egr,
                                 origin="letpair:splice", packing=sched)
 
@@ -4787,17 +4800,13 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         f"Apply: the head records a {side} boundary that is "
                         f"not a canonical spine, so its operand prefix "
                         f"cannot be carried")
-                res = rt.residual
                 # The terminal residual is replaced only when its RECORDED
                 # logical type is the head's own arrow type. Equal dimension
                 # is not evidence: S_h (x) Y_Endo and S_h (x) S_y (x) Y_Q are
-                # both dimension 16.
-                if res.logical != f_cod:
-                    raise TypeCheckError(
-                        f"Apply: the head's terminal residual is typed "
-                        f"{res.logical}, not the head's codomain {f_cod}; "
-                        f"refusing to replace a residual the derivation does "
-                        f"not identify with this application's head")
+                # both dimension 16. The guard is a pure function so it can
+                # be tested directly rather than only through a mutation no
+                # reachable derivation exercises.
+                res = check_spine_residual(rt, f_cod, "Apply")
                 keep = tuple((f, pl) for f, pl in zip(rt.parts, rt.placements)
                              if f is not res)
                 return tuple(f for f, _ in keep), tuple(pl for _, pl in keep)
@@ -4993,7 +5002,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 r_x_out=_rx_out, r_y_out=_ry_out,
                 complement_in=_comp_in, complement_out=_comp_out)
             _boundary_sink[_cur_occ[0]] = _letpair_splice(
-                _a_pair, _a_body, _sched, offset, x_width + y_width)
+                _a_pair, _a_body, _sched, offset, x_width + y_width,
+                Ten(t.ty_x, t.ty_y))
             if explain:
                 log.append(f"LetPair: {t.x} phys={x_phys}, "
                           f"{t.y} phys={y_phys}, body at offset {offset}")

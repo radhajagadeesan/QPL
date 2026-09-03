@@ -409,22 +409,56 @@ def test_I16_tensor_yank_producers_are_exact(materialize):
             atol=ATOL, rtol=0.0)
 
 
-def test_I17_a_routed_var_producer_is_not_ignored():
-    """The nested LetPair's producer is a Var that ROUTES its wires. The
-    Splice matches against the producer's own recorded egress placement, so
-    the routing is honoured rather than assumed to be the slot."""
-    _, arts = compile_with_artifacts(curried_spine(), materialize=False)
-    lps = [a for a in arts if a.selected_boundary.origin == "letpair:splice"]
-    assert len(lps) == 2
-    inner = min(lps, key=lambda a: a.occurrence
-                if a.occurrence != 0 else 10 ** 9)
-    prod = [a for a in arts if isinstance(a.term, Var)
-            and a.cut_id is not None]
-    assert prod, "expected a Var producer"
-    # the recorded schedule IS the producer's recorded egress placement
-    sched = inner.selected_boundary.packing
-    assert sched is not None
-    assert len(sched.r_p("ingress")) == len(set(sched.r_p("ingress")))
+def test_I17_the_matched_port_is_the_producers_classified_factor():
+    """REPLACES a weak existential check that only asserted r_p was
+    injective. The port is the producer's factor whose RECORDED role is
+    residual and whose logical type is the tensor being eliminated -- not its
+    whole selected boundary, and not its egress_wires."""
+    from compile.frames import _matched_factor
+    for mk in (simple_spine, pair_yank, curried_spine,
+               neutral_tensor_producer):
+        _, arts = compile_with_artifacts(mk(), materialize=False)
+        for lp in [a for a in arts
+                   if a.selected_boundary.origin == "letpair:splice"]:
+            producer = next(a for a in arts if a.term is lp.term.pair)
+            n = lp.selected_boundary.ingress.n_qubits
+            tt = Ten(lp.term.ty_x, lp.term.ty_y)
+            pout = _lift(producer.selected_boundary.egress,
+                         producer.egress_wires, n,
+                         producer.output_frame.logical)
+            m = _matched_factor(pout, tt, "test")
+            f = pout.route.parts[m]
+            assert f.role == "residual" and f.logical == tt
+            port = tuple(pout.route.placements[m])
+            assert port == lp.selected_boundary.packing.r_p("ingress"), (
+                f"{mk.__name__}: the matched factor sits on {port} but the "
+                f"binder schedule is "
+                f"{lp.selected_boundary.packing.r_p('ingress')}")
+
+
+def test_I17b_an_unclassifiable_producer_fails_closed():
+    """No matched factor, or two of them, must raise rather than guess."""
+    from compile.frames import _matched_factor
+    tt = Ten(q, q)
+    op = ChartFactor(name="S", owner="cut:a", n_qubits=2, codes=(0, 1, 2, 3),
+                     role="operand", logical=tt)
+    rep, pl = scatter_repart(((0, 1),), 2)
+    only_operand = par_then_repart((op,), rep, 2, "x", placements=pl,
+                                   kind="scatter")
+    with pytest.raises(ProvenanceError) as e:
+        _matched_factor(only_operand, tt, "test")
+    assert "no producer factor" in str(e.value)
+
+    r1 = ChartFactor(name="Y1", owner="cut:a", n_qubits=1, codes=(0, 1),
+                     role="residual", logical=tt)
+    r2 = ChartFactor(name="Y2", owner="cut:b", n_qubits=1, codes=(0, 1),
+                     role="residual", logical=tt)
+    rep2, pl2 = scatter_repart(((0,), (1,)), 2)
+    two = par_then_repart((r1, r2), rep2, 2, "x", placements=pl2,
+                          kind="scatter")
+    with pytest.raises(ProvenanceError) as e:
+        _matched_factor(two, tt, "test")
+    assert "2 producer factors" in str(e.value)
 
 
 # ===========================================================================
@@ -646,11 +680,13 @@ def test_I26_splice_uses_the_producers_selected_ingress():
     the wrong answer.
     """
     port = (0, 1)
-    a = ChartFactor(name="A", owner="cut:a", n_qubits=2, codes=(0, 1, 2, 3))
+    tt = Ten(q, q)
+    a = ChartFactor(name="A", owner="cut:a", n_qubits=2, codes=(0, 1, 2, 3),
+                    role="residual", logical=tt)
     # producer: output code i corresponds to input code REVERSED
     prod_out = _chart(None, (port,), (a,))
     a_rev = ChartFactor(name="A", owner="cut:a", n_qubits=2,
-                        codes=(3, 2, 1, 0))
+                        codes=(3, 2, 1, 0), role="residual", logical=tt)
     prod_in = _chart(None, (port,), (a_rev,))
     assert prod_in.codes != prod_out.codes
 
@@ -658,7 +694,7 @@ def test_I26_splice_uses_the_producers_selected_ingress():
     body_in = _chart(None, (port,), (body_f,))
     body_out = _chart(None, (port,), (body_f,))
 
-    ing, egr = tensor_splice(prod_in, prod_out, body_in, body_out, port)
+    ing, egr = tensor_splice(prod_in, prod_out, body_in, body_out, tt)
     # body selects producer-output positions 0 and 2, whose producer INPUTS
     # are codes 3 and 1, i.e. ambient 3<<1 = 6 and 1<<1 = 2.
     assert ing.codes == (6, 2), (
@@ -671,14 +707,16 @@ def test_I26_splice_uses_the_producers_selected_ingress():
 
 def test_I27_splice_refuses_a_body_code_the_producer_cannot_supply():
     port = (0, 1)
-    a = ChartFactor(name="A", owner="cut:a", n_qubits=2, codes=(0, 1))
+    tt = Ten(q, q)
+    a = ChartFactor(name="A", owner="cut:a", n_qubits=2, codes=(0, 1),
+                    role="residual", logical=tt)
     prod_in = _chart(None, (port,), (a,))
     prod_out = _chart(None, (port,), (a,))
     unreachable = ChartFactor(name="S", owner="cut:b", n_qubits=2,
                               codes=(0, 3))
     body = _chart(None, (port,), (unreachable,))
     with pytest.raises(ProvenanceError) as e:
-        tensor_splice(prod_in, prod_out, body, body, port)
+        tensor_splice(prod_in, prod_out, body, body, tt)
     assert "cannot supply" in str(e.value) or "not produced" in str(e.value)
 
 
@@ -706,7 +744,12 @@ def test_I28_letpair_root_is_the_splice_of_its_two_immediate_premises(
             body = next(a for a in arts if a.term is lp.term.body)
             sched = lp.selected_boundary.packing
             n = lp.selected_boundary.ingress.n_qubits
-            port = tuple(producer.egress_wires)
+            pout = _lift(producer.selected_boundary.egress,
+                         producer.egress_wires, n,
+                         producer.output_frame.logical)
+            from compile.frames import _matched_factor
+            port = tuple(pout.route.placements[
+                _matched_factor(pout, Ten(lp.term.ty_x, lp.term.ty_y), "t")])
             r_p = sched.r_p("ingress")
             theta_in = tuple(r_p.index(w) for w in port)
             packed_in = tenpack(body.selected_boundary.ingress, r_p, theta_in)
@@ -715,19 +758,21 @@ def test_I28_letpair_root_is_the_splice_of_its_two_immediate_premises(
                                  tuple(range(len(sched.r_p("egress")))))
             ing, egr = tensor_splice(
                 _lift(producer.selected_boundary.ingress,
-                      producer.ingress_wires, n),
+                      producer.ingress_wires, n,
+                      producer.input_frame.logical),
                 _lift(producer.selected_boundary.egress,
-                      producer.egress_wires, n),
-                packed_in, packed_out, port)
+                      producer.egress_wires, n,
+                      producer.output_frame.logical),
+                packed_in, packed_out, Ten(lp.term.ty_x, lp.term.ty_y))
             assert lp.selected_boundary.ingress.codes == ing.codes, (
                 f"{mk.__name__}: the root ingress is not the Splice of this "
                 f"LetPair's two immediate premises")
             assert lp.selected_boundary.egress.codes == egr.codes
 
 
-def _lift(chart, wires, n):
+def _lift(chart, wires, n, logical=None):
     from compile.to_pytket import _ambient_chart
-    return _ambient_chart(chart, wires, n)
+    return _ambient_chart(chart, wires, n, logical=logical)
 
 
 def _bits(code, wires, n):
@@ -849,22 +894,19 @@ def test_I34b_splice_under_a_non_involutive_pending_permutation(materialize):
             "the transport never ran")
 
 
-def test_I36_compilation_actually_invokes_the_splice_with_the_producer():
-    """A body-copy is observationally equal END TO END here.
+def test_I36_splice_is_invoked_with_the_exact_producer_charts():
+    """The arguments must BE the immediate producer artifact's lifted charts.
 
-    Every tensor producer this compiler can reach is a whole-port yank whose
-    ingress/egress correspondence is the identity, so Splice(producer, packed
-    body) and the packed body have the same codes. That is a fact about the
-    reachable derivations, not a licence to skip the composition -- so the
-    call itself is pinned, with the producer's own charts as its arguments.
-    I26 is what proves the composition is producer-sensitive.
+    A body-copy is observationally equal end to end for a whole-port yank, so
+    the call and its arguments are pinned rather than only its result. I26
+    and I41 are what prove the composition itself is producer-sensitive.
     """
     calls = []
     orig = TP.tensor_splice
 
-    def spy(prod_in, prod_out, body_in, body_out, port):
-        calls.append((prod_in, prod_out, port))
-        return orig(prod_in, prod_out, body_in, body_out, port)
+    def spy(prod_in, prod_out, body_in, body_out, tensor_ty):
+        calls.append((prod_in, prod_out, tensor_ty))
+        return orig(prod_in, prod_out, body_in, body_out, tensor_ty)
 
     TP.tensor_splice = spy
     try:
@@ -875,54 +917,211 @@ def test_I36_compilation_actually_invokes_the_splice_with_the_producer():
     roots = [a for a in arts if a.selected_boundary.origin == "letpair:splice"]
     assert len(roots) == 2
     assert len(calls) == len(roots), (
-        f"{len(calls)} splice calls for {len(roots)} LetPair roots; the "
-        f"composition was skipped")
+        f"{len(calls)} splice calls for {len(roots)} LetPair roots")
+    n = roots[0].selected_boundary.ingress.n_qubits
     for lp in roots:
         producer = next(a for a in arts if a.term is lp.term.pair)
-        port = tuple(producer.egress_wires)
-        assert any(c[2] == port for c in calls), (
-            f"no Splice was performed on the port {port} this producer "
-            f"actually hands over")
-    for prod_in, prod_out, _ in calls:
-        assert prod_in.dim == prod_out.dim and prod_in.dim > 0, (
-            "the producer's own charts must be the arguments")
+        want_in = _lift(producer.selected_boundary.ingress,
+                        producer.ingress_wires, n,
+                        producer.input_frame.logical)
+        want_out = _lift(producer.selected_boundary.egress,
+                         producer.egress_wires, n,
+                         producer.output_frame.logical)
+        want_ty = Ten(lp.term.ty_x, lp.term.ty_y)
+        hit = [c for c in calls
+               if c[0].codes == want_in.codes and c[1].codes == want_out.codes
+               and c[2] == want_ty]
+        assert hit, (
+            f"no Splice was called with this LetPair's own producer charts "
+            f"(ingress {want_in.codes}, egress {want_out.codes}, tensor "
+            f"{want_ty})")
 
 
-def test_I37_tenpack_is_invoked_per_polarity():
-    """theta^- and theta^+ are applied separately, once each per LetPair."""
+def test_I37_tenpack_is_invoked_once_per_polarity_with_its_own_schedule():
+    """Each call must carry ITS polarity's body chart, schedule and theta."""
     calls = []
     orig = TP.tenpack
 
     def spy(chart, r_p, theta):
-        calls.append((tuple(r_p), tuple(theta)))
+        calls.append((chart, tuple(r_p), tuple(theta)))
         return orig(chart, r_p, theta)
 
     TP.tenpack = spy
     try:
-        compile(curried_spine(), materialize=False)
+        _, arts = compile_with_artifacts(curried_spine(), materialize=False)
     finally:
         TP.tenpack = orig
-    assert len(calls) == 4, (
-        f"{len(calls)} TenPack calls for two LetPairs; each needs one per "
-        f"polarity")
+
+    roots = [a for a in arts if a.selected_boundary.origin == "letpair:splice"]
+    assert len(calls) == 2 * len(roots), (
+        f"{len(calls)} TenPack calls for {len(roots)} LetPairs; each needs "
+        f"one per polarity")
+    n = roots[0].selected_boundary.ingress.n_qubits
+    for lp in roots:
+        body = next(a for a in arts if a.term is lp.term.body)
+        sched = lp.selected_boundary.packing
+        for side in ("ingress", "egress"):
+            want_chart = _lift(
+                getattr(body.selected_boundary, side),
+                body.ingress_wires if side == "ingress" else body.egress_wires,
+                n)
+            want_r_p = sched.r_p(side)
+            hit = [c for c in calls
+                   if c[0].codes == want_chart.codes and c[1] == want_r_p]
+            assert hit, (
+                f"no TenPack call for the {side} polarity with this body's "
+                f"own chart {want_chart.codes} and schedule {want_r_p}")
+            for _, _, theta in hit:
+                assert sorted(theta) == list(range(len(want_r_p))), (
+                    f"{side}: theta {theta} is not a permutation of the "
+                    f"{len(want_r_p)} binder slots")
+    # the two polarities must not have been given the same schedule
+    scheds = {c[1] for c in calls}
+    assert len(scheds) > 1, (
+        "every TenPack call got the same schedule; the polarities were not "
+        "kept apart")
 
 
 def test_I38_a_mistyped_terminal_residual_is_not_replaced():
     """Equal dimension is not evidence of identity.
 
-    The spine replaces its head's terminal residual only when the recorded
-    logical type is the head's codomain, so S_h (x) Y_Endo can never be
-    mistaken for S_h (x) S_y (x) Y_Q.
+    Direct, non-vacuous test of the pure guard: no reachable derivation
+    produces a mistyped terminal residual, so the guard is exercised here on
+    a route built for the purpose rather than counted as covered by an
+    unkillable mutation.
     """
-    _, arts = compile_with_artifacts(curried_spine(), materialize=False)
-    cuts = appcuts(arts)
-    inner = min(cuts, key=lambda a: len(a.selected_boundary.ingress.route.parts))
-    outer = outermost_spine(arts)
-    assert inner.selected_boundary.ingress.dim == \
-        outer.selected_boundary.ingress.dim == 16
-    _, inner_cod = TP.type_of(inner.term.f)
-    _, outer_cod = TP.type_of(outer.term.f)
-    assert inner.selected_boundary.ingress.route.residual.logical == inner_cod.cod
-    assert outer.selected_boundary.ingress.route.residual.logical == outer_cod.cod
-    assert inner_cod.cod != outer_cod.cod, (
-        "the two residual types must differ, or the guard is untestable")
+    from compile.frames import check_spine_residual
+    op = ChartFactor(name="S_h", owner="cut:h", n_qubits=2, codes=(0, 1, 2, 3),
+                     role="operand", logical=q)
+    good = ChartFactor(name="Y", owner="cut:y", n_qubits=1, codes=(0, 1),
+                       role="residual", logical=q)
+    bad = ChartFactor(name="Y", owner="cut:y", n_qubits=1, codes=(0, 1),
+                      role="residual", logical=endo)     # SAME dimension
+    assert good.dim == bad.dim, "the two residuals must be indistinguishable "\
+                                "by dimension, or the guard is untestable"
+    rep, pl = scatter_repart(((0, 1), (2,)), 3)
+    ok = par_then_repart((op, good), rep, 3, "ok", placements=pl,
+                         kind="scatter")
+    mistyped = par_then_repart((op, bad), rep, 3, "bad", placements=pl,
+                               kind="scatter")
+    assert check_spine_residual(ok.route, q) is ok.route.parts[-1]
+    with pytest.raises(ProvenanceError) as e:
+        check_spine_residual(mistyped.route, q, "Apply")
+    assert "codomain" in str(e.value)
+
+
+def test_I38b_every_emitted_spine_passes_the_guard():
+    """And the guard is actually applied on the real derivations."""
+    from compile.frames import check_spine_residual
+    for mk in (curried_spine, multi_spine, simple_spine,
+               neutral_tensor_producer):
+        _, arts = compile_with_artifacts(mk(), materialize=False)
+        for a in appcuts(arts):
+            _, f_cod = TP.type_of(a.term.f)
+            for side in ("ingress", "egress"):
+                check_spine_residual(
+                    getattr(a.selected_boundary, side).route, f_cod.cod)
+
+
+# ===========================================================================
+# 7. Part I.1 -- a NEUTRAL APPLICATION may produce the tensor being eliminated
+# ===========================================================================
+#
+# `let (x,y) = f a in Pair(x,y)` is a canonical neutral AppCut followed by
+# tensor elimination. The producer's selected boundary is
+#
+#     S_a(2) (x) Y_(Q(x)Q)(4)  =  8
+#
+# and ONLY Y_(Q(x)Q) is the matched tensor port. S_a is an unmatched producer
+# factor and must survive the splice. Projecting the whole producer chart onto
+# the port wires is therefore wrong twice over: the port is not the whole
+# boundary, and the projection is deliberately NON-INJECTIVE, because each Y
+# label occurs once per S_a label.
+
+FTY = Arrow(q, Ten(q, q))
+D_NEUTRAL = Ten(FTY, q)
+
+
+def neutral_tensor_producer(operand=None):
+    """let (f,a) = Id in let (x,y) = f a in Pair(x,y)"""
+    arg = Var("a", q) if operand is None else operand
+    return LetPair("f", "a", FTY, q, Id(D_NEUTRAL),
+                   LetPair("x", "y", q, q,
+                           Apply(Var("f", FTY), arg),
+                           Pair(Var("x", q), Var("y", q))))
+
+
+@pytest.mark.parametrize("materialize", MODES)
+def test_I39_neutral_appcut_tensor_producer_compiles_and_is_exact(materialize):
+    """S_a is retained: the selected boundary is 8, not 4."""
+    r = compile(neutral_tensor_producer(), materialize=materialize)
+    sb = r.selected_boundary
+    assert sb.ingress.dim == 8, (
+        f"ingress dim {sb.ingress.dim}, want 8 = S_a(2) x Y_(QxQ)(4); the "
+        f"unmatched producer factor S_a was dropped")
+    assert sb.egress.dim == 8, f"egress dim {sb.egress.dim}, want 8"
+    U = r.circuit.get_unitary()
+    assert leakage(sb.ingress, U, sb.egress) < ATOL
+    assert abs(r.global_phase) < 1e-12
+    np.testing.assert_allclose(
+        semantic_action(sb.ingress, U, sb.egress), np.eye(8),
+        atol=ATOL, rtol=0.0)
+
+
+@pytest.mark.parametrize("materialize", MODES)
+def test_I40_neutral_tensor_producer_is_order_discriminating(materialize):
+    """With a non-identity operand the action is H (x) I4 in the RECORDED
+    factor order, which differs from I4 (x) H."""
+    want = np.kron(H_M, np.eye(4, dtype=complex))
+    other = np.kron(np.eye(4, dtype=complex), H_M)
+    assert not np.allclose(want, other, atol=1e-12)
+    r = compile(neutral_tensor_producer(Seq(Var("a", q), Hg(0, q))),
+                materialize=materialize)
+    sb = r.selected_boundary
+    U = r.circuit.get_unitary()
+    assert leakage(sb.ingress, U, sb.egress) < ATOL
+    assert abs(r.global_phase) < 1e-12
+    np.testing.assert_allclose(
+        semantic_action(sb.ingress, U, sb.egress), want, atol=ATOL, rtol=0.0)
+
+
+def test_I41_splice_preserves_an_unmatched_producer_factor():
+    """PURE gate. The port projection of the producer is 2-to-1, because each
+    Y label occurs once for each S_a label. A first-match `.index` lookup
+    keeps one of the two and silently halves the chart."""
+    n = 3
+    S_a = ChartFactor(name="S_a", owner="cut:a", n_qubits=1, codes=(0, 1),
+                      role="operand", logical=q)
+    S_a_in = ChartFactor(name="S_a", owner="cut:a", n_qubits=1, codes=(1, 0),
+                         role="operand", logical=q)
+    Y = ChartFactor(name="Y", owner="cut:y", n_qubits=2, codes=(0, 1, 2, 3),
+                    role="residual", logical=Ten(q, q))
+    port = (1, 2)
+    rep, pl = scatter_repart(((0,), port), n)
+    prod_out = par_then_repart((S_a, Y), rep, n, "po", placements=pl,
+                               kind="scatter")
+    prod_in = par_then_repart((S_a_in, Y), rep, n, "pi", placements=pl,
+                              kind="scatter")
+    assert prod_out.dim == 8
+
+    B = ChartFactor(name="B", owner="cut:b", n_qubits=2, codes=(0, 1, 2, 3),
+                    role="operand", logical=Ten(q, q))
+    rep2, pl2 = scatter_repart((port,), n)
+    body = par_then_repart((B,), rep2, n, "b", placements=pl2, kind="scatter")
+    assert body.dim == 4
+
+    # the projection really is non-injective
+    proj = [_bits(c, port, n) for c in prod_out.codes]
+    assert len(set(proj)) == 4 and len(proj) == 8, (
+        "this witness needs a 2-to-1 port projection")
+
+    ing, egr = tensor_splice(prod_in, prod_out, body, body, Ten(q, q))
+    assert ing.dim == 8, (
+        f"spliced ingress dim {ing.dim}, want 8; a first-match projection "
+        f"drops one S_a coordinate and gives 4")
+    names = [f.name for f in ing.route.parts]
+    assert names[0] == "S_a", (
+        f"factor order {names}; the unmatched producer factor must lead")
+    assert "Y" not in names, "the matched tensor port must be consumed"
+    assert egr.dim == 8, f"spliced egress dim {egr.dim}, want 8"
+    assert [f.name for f in egr.route.parts][0] == "S_a"
