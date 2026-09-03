@@ -534,3 +534,159 @@ def test_E6_bridge_exposes_nested_occurrence_frames():
     payloads = [a.input_frame.to_json() for a in nested]
     assert all("ports" in p for p in payloads), (
         "nested occurrence frames do not serialize their ports")
+
+
+# ===========================================================================
+# G2a: bound open sum occurrences are PLANNED (shadow mode)
+#
+# The planner is pure and shared: open PlusMap and open NPlusMap reach the same
+# algorithm through thin adapters that only collect their own sectors and free
+# names. Emission does not consume the result at this stage -- B z@0/z@1 and
+# ctrl_ho keep their exact prior diagnostics.
+# ===========================================================================
+
+from compile.frames import (plan_open_occurrence, TypedBinding,          # noqa
+                            NeedsBranchPreparation, canonical_frame)     # noqa
+import compile.to_pytket as TP                                            # noqa
+
+
+def _plan_for_binding(wire, ambient=3, perm=None):
+    """Drive the SHARED planner directly, with one z:Q binding."""
+    sc = ProvenanceScope()
+    par = canonical_frame(Plus(q, q))
+    b = TypedBinding("z", q, (wire,), sc.owner(), sc.cut())
+    return plan_open_occurrence(
+        parent_in=par, parent_out=par, branches=(), bindings=(b,),
+        ambient_width=ambient, scope=sc, tag_width_in=1, tag_width_out=1,
+        perm=perm)
+
+
+@pytest.mark.parametrize("wire,ctx,tag,pay", [
+    (0, (0,), (1,), (2,)),
+    (1, (1,), (0,), (2,)),
+    (2, (2,), (0,), (1,)),
+])
+def test_G2a_placement_pins(wire, ctx, tag, pay):
+    """Owned context preserved; tag then payload take the remaining wires in
+    ascending order."""
+    pl = _plan_for_binding(wire)
+    for side in (pl.ingress, pl.egress):
+        assert len(side.ports) == 1, "expected exactly one z:Q context port"
+        p0 = side.ports[0]
+        assert p0.wires == ctx and p0.logical == q and p0.role == "context"
+        assert p0.by_sector == (), "context was copied per sector"
+        assert side.tag_wires == tag, f"tag {side.tag_wires} != {tag}"
+        assert side.payload_wires == pay, f"payload {side.payload_wires} != {pay}"
+        assert side.completed_dimension(4) == 8, "4_main x 2_z = 8"
+    assert pl.ingress.cut_id != pl.egress.cut_id, "sides share a cut"
+    assert pl.ingress.ports[0].owner_id == pl.egress.ports[0].owner_id, (
+        "one binding became two owners across the two sides")
+
+
+def test_G2a_two_equal_typed_resources_stay_distinct():
+    sc = ProvenanceScope()
+    par = canonical_frame(Plus(q, q))
+    a = TypedBinding("z", q, (0,), sc.owner(), sc.cut())
+    b = TypedBinding("w", q, (1,), sc.owner(), sc.cut())
+    pl = plan_open_occurrence(
+        parent_in=par, parent_out=par, branches=(), bindings=(a, b),
+        ambient_width=4, scope=sc, tag_width_in=1, tag_width_out=1)
+    owners = {p.owner_id for p in pl.ingress.ports}
+    assert len(owners) == 2, "two equal-typed resources collapsed"
+    assert pl.ingress.completed_dimension(4) == 4 * 2 * 2
+
+
+def test_G2a_same_context_mentioned_twice_is_one_factor():
+    sc = ProvenanceScope()
+    own, cut = sc.owner(), sc.cut()
+    side = SidePlacement(
+        cut_id=cut, ambient_width=4, local_to_ambient=(1, 2),
+        tag_wires=(1,), payload_wires=(2,),
+        ports=(Port("z", q, (0,), role="context", owner_id=own, cut_id=cut),
+               Port("z", q, (0,), role="context", owner_id=own, cut_id=cut)))
+    assert side.completed_dimension(4) == 8, "one owner counted twice"
+
+
+def test_G2a_nonzero_offset_placement():
+    """A wider ambient register with the context high up: tag and payload
+    still take the lowest unowned wires in ascending order."""
+    pl = _plan_for_binding(4, ambient=5)
+    assert pl.ingress.ports[0].wires == (4,)
+    assert pl.ingress.tag_wires == (0,)
+    assert pl.ingress.payload_wires == (1,)
+    assert pl.ingress.completed_dimension(4) == 8
+
+
+def test_G2a_pending_permutation_is_recorded_and_does_not_move_ownership():
+    """Ownership is recorded in AMBIENT coordinates, so a pending wire
+    permutation must not silently relocate it. The perm is carried on the
+    plan, with its direction pinned."""
+    perm = (2, 0, 1)
+    pl = _plan_for_binding(0, perm=perm)
+    assert pl.pending_perm == perm, "pending permutation not recorded"
+    plain = _plan_for_binding(0)
+    assert plain.pending_perm == ()
+    assert pl.ingress.ports[0].wires == plain.ingress.ports[0].wires
+    assert pl.ingress.tag_wires == plain.ingress.tag_wires
+    assert pl.ingress.payload_wires == plain.ingress.payload_wires
+
+
+@pytest.mark.parametrize("wire", [0, 1, 2])
+def test_G2a_compiler_path_reaches_the_same_planner(wire):
+    """Anti-vacuity: the REAL compiler path must call the shared planner.
+
+    Not a second test-only plan -- z@2 attaches it to the Artifact, z@0/z@1
+    expose it through the spy while the unchanged guard still raises.
+    """
+    TP._PLANNER_OBSERVED.clear()
+    got = None
+    try:
+        _, arts = compile_with_artifacts(B_witness(), env={"z": [wire]})
+        got = [a.placement for a in arts if a.placement is not None]
+        got = got[0] if got else None
+    except Exception:
+        got = TP._PLANNER_OBSERVED[-1] if TP._PLANNER_OBSERVED else None
+    assert got is not None, "the compiler path did not reach the planner"
+    expected = _plan_for_binding(wire)
+    assert got.ingress.ports[0].wires == expected.ingress.ports[0].wires
+    assert got.ingress.tag_wires == expected.ingress.tag_wires
+    assert got.ingress.payload_wires == expected.ingress.payload_wires
+
+
+def test_G2a_no_partial_artifact_after_a_failed_compile():
+    with pytest.raises(RuntimeError):
+        compile_with_artifacts(B_witness(), env={"z": [0]})
+
+
+def test_G2a_ctrl_ho_is_reached_but_explicitly_incomplete():
+    """The planner runs and REFUSES to produce a placement.
+
+    ingress 256 = (8+8) x 16_f balances the pin. Egress is 64, short by a
+    factor of 4 -- the h : Q-oQ evaluation residual, which lives inside the
+    ingress summand and must be reclassified at egress. It is not a new
+    resource, and G2b must obtain it from the derivation-selected branch
+    egress cut, NEVER synthesize it from this factor.
+    """
+    TP._PLANNER_OBSERVED.clear()
+    TP._PLANNER_INCOMPLETE.clear()
+    with pytest.raises(UnsupportedFrame):
+        compile(D_term())
+    assert TP._PLANNER_INCOMPLETE, "the planner was never reached for ctrl_ho"
+    nb = TP._PLANNER_INCOMPLETE[-1]
+    assert isinstance(nb, NeedsBranchPreparation)
+    assert nb.ingress == 256, f"ingress {nb.ingress}"
+    assert nb.egress == 64, f"egress {nb.egress}"
+    assert nb.missing_factor == 4
+    assert not TP._PLANNER_OBSERVED, (
+        "an unbalanced plan was produced as a valid placement")
+
+
+def test_G2a_unbalanced_plans_are_never_attachable():
+    sc = ProvenanceScope()
+    with pytest.raises(NeedsBranchPreparation):
+        plan_open_occurrence(
+            parent_in=canonical_frame(Plus(q, q)),
+            parent_out=canonical_frame(q),
+            branches=(), scope=sc, ambient_width=4,
+            bindings=(TypedBinding("z", q, (3,), sc.owner(), sc.cut()),),
+            tag_width_in=1, tag_width_out=0)

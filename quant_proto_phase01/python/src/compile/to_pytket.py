@@ -49,7 +49,8 @@ from lang.terms import (
 from lang.types import width, Arrow, Unit, Plus, Ten, pretty as _pretty_ty
 from dataclasses import dataclass as _dc_alias
 from compile.frames import (Frame, Sector, Port, canonical_frame,
-                            ProvenanceScope, ProvenanceError,
+                            ProvenanceScope, ProvenanceError, TypedBinding,
+                            NeedsBranchPreparation, plan_open_occurrence,
                             frames_agree, semantic_dim,
                             apply_wire_perm, with_spectators,
                             distl_frames, encode_qubit_frames,
@@ -94,6 +95,7 @@ class Artifact:
     perm_at_exit: tuple = ()
     plan: object = None          # PlusMapAlignPlan, when this occurrence has one
     cut_id: object = None        # this OCCURRENCE's cut lineage, minted per visit
+    placement: object = None     # G2: the shadow OccurrencePlacement, if any
 
     @property
     def n_qubits(self) -> int:
@@ -571,6 +573,12 @@ def _as_uniformly_controlled_u2(U):
                 return None
         blocks.append(U[2 * a:2 * a + 2, 2 * a:2 * a + 2])
     return blocks
+
+
+# G2 only: lets a test capture the placement of an occurrence whose emission
+# still raises. Successful occurrences carry it on their Artifact instead.
+_PLANNER_OBSERVED = []
+_PLANNER_INCOMPLETE = []
 
 
 def _plusmap_placement(n_qubits, k):
@@ -1748,7 +1756,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                        input_frame=fin, output_frame=fout,
                        perm_at_entry=entry, perm_at_exit=tuple(p.new_to_old),
                        plan=_plan_sink.pop(occ, None),
-                       cut_id=_cut_ids[occ])
+                       cut_id=_cut_ids[occ],
+                       placement=_shadow_plans.pop(occ, None))
         frame_registry[occ] = art
         artifacts.append(art)
         return art
@@ -1758,6 +1767,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
     _plan_sink = {}
     _cut_ids = {}
     _prov = ProvenanceScope()
+    _binding_cache = {}
+    _shadow_plans = {}
+    _planner_observed = _PLANNER_OBSERVED
     _cur_occ = [0]
     circ = Circuit(n)
     p = identity(n)
@@ -1986,6 +1998,45 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             # Only emit if non-identity
             if k > 0 and tp != tuple(range(n_summands)):
                 _emit_tag_perm_unitary(circ, p, tp, k, offset, explain, log)
+
+    def _typed_bindings(names, scope, env_):
+        """Wrap external env entries ONCE, at this occurrence's boundary.
+
+        `compile(..., env={"z": [wire]})` stays supported; it is validated and
+        given provenance here rather than being rediscovered independently
+        inside every branch. The name is a lookup key, not identity.
+        """
+        out = []
+        for nm, ty_fv in names:
+            if not env_ or nm not in env_:
+                continue
+            wires = tuple(env_[nm])
+            key = (nm, wires)
+            if key not in _binding_cache:
+                _binding_cache[key] = TypedBinding(
+                    name=nm, logical=ty_fv, wires=wires,
+                    owner_id=scope.owner(), intro_cut=scope.cut())
+            out.append(_binding_cache[key])
+        return tuple(out)
+
+    def _plan_open_occurrence_for(t, parent_in, parent_out, free_names,
+                                  k_in, k_out, env_):
+        """Thin adapter: collect THIS construct's inputs, defer every
+        placement decision to the one shared planner."""
+        scope = _prov.fork()
+        bindings = _typed_bindings(free_names, scope, env_)
+        if not bindings:
+            return None
+        # The ambient register is the occurrence's own boundary PLUS the
+        # coordinates its owned context occupies. Passing the current register
+        # instead would reproduce the very collision this stage exists to
+        # remove: the context and the tag would be forced to share a wire.
+        ctx_w = sum(len(b.wires) for b in bindings)
+        ambient = max(parent_in.n_qubits, parent_out.n_qubits) + ctx_w
+        return plan_open_occurrence(
+            parent_in=parent_in, parent_out=parent_out, branches=(),
+            bindings=bindings, ambient_width=ambient, scope=scope,
+            tag_width_in=k_in, tag_width_out=k_out, perm=tuple(p.new_to_old))
 
     def _plusmap_align_plan(t, arts, k, parent_in, parent_out,
                             placement_fn=None, P_inv=None,
@@ -2785,6 +2836,28 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 # Fall through to Strategy A for opaque branches
 
             if ctx_left_w > 0 or ctx_right_w > 0:
+                # G2 SHADOW: select and record the occurrence placement using
+                # the ONE shared planner, BEFORE the existing guard runs.
+                # Emission does not consume it yet, and the guard below keeps
+                # its current behaviour and diagnostic exactly.
+                try:
+                    _fv_all = [(nm, ty_) for nm, ty_ in
+                               (_ordered_free_vars(t.left)
+                                + _ordered_free_vars(t.right))]
+                    _seen_nm = set()
+                    _fv_uniq = [x for x in _fv_all
+                                if not (x[0] in _seen_nm or _seen_nm.add(x[0]))]
+                    _pi, _po = select_frames(t)
+                    _sp = _plan_open_occurrence_for(
+                        t, _pi, _po, _fv_uniq, max(k, 1), max(k, 1), env)
+                    if _sp is not None:
+                        _shadow_plans[_cur_occ[0]] = _sp
+                        _planner_observed.append(_sp)
+                except NeedsBranchPreparation as _nb:
+                    # Explicitly incomplete: recorded, never attached.
+                    _PLANNER_INCOMPLETE.append(_nb)
+                except ProvenanceError:
+                    pass          # shadow stage: changes nothing
                 # Open branches: compile with parent env for free variable routing
                 tag_phys = p.apply_new_to_old(offset)
                 payload_base = offset + max(k, 1)
@@ -3697,6 +3770,24 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     f"{[nms for _, nms in _np_unresolved]} that are not bound "
                     f"in the enclosing environment, so their context is "
                     f"unresolved. Failing closed before emission.")
+            if any(_np_fv):
+                # G2 SHADOW: same planner, same policy, different adapter.
+                try:
+                    _fv_all = []
+                    _seen_nm = set()
+                    for _br in t.branches:
+                        for nm, ty_ in _ordered_free_vars(_br):
+                            if nm not in _seen_nm:
+                                _seen_nm.add(nm)
+                                _fv_all.append((nm, ty_))
+                    _pi, _po = select_frames(t)
+                    _sp = _plan_open_occurrence_for(
+                        t, _pi, _po, _fv_all, k, k, env)
+                    if _sp is not None:
+                        _shadow_plans[_cur_occ[0]] = _sp
+                        _planner_observed.append(_sp)
+                except ProvenanceError:
+                    pass
             _np_arts = None
             _np_plan = None
             if not any(_np_fv):

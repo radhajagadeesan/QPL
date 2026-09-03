@@ -217,6 +217,37 @@ class ProvenanceError(Exception):
     """Missing, duplicated or ambiguous ownership / cut lineage."""
 
 
+class NeedsBranchPreparation(ProvenanceError):
+    """The occurrence cannot be planned until its branches are prepared.
+
+    Raised when the completed cuts do not balance because the branch egress
+    cuts are not available yet -- a resource contained inside an ingress
+    summand has to be reclassified as a typed residual at egress, and only the
+    prepared branch artifact can say which one.
+
+    This is NOT a placement. An unbalanced plan must never be attachable or
+    consumable, so this is an exception rather than a partially filled
+    OccurrencePlacement.
+
+    `missing_factor` is the numeric gap ONLY. The resource behind it must come
+    from the derivation-selected branch egress cut, never be synthesized from
+    the factor.
+    """
+
+    def __init__(self, ingress: int, egress: int):
+        self.ingress = ingress
+        self.egress = egress
+        self.missing_factor = (ingress // egress if egress and
+                               ingress % egress == 0 else None)
+        super().__init__(
+            f"completed cuts do not balance: ingress {ingress} versus egress "
+            f"{egress}"
+            + (f" (missing egress factor {self.missing_factor})"
+               if self.missing_factor else "")
+            + "; the branch egress cuts are not prepared, so no placement "
+              "can be produced")
+
+
 def completion_factor(port: "Port") -> int:
     """How much a live port multiplies the completed dimension.
 
@@ -226,6 +257,39 @@ def completion_factor(port: "Port") -> int:
     if isinstance(port.logical, Unit):
         return 1
     return semantic_dim(port.logical)
+
+
+def _completion_factors(ports) -> dict:
+    """Distinct live completion factors, keyed on (owner_id, cut_id).
+
+    Shared by Frame.completed_dimension and SidePlacement so the two can never
+    disagree about what "counted once" means.
+    """
+    seen = {}
+    for p in ports:
+        if p.role not in ("context", "residual"):
+            continue
+        factor = completion_factor(p)
+        if factor == 1:
+            continue
+        if p.owner_id is None or p.cut_id is None:
+            raise ProvenanceError(
+                f"live {p.role} port {p.name!r} of type "
+                f"{pretty(p.logical)} has no "
+                f"{'owner_id' if p.owner_id is None else 'cut_id'}; the "
+                f"completed dimension cannot be computed without provenance")
+        if p.by_sector:
+            raise ProvenanceError(
+                f"live {p.role} port {p.name!r} is sector-conditioned "
+                f"{p.by_sector}; an outer context must be represented once, "
+                f"unconditionally, not copied per sector")
+        key = (p.owner_id, p.cut_id)
+        if key in seen and seen[key] != factor:
+            raise ProvenanceError(
+                f"owner {p.owner_id} at cut {p.cut_id} appears with "
+                f"conflicting completion factors {seen[key]} and {factor}")
+        seen[key] = factor
+    return seen
 
 
 def completed_dimension(frame: "Frame") -> int:
@@ -241,34 +305,7 @@ def completed_dimension(frame: "Frame") -> int:
     unconditionally, not per sector).
     """
     total = frame.dim
-    seen = {}
-    for p in frame.ports:
-        if p.role not in ("context", "residual"):
-            continue
-        factor = completion_factor(p)
-        if factor == 1:
-            continue                      # true Unit/padding spectator
-        if p.owner_id is None or p.cut_id is None:
-            raise ProvenanceError(
-                f"live {p.role} port {p.name!r} of type "
-                f"{pretty(p.logical)} has no "
-                f"{'owner_id' if p.owner_id is None else 'cut_id'}; the "
-                f"completed dimension cannot be computed without provenance, "
-                f"and inferring it from type or wires is what produced "
-                f"untruthful artifacts")
-        if p.by_sector:
-            raise ProvenanceError(
-                f"live {p.role} port {p.name!r} is sector-conditioned "
-                f"{p.by_sector}; an outer context must be represented once, "
-                f"unconditionally, not copied per sector")
-        key = (p.owner_id, p.cut_id)
-        if key in seen:
-            if seen[key] != factor:
-                raise ProvenanceError(
-                    f"owner {p.owner_id} at cut {p.cut_id} appears with "
-                    f"conflicting completion factors {seen[key]} and {factor}")
-            continue                      # one resource mentioned twice
-        seen[key] = factor
+    for factor in _completion_factors(frame.ports).values():
         total *= factor
     return total
 
@@ -1196,6 +1233,44 @@ def distributor_frames(a: Ty, b: Ty, c: Ty, ctor: str):
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)
+class TypedBinding:
+    """An ambient resource the occurrence does not own but must carry.
+
+    `name` is a LOOKUP KEY only. Identity is `owner_id`; the type is used to
+    validate a recorded binding (its width must match its wires), never to
+    invent an owner or a placement.
+    """
+    name: str
+    logical: Ty
+    wires: Tuple[int, ...]
+    owner_id: str
+    intro_cut: str
+
+    def __post_init__(self):
+        from lang.types import width as _w
+        if len(set(self.wires)) != len(self.wires):
+            raise ProvenanceError(
+                f"binding {self.name!r} claims a wire twice: {self.wires}")
+        if _w(self.logical) != len(self.wires):
+            raise ProvenanceError(
+                f"binding {self.name!r} is {pretty(self.logical)} of width "
+                f"{_w(self.logical)} but occupies {len(self.wires)} wires "
+                f"{self.wires}")
+        if not self.owner_id or not self.intro_cut:
+            raise ProvenanceError(
+                f"binding {self.name!r} carries no owner/introduction cut")
+
+
+@dataclass(frozen=True, slots=True)
+class BranchInputs:
+    """One prepared branch, as the planner sees it. Frames stay LOCAL."""
+    index: int
+    fin: "Frame"
+    fout: "Frame"
+    uses: Tuple[str, ...] = ()      # binding names this branch actually uses
+
+
+@dataclass(frozen=True, slots=True)
 class SidePlacement:
     """ONE boundary side of an occurrence: ingress or egress.
 
@@ -1276,6 +1351,13 @@ class SidePlacement:
         """Local wire -> ambient wire. A lookup, never a recomputation."""
         return self.local_to_ambient[local_wire]
 
+    def completed_dimension(self, main_dim: int) -> int:
+        """`main_dim` completed by this side's distinct live factors."""
+        total = main_dim
+        for factor in _completion_factors(self.ports).values():
+            total *= factor
+        return total
+
 
 @dataclass(frozen=True, slots=True)
 class OccurrencePlacement:
@@ -1286,6 +1368,7 @@ class OccurrencePlacement:
     """
     ingress: SidePlacement
     egress: SidePlacement
+    pending_perm: Tuple[int, ...] = ()
 
     def __post_init__(self):
         if self.ingress.ambient_width != self.egress.ambient_width:
@@ -1297,3 +1380,78 @@ class OccurrencePlacement:
     @property
     def ambient_width(self) -> int:
         return self.ingress.ambient_width
+
+
+# ---------------------------------------------------------------------------
+# The occurrence planner (pure)
+# ---------------------------------------------------------------------------
+
+def plan_open_occurrence(*, parent_in, parent_out, branches, bindings,
+                         ambient_width, scope, tag_width_in, tag_width_out,
+                         perm=None):
+    """Select an occurrence placement around externally owned context.
+
+    PURE: no circuit, no emitter state, no mutation. One algorithm and one
+    policy for open PlusMap and open NPlusMap alike -- the two differ only in
+    how their caller collects sectors and branch artifacts, which is why B and
+    D are one bug rather than two.
+
+    Policy, in order:
+      * externally owned context coordinates are PRESERVED exactly as the
+        binding records them -- the occurrence moves, the resource does not;
+      * tag then payload take the remaining coordinates in ascending order,
+        deterministically;
+      * each binding becomes ONE unconditional context port per side -- carried
+        through inactive sectors, never copied per sector and never counted as
+        a summand label.
+
+    Ownership and occupancy come from the recorded bindings. Nothing consults
+    `type_of`, a free-variable width scan, a name, or basis-bit geometry;
+    `width(binding.logical)` is used only to VALIDATE a recorded binding, which
+    TypedBinding already did.
+    """
+    owned = []
+    for b in bindings:
+        for w in b.wires:
+            if not (0 <= w < ambient_width):
+                raise ProvenanceError(
+                    f"binding {b.name!r} sits on wire {w}, outside an ambient "
+                    f"register of {ambient_width}")
+            if w in owned:
+                raise ProvenanceError(
+                    f"wire {w} is owned by two bindings")
+            owned.append(w)
+    owned_set = set(owned)
+    free = [w for w in range(ambient_width) if w not in owned_set]
+
+    def _side(parent, k, is_in):
+        cut = scope.cut()
+        need = parent.n_qubits
+        if len(free) < need:
+            raise ProvenanceError(
+                f"{'ingress' if is_in else 'egress'}: {need} coordinates are "
+                f"needed for tag+payload but only {len(free)} are unowned in "
+                f"an ambient register of {ambient_width}")
+        chosen = tuple(free[:need])
+        tag = chosen[:k]
+        payload = chosen[k:]
+        ports = tuple(
+            Port(b.name, b.logical, tuple(b.wires), role="context",
+                 owner_id=b.owner_id, cut_id=cut)
+            for b in bindings)
+        return SidePlacement(
+            cut_id=cut, ambient_width=ambient_width,
+            local_to_ambient=chosen, tag_wires=tag, payload_wires=payload,
+            ports=ports)
+
+    ingress = _side(parent_in, tag_width_in, True)
+    egress = _side(parent_out, tag_width_out, False)
+    place = OccurrencePlacement(ingress=ingress, egress=egress,
+                                pending_perm=tuple(perm or ()))
+
+    ci = ingress.completed_dimension(parent_in.dim)
+    co = egress.completed_dimension(parent_out.dim)
+    if ci != co:
+        # Explicitly incomplete, not a degraded plan.
+        raise NeedsBranchPreparation(ci, co)
+    return place
