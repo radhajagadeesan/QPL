@@ -44,7 +44,7 @@ no phase quotient — ``(iX)(iX) = -I`` must be distinguishable from ``+I``.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Tuple, Optional
 
 import numpy as np
@@ -331,7 +331,8 @@ class Port:
     role: str = "main"
     by_sector: Tuple[Tuple[int, Tuple[int, ...]], ...] = ()
     owner_id: Optional[str] = None      # which BINDER owns this resource
-    cut_id: Optional[str] = None        # which CUT this placement belongs to
+    cut_id: Optional[str] = None        # the CURRENT boundary cut
+    origin_cut: Optional[str] = None    # the IMMUTABLE introduction cut
 
     def __post_init__(self):
         if self.role not in PORT_ROLES:
@@ -369,11 +370,43 @@ class Port:
             seen.extend(w)
         return tuple(sorted(set(seen)))
 
+    def recut(self, new_cut: str) -> "Port":
+        """Move this port to a new BOUNDARY cut. Changes cut_id ONLY.
+
+        `origin_cut` is preserved exactly as-is and is never derived from the
+        current cut. Laundering an arbitrary boundary cut into the origin
+        would fabricate lineage: it would look like recorded provenance while
+        actually recording wherever the port happened to sit.
+        """
+        return replace(self, cut_id=new_cut)
+
+    @property
+    def is_live(self) -> bool:
+        """A port standing for a real resource, not padding."""
+        return not isinstance(self.logical, Unit)
+
+    def require_origin(self, where: str = "") -> str:
+        """The introduction cut, or an explicit failure.
+
+        Only legacy Unit spectators may carry None. A live typed port without
+        recorded origin cannot be identified across cuts, and guessing one is
+        the inference this model exists to remove.
+        """
+        if not self.is_live:
+            return self.origin_cut
+        if self.origin_cut is None:
+            raise ProvenanceError(
+                f"{where or 'port'} {self.name!r} of type "
+                f"{pretty(self.logical)} is live but records no origin_cut; "
+                f"it must be set explicitly from its TypedBinding.intro_cut")
+        return self.origin_cut
+
     def to_json(self) -> dict:
         return {"name": self.name, "logical": ty_to_json(self.logical),
                 "wires": list(self.wires), "role": self.role,
                 "by_sector": [[t, list(w)] for t, w in self.by_sector],
-                "owner_id": self.owner_id, "cut_id": self.cut_id}
+                "owner_id": self.owner_id, "cut_id": self.cut_id,
+                "origin_cut": self.origin_cut}
 
     @staticmethod
     def from_json(j: dict) -> "Port":
@@ -383,7 +416,8 @@ class Port:
                     tuple((int(t), tuple(int(x) for x in w))
                           for t, w in j.get("by_sector", [])),
                     owner_id=j.get("owner_id"),
-                    cut_id=j.get("cut_id"))
+                    cut_id=j.get("cut_id"),
+                    origin_cut=j.get("origin_cut"))
 
 
 # ---------------------------------------------------------------------------
@@ -840,11 +874,13 @@ def tensor_frame(left: Frame, right: Frame, label: str = "") -> Frame:
              tuple(w + left.n_qubits for w in pt.wires), pt.role,
              tuple((tg, tuple(w + left.n_qubits for w in ws))
                    for tg, ws in pt.by_sector),
-             owner_id=pt.owner_id, cut_id=pt.cut_id)
+             owner_id=pt.owner_id, cut_id=pt.cut_id,
+             origin_cut=pt.origin_cut)
         for pt in right.ports)
     lports = tuple(Port(f"l.{pt.name}", pt.logical, pt.wires, pt.role,
                         pt.by_sector,
-                        owner_id=pt.owner_id, cut_id=pt.cut_id)
+                        owner_id=pt.owner_id, cut_id=pt.cut_id,
+                        origin_cut=pt.origin_cut)
                    for pt in left.ports)
     return Frame(
         logical=Ten(left.logical, right.logical),
@@ -1012,7 +1048,8 @@ def apply_wire_perm(frame: "Frame", new_to_old, label: str = "") -> "Frame":
         Port(prt.name, prt.logical,
              tuple(inv[w] for w in prt.wires), prt.role,
              tuple((t, tuple(inv[w] for w in ws)) for t, ws in prt.by_sector),
-             owner_id=prt.owner_id, cut_id=prt.cut_id)
+             owner_id=prt.owner_id, cut_id=prt.cut_id,
+             origin_cut=prt.origin_cut)
         for prt in frame.ports)
     return Frame(logical=frame.logical, n_qubits=n, codes=codes,
                  expr=FCompose(frame.expr, FWirePerm(tuple(new_to_old))),
@@ -1262,12 +1299,77 @@ class TypedBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class SelectionContext:
+    """The derivation context a boundary is selected IN.
+
+    An open term's boundary cannot be selected from syntax alone: it needs the
+    typed bindings the derivation introduced, the scope that owns them, and the
+    cuts the two sides belong to. A closed term passes EMPTY_SELECTION
+    explicitly -- an open term must never silently fall back to context-free
+    canonical selection.
+    """
+    bindings: Tuple["TypedBinding", ...] = ()
+    scope: object = None
+    ingress_cut: Optional[str] = None
+    egress_cut: Optional[str] = None
+    local_to_ambient: Tuple[int, ...] = ()
+    pending_perm: Tuple[int, ...] = ()
+
+    def binding(self, name):
+        """The recorded binding for `name`, or None. A lookup, not a search."""
+        for b in self.bindings:
+            if b.name == name:
+                return b
+        return None
+
+    def with_bindings(self, more):
+        return replace(self, bindings=self.bindings + tuple(more))
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.bindings
+
+    def require_closed(self, term, free_names, where=""):
+        """EMPTY_SELECTION asserts the occurrence is PROVABLY CLOSED.
+
+        Passing it for a term with free variables would make the old
+        context-free fallback legal again under a new name, so it fails
+        explicitly instead.
+        """
+        if self.is_empty and free_names:
+            raise ProvenanceError(
+                f"{where or type(term).__name__}: EMPTY_SELECTION was used "
+                f"for an OPEN term with free variables "
+                f"{sorted(free_names)}. An empty selection context asserts "
+                f"the occurrence is closed; an open boundary must be selected "
+                f"in the derivation's typed binding context.")
+
+
+EMPTY_SELECTION = SelectionContext()
+
+
+@dataclass(frozen=True, slots=True)
 class BranchInputs:
-    """One prepared branch, as the planner sees it. Frames stay LOCAL."""
+    """One prepared branch, as the planner sees it.
+
+    Holds a DIRECT REFERENCE to the authoritative BranchArtifact rather than
+    copying its frames, ports, commands and phase into a parallel record --
+    two stores of the same facts drift, and the planner and the emitter must
+    be provably looking at one object.
+
+    Frames stay LOCAL: ambient context belongs to the occurrence placement.
+    """
     index: int
-    fin: "Frame"
-    fout: "Frame"
-    uses: Tuple[str, ...] = ()      # binding names this branch actually uses
+    artifact: object                 # THE BranchArtifact, by identity
+    uses: Tuple[str, ...] = ()       # binding names this branch actually uses
+
+    @property
+    def fin(self):
+        return self.artifact.fin
+
+    @property
+    def fout(self):
+        return self.artifact.fout
 
 
 @dataclass(frozen=True, slots=True)
@@ -1386,6 +1488,50 @@ class OccurrencePlacement:
 # The occurrence planner (pure)
 # ---------------------------------------------------------------------------
 
+def _lift_branch_residuals(branches, chosen, parent_cut):
+    """Live typed residual ports recorded by the prepared branch artifacts.
+
+    Lifted through the recorded local-to-occurrence injection and RE-CUT onto
+    the parent egress side: a branch-local cut_id is not automatically the
+    parent egress cut. Ownership is carried over unchanged -- transport must
+    not mint a new owner.
+
+    Two branches' residuals are merged only when their recorded owner_id
+    agrees. Equal name, type, dimension or wire is NOT proof of sameness.
+    """
+    out = {}
+    for bi in branches or ():
+        for pt in bi.fout.ports:
+            if isinstance(pt.logical, Unit):
+                continue                     # a true spectator, not a resource
+            if pt.owner_id is None:
+                raise ProvenanceError(
+                    f"branch {bi.index} egress port {pt.name!r} of type "
+                    f"{pretty(pt.logical)} carries no owner_id; a live "
+                    f"residual cannot be placed without recorded ownership")
+            lifted = tuple(chosen[w] if w < len(chosen) else w
+                           for w in pt.wires)
+            origin = pt.require_origin(f"branch {bi.index} egress port")
+            key = (pt.owner_id, origin)
+            if key in out:
+                prev = out[key]
+                # Owner AND origin already agree. Type, role and placement
+                # must too -- equal dimension, name or wires are never proof.
+                if (prev.logical != pt.logical or prev.role != "residual"
+                        or prev.wires != lifted):
+                    raise ProvenanceError(
+                        f"owner {pt.owner_id} at origin {origin} appears as "
+                        f"two different residuals "
+                        f"({pretty(prev.logical)}@{prev.wires} versus "
+                        f"{pretty(pt.logical)}@{lifted}); the derivation does "
+                        f"not identify them")
+                continue
+            out[key] = Port(pt.name, pt.logical, lifted, role="residual",
+                            by_sector=(), owner_id=pt.owner_id,
+                            cut_id=parent_cut, origin_cut=origin)
+    return tuple(out.values())
+
+
 def plan_open_occurrence(*, parent_in, parent_out, branches, bindings,
                          ambient_width, scope, tag_width_in, tag_width_out,
                          perm=None):
@@ -1439,6 +1585,12 @@ def plan_open_occurrence(*, parent_in, parent_out, branches, bindings,
             Port(b.name, b.logical, tuple(b.wires), role="context",
                  owner_id=b.owner_id, cut_id=cut)
             for b in bindings)
+        if not is_in:
+            # Egress additionally carries whatever the PREPARED branches
+            # actually classified as live residual result ports. Nothing is
+            # synthesized here: if a branch recorded none, none appears, and
+            # the completed cuts will refuse to balance.
+            ports = ports + tuple(_lift_branch_residuals(branches, chosen, cut))
         return SidePlacement(
             cut_id=cut, ambient_width=ambient_width,
             local_to_ambient=chosen, tag_wires=tag, payload_wires=payload,

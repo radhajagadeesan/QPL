@@ -534,9 +534,9 @@ def test_each_branch_is_compiled_exactly_once(materialize, monkeypatch):
     calls = []
     orig = TP._compile_branch_artifact
 
-    def spy(branch, *, env=None):
+    def spy(branch, *, env=None, **kw):
         calls.append(branch)
-        return orig(branch, env=env)
+        return orig(branch, env=env, **kw)
 
     monkeypatch.setattr(TP, "_compile_branch_artifact", spy)
     TP.compile(V_witness(), materialize=materialize)

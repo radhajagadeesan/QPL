@@ -241,7 +241,8 @@ def test_A11_compiling_the_same_derivation_twice_is_reproducible():
 
 def _sentinel_port(name="f", wires=(1,)):
     return Port(name, Arrow(q, q), wires, role="context",
-                owner_id="OWN-SENTINEL", cut_id="CUT-SENTINEL")
+                owner_id="OWN-SENTINEL", cut_id="CUT-SENTINEL",
+                origin_cut="ORIGIN-SENTINEL")
 
 
 def _assert_survives(ports, where):
@@ -249,6 +250,40 @@ def _assert_survives(ports, where):
     for p in ports:
         assert p.owner_id == "OWN-SENTINEL", f"{where}: owner_id dropped"
         assert p.cut_id == "CUT-SENTINEL", f"{where}: cut_id dropped"
+        assert p.origin_cut == "ORIGIN-SENTINEL", (
+            f"{where}: origin_cut dropped -- lineage cannot be reconstructed")
+
+
+def test_A17_recut_changes_only_the_current_cut():
+    """origin_cut is never laundered from whatever cut the port sat on."""
+    p = _sentinel_port()
+    r = p.recut("CUT-PARENT")
+    assert r.cut_id == "CUT-PARENT"
+    assert r.origin_cut == "ORIGIN-SENTINEL", "origin was rewritten"
+    bare = Port("h", Arrow(q, q), (0,), role="residual",
+                owner_id="o", cut_id="cut:wherever")
+    assert bare.recut("cut:other").origin_cut is None, (
+        "an absent origin was laundered from the current cut")
+
+
+def test_A18_live_port_without_origin_fails_and_spectators_do_not():
+    from lang.types import Unit as U
+    live = Port("h", Arrow(q, q), (0,), role="residual", owner_id="o",
+                cut_id="c")
+    with pytest.raises(ProvenanceError) as ei:
+        live.require_origin("test")
+    assert "origin_cut" in str(ei.value)
+    assert Port("pad", U(), (2,), role="residual").require_origin() is None
+
+
+def test_A19_EMPTY_SELECTION_is_only_legal_for_a_closed_occurrence():
+    from compile.frames import EMPTY_SELECTION
+    from lang.terms import Var as V
+    assert select_frames(Id(q), ctx=EMPTY_SELECTION)
+    with pytest.raises(ProvenanceError) as ei:
+        select_frames(V("z", q), ctx=EMPTY_SELECTION)
+    msg = str(ei.value)
+    assert "OPEN term" in msg and "z" in msg
 
 
 def test_A12_provenance_survives_json_round_trip():
@@ -366,8 +401,8 @@ def test_B6_branch_artifact_frames_stay_local(wire):
     seen = []
     orig = TP._compile_branch_artifact
 
-    def spy(br, *, env=None):
-        a = orig(br, env=env)
+    def spy(br, *, env=None, **kw):
+        a = orig(br, env=env, **kw)
         seen.append((type(br).__name__, a.fin.n_qubits, a.fout.n_qubits))
         return a
 
@@ -498,8 +533,8 @@ def test_E4_local_branch_frames_are_offset_independent():
     seen = []
     orig = TP._compile_branch_artifact
 
-    def spy(b2, *, env=None):
-        r = orig(b2, env=env)
+    def spy(b2, *, env=None, **kw):
+        r = orig(b2, env=env, **kw)
         seen.append((tuple(r.fin.codes), tuple(r.fout.codes), r.fin.n_qubits))
         return r
 

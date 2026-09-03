@@ -51,6 +51,7 @@ from dataclasses import dataclass as _dc_alias
 from compile.frames import (Frame, Sector, Port, canonical_frame,
                             ProvenanceScope, ProvenanceError, TypedBinding,
                             NeedsBranchPreparation, plan_open_occurrence,
+                            BranchInputs, SelectionContext, EMPTY_SELECTION,
                             frames_agree, semantic_dim,
                             apply_wire_perm, with_spectators,
                             distl_frames, encode_qubit_frames,
@@ -384,7 +385,8 @@ def _lift_port(pt, local_to_block):
     return Port(name=pt.name, logical=pt.logical, role=pt.role,
                 wires=mv(pt.wires),
                 by_sector=tuple((tv, mv(ws)) for tv, ws in pt.by_sector),
-                owner_id=pt.owner_id, cut_id=pt.cut_id)
+                owner_id=pt.owner_id, cut_id=pt.cut_id,
+                origin_cut=pt.origin_cut)
 
 
 def _lift_via_placement(codes, tag_value, n_qubits, local_to_block,
@@ -803,7 +805,22 @@ def _check_open_placement(*, branch_name, payload_phys, context_phys,
                 f"Failing closed before emission.")
 
 
-def select_frames(t: Term):
+def select_frames(t: Term, ctx=None):
+    """Select this term's boundary frames.
+
+    `ctx` is the derivation's SelectionContext. Passing EMPTY_SELECTION
+    asserts the occurrence is provably closed and FAILS for an open term --
+    otherwise the context-free fallback this model removes would simply return
+    under a new name. `ctx=None` is the not-yet-migrated legacy path.
+    """
+    if ctx is not None:
+        ctx.require_closed(
+            t, [nm for nm, _ in _ordered_free_vars(t)],
+            where=f"select_frames({type(t).__name__})")
+    return _select_frames_impl(t)
+
+
+def _select_frames_impl(t: Term):
     """The boundary frames the emitter for `t` selects.
 
     Emitter-specific selections come first; everything else selects the
@@ -1144,7 +1161,7 @@ def _normalize(term: Term) -> Term:
     return term
 
 
-def _compile_branch(branch, *, env=None):
+def _compile_branch(branch, *, env=None, scope=None):
     """Sole route from a branch TERM to controlled-emission material.
 
     Returns (cmds, phase_ht). Invariant P: the caller MUST discharge phase_ht
@@ -1157,7 +1174,7 @@ def _compile_branch(branch, *, env=None):
     per-site fixes missed the others; that is why extraction is funnelled here
     rather than repeated at each emitter.
     """
-    a = _compile_branch_artifact(branch, env=env)
+    a = _compile_branch_artifact(branch, env=env, scope=scope)
     return a.cmds, a.phase
 
 
@@ -1190,9 +1207,12 @@ class BranchArtifact(NamedTuple):
         return _sa(self.fin, u, self.fout)
 
 
-def _compile_branch_artifact(branch, *, env=None):
-    sub = compile(branch, materialize=True, env=env) if env is not None \
-        else compile(branch, materialize=True)
+def _compile_branch_artifact(branch, *, env=None, scope=None):
+    """Prepare ONE branch. `scope` parents its provenance to the enclosing
+    occurrence; without it the branch would mint its own root."""
+    sub = compile(branch, materialize=True, env=env, _prov_scope=scope) \
+        if env is not None \
+        else compile(branch, materialize=True, _prov_scope=scope)
     return BranchArtifact(_get_sub_cmds(sub.circuit), float(sub.circuit.phase),
                           sub.input_frame, sub.output_frame, sub.circuit)
 
@@ -1651,7 +1671,12 @@ def compile_with_artifacts(term: Term, *, materialize: bool = False,
 
 
 def compile(term: Term, *, materialize: bool = False, explain: bool = False,
-            env: Env = None, _artifact_sink=None) -> Compiled:
+            env: Env = None, _artifact_sink=None,
+            _prov_scope: "ProvenanceScope" = None) -> Compiled:
+    """`_prov_scope` is INTERNAL. A public compile mints exactly one
+    ProvenanceScope root; nested branch preparation passes a child of the
+    enclosing occurrence's scope so its identities are transitive descendants
+    rather than a second, unrelated universe."""
     # Check for Feedback - not currently supported
     if _contains_feedback(term):
         raise NotImplementedError(
@@ -1766,7 +1791,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
     _frame_override = {}
     _plan_sink = {}
     _cut_ids = {}
-    _prov = ProvenanceScope()
+    _prov = _prov_scope if _prov_scope is not None else ProvenanceScope()
     _binding_cache = {}
     _shadow_plans = {}
     _planner_observed = _PLANNER_OBSERVED
@@ -1999,6 +2024,14 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             if k > 0 and tp != tuple(range(n_summands)):
                 _emit_tag_perm_unitary(circ, p, tp, k, offset, explain, log)
 
+    def _branch_scope():
+        """A child of THIS compilation's scope for one branch preparation.
+
+        Without it, `compile()` would mint a second ProvenanceScope root and
+        the branch's identities would live in an unrelated universe.
+        """
+        return _prov.fork()
+
     def _typed_bindings(names, scope, env_):
         """Wrap external env entries ONCE, at this occurrence's boundary.
 
@@ -2020,7 +2053,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         return tuple(out)
 
     def _plan_open_occurrence_for(t, parent_in, parent_out, free_names,
-                                  k_in, k_out, env_):
+                                  k_in, k_out, env_, branches=()):
         """Thin adapter: collect THIS construct's inputs, defer every
         placement decision to the one shared planner."""
         scope = _prov.fork()
@@ -2034,7 +2067,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         ctx_w = sum(len(b.wires) for b in bindings)
         ambient = max(parent_in.n_qubits, parent_out.n_qubits) + ctx_w
         return plan_open_occurrence(
-            parent_in=parent_in, parent_out=parent_out, branches=(),
+            parent_in=parent_in, parent_out=parent_out, branches=branches,
             bindings=bindings, ambient_width=ambient, scope=scope,
             tag_width_in=k_in, tag_width_out=k_out, perm=tuple(p.new_to_old))
 
@@ -2592,7 +2625,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 # General fallback: compile any body to a sub-circuit
                 # and control each gate (no decomposition needed).
                 from pytket.circuit import QControlBox
-                sub_cmds, _ctrl_phase_ht = _compile_branch(body)
+                sub_cmds, _ctrl_phase_ht = _compile_branch(
+                    body, scope=_branch_scope())
                 # The body's scalar becomes a phase conditional on all
                 # controls firing (tag value all-ones).
                 _discharge_branch_phase(
@@ -2836,41 +2870,33 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 # Fall through to Strategy A for opaque branches
 
             if ctx_left_w > 0 or ctx_right_w > 0:
-                # G2 SHADOW: select and record the occurrence placement using
-                # the ONE shared planner, BEFORE the existing guard runs.
-                # Emission does not consume it yet, and the guard below keeps
-                # its current behaviour and diagnostic exactly.
-                try:
-                    _fv_all = [(nm, ty_) for nm, ty_ in
-                               (_ordered_free_vars(t.left)
-                                + _ordered_free_vars(t.right))]
-                    _seen_nm = set()
-                    _fv_uniq = [x for x in _fv_all
-                                if not (x[0] in _seen_nm or _seen_nm.add(x[0]))]
-                    _pi, _po = select_frames(t)
-                    _sp = _plan_open_occurrence_for(
-                        t, _pi, _po, _fv_uniq, max(k, 1), max(k, 1), env)
-                    if _sp is not None:
-                        _shadow_plans[_cur_occ[0]] = _sp
-                        _planner_observed.append(_sp)
-                except NeedsBranchPreparation as _nb:
-                    # Explicitly incomplete: recorded, never attached.
-                    _PLANNER_INCOMPLETE.append(_nb)
-                except ProvenanceError:
-                    pass          # shadow stage: changes nothing
+                # Prepared-artifact planning happens below, after every
+                # alternative has been prepared exactly once. The frames and
+                # free-variable list are gathered here.
+                _fv_all = [(nm, ty_) for nm, ty_ in
+                           (_ordered_free_vars(t.left)
+                            + _ordered_free_vars(t.right))]
+                _seen_nm = set()
+                _fv_uniq = [x for x in _fv_all
+                            if not (x[0] in _seen_nm or _seen_nm.add(x[0]))]
+                _pi, _po = select_frames(t)
                 # Open branches: compile with parent env for free variable routing
                 tag_phys = p.apply_new_to_old(offset)
                 payload_base = offset + max(k, 1)
 
+                # PREPARE every alternative exactly once, BEFORE planning
+                # or emitting. All of them are prepared even if legacy
+                # emission later fails on an earlier branch, because the
+                # planner needs the complete occurrence.
+                _prepared = []
                 for branch, pw, ctx_w, anti in [
                     (t.left, payload_left_w, ctx_left_w, True),
                     (t.right, payload_right_w, ctx_right_w, False),
                 ]:
                     if pw + ctx_w == 0:
+                        _prepared.append(None)
                         continue
-
                     if ctx_w > 0:
-                        # Open branch: compile with env for free variables
                         fv = _ordered_free_vars(branch)
                         sub_env = {}
                         ctx_pos = pw
@@ -2878,11 +2904,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                             w_fv = width(ty_fv)
                             sub_env[name] = list(range(ctx_pos, ctx_pos + w_fv))
                             ctx_pos += w_fv
-
-                        # Substitute deferred Lam values for free vars (deferred Apply).
-                        # If a free var's parent physical wires are registered in
-                        # deferred_fns, replace Var(name) with the deferred Lam term so
-                        # the sub-compile β-reduces Apply(Var, ...) into concrete gates.
                         branch_to_compile = branch
                         if deferred_fns:
                             for name, ty_fv in fv:
@@ -2890,18 +2911,46 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                                     key = tuple(env[name])
                                     if key in deferred_fns:
                                         branch_to_compile = _substitute(
-                                            branch_to_compile, name, deferred_fns[key])
+                                            branch_to_compile, name,
+                                            deferred_fns[key])
                             branch_to_compile = _normalize(branch_to_compile)
-
-                        cmds, _open_phase_ht = _compile_branch(
-                            branch_to_compile, env=sub_env)
-
-                        # Map free vars to parent physical positions
+                        _art = _compile_branch_artifact(
+                            branch_to_compile, env=sub_env,
+                            scope=_branch_scope())
                         ctx_parent_phys = []
                         for name, ty_fv in fv:
                             if name in env:
                                 ctx_parent_phys.extend(env[name])
+                    else:
+                        _art = _compile_branch_artifact(
+                            branch, scope=_branch_scope())
+                        ctx_parent_phys = []
+                    _prepared.append((_art, pw, ctx_w, anti,
+                                      list(ctx_parent_phys)))
 
+                # PLAN from those exact artifact objects.
+                try:
+                    _bins = tuple(
+                        BranchInputs(index=_i, artifact=_pr[0])
+                        for _i, _pr in enumerate(_prepared) if _pr is not None)
+                    _sp2 = _plan_open_occurrence_for(
+                        t, _pi, _po, _fv_uniq, max(k, 1), max(k, 1), env,
+                        branches=_bins)
+                    if _sp2 is not None:
+                        _shadow_plans[_cur_occ[0]] = _sp2
+                        _PLANNER_OBSERVED.append(_sp2)
+                except NeedsBranchPreparation as _nb2:
+                    _PLANNER_INCOMPLETE.append(_nb2)
+                except ProvenanceError:
+                    pass
+
+                # EMIT from the SAME artifacts. No branch is compiled again.
+                for _pr in _prepared:
+                    if _pr is None:
+                        continue
+                    _art, pw, ctx_w, anti, ctx_parent_phys = _pr
+                    cmds, _open_phase_ht = _art.cmds, _art.phase
+                    if ctx_w > 0:
                         def make_open_wire_map(_pw=pw, _pb=payload_base,
                                                _cpp=list(ctx_parent_phys)):
                             def wm(w):
@@ -2924,8 +2973,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                             _emit_controlled_branch(tag_phys, cmds,
                                                     _wm_open, anti=anti)
                     else:
-                        # Closed branch: compile without env
-                        cmds, _open_phase_ht = _compile_branch(branch)
                         if pw == 0:
                             cmds = []
                         if cmds:
@@ -2934,12 +2981,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                                     return p.apply_new_to_old(w + _pb)
                                 return wm
                             _emit_controlled_branch(tag_phys, cmds,
-                                                    make_closed_wire_map(), anti=anti)
+                                                    make_closed_wire_map(),
+                                                    anti=anti)
 
-                    # Invariant P: promote this branch's scalar to an exact-tag
-                    # phase. anti=True is the tag=0 branch, anti=False tag=1.
-                    # Runs even when the branch emitted no gates, so a
-                    # pure-GlobalPhase branch is not dropped.
                     _discharge_branch_phase(circ, [tag_phys],
                                             [0 if anti else 1], _open_phase_ht)
 
@@ -2962,7 +3006,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 if branch_w == 0:
                     # Still compile so we can extract any accumulated global
                     # phase from a GlobalPhase term inside the branch.
-                    _a = _compile_branch_artifact(branch)
+                    _a = _compile_branch_artifact(branch, scope=_branch_scope())
                     return BranchArtifact([], _a.phase, _a.fin, _a.fout,
                                           _a.circuit)
                 if deferred_fns:
@@ -2973,8 +3017,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     if input_val is not None and not isinstance(input_val, Id):
                         modified = _inject_input_value(branch, input_val)
                         modified = _normalize(modified)
-                        return _compile_branch_artifact(modified)
-                return _compile_branch_artifact(branch)
+                        return _compile_branch_artifact(
+                            modified, scope=_branch_scope())
+                return _compile_branch_artifact(branch, scope=_branch_scope())
 
             payload_base_for_branches = offset + max(k, 1)
             _left_art = _compile_branch_with_deferred(t.left, left_w, payload_base_for_branches)
@@ -3541,7 +3586,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         branch_to_compile = _normalize(branch_to_compile)
 
                     sub_cmds, branch_phase_ht = _compile_branch(
-                        branch_to_compile, env=sub_env)
+                        branch_to_compile, env=sub_env,
+                        scope=_branch_scope())
 
                     if sub_cmds:
                         ctx_parent_phys = []
@@ -3559,7 +3605,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
                                               _wm_open())
                 else:
-                    sub_cmds, branch_phase_ht = _compile_branch(br)
+                    sub_cmds, branch_phase_ht = _compile_branch(
+                        br, scope=_branch_scope())
 
                     if sub_cmds:
                         def _wm_closed(pb=payload_base):
@@ -3793,7 +3840,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             if not any(_np_fv):
                 # Compile every branch EXACTLY once, carrying commands, phase
                 # and both frames together.
-                _np_arts = [_compile_branch_artifact(br) for br in t.branches]
+                _np_arts = [_compile_branch_artifact(br, scope=_branch_scope())
+                            for br in t.branches]
                 _npf_in, _npf_out = parent_in, parent_out
                 _np_dp, _np_cp = type_of(t)
                 if (_npf_in is not None and _npf_out is not None
@@ -3844,7 +3892,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         branch_to_compile = _normalize(branch_to_compile)
 
                     sub_cmds, branch_phase_ht = _compile_branch(
-                        branch_to_compile, env=sub_env)
+                        branch_to_compile, env=sub_env,
+                        scope=_branch_scope())
 
                     if sub_cmds:
                         ctx_parent_phys = []
@@ -3868,7 +3917,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         sub_cmds = _np_arts[i].cmds
                         branch_phase_ht = _np_arts[i].phase
                     else:
-                        sub_cmds, branch_phase_ht = _compile_branch(br)
+                        sub_cmds, branch_phase_ht = _compile_branch(
+                        br, scope=_branch_scope())
 
                     if sub_cmds:
                         if _np_plan is not None:
@@ -3919,13 +3969,15 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             # during the commands-only extraction.
             left_dom, _ = type_of(t.left)
             left_w = width(left_dom)
-            left_cmds, left_branch_phase_ht = _compile_branch(t.left)
+            left_cmds, left_branch_phase_ht = _compile_branch(
+                t.left, scope=_branch_scope())
             if left_w == 0:
                 left_cmds = []
 
             right_dom, _ = type_of(t.right)
             right_w = width(right_dom)
-            right_cmds, right_branch_phase_ht = _compile_branch(t.right)
+            right_cmds, right_branch_phase_ht = _compile_branch(
+                t.right, scope=_branch_scope())
             if right_w == 0:
                 right_cmds = []
 

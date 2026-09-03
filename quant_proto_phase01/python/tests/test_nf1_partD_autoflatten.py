@@ -445,9 +445,9 @@ def test_each_NPlusMap_branch_is_compiled_exactly_once(materialize, monkeypatch)
     calls = []
     orig = TP._compile_branch_artifact
 
-    def spy(branch, *, env=None):
+    def spy(branch, *, env=None, **kw):
         calls.append(type(branch).__name__)
-        return orig(branch, env=env)
+        return orig(branch, env=env, **kw)
 
     monkeypatch.setattr(TP, "_compile_branch_artifact", spy)
     TP.compile(EXPLICIT_NF(), materialize=materialize)
@@ -557,8 +557,8 @@ def test_unresolved_free_variable_fails_closed(materialize, monkeypatch):
     orig_art = TP._compile_branch_artifact
     monkeypatch.setattr(
         TP, "_compile_branch_artifact",
-        lambda br, *, env=None: (compiled_branches.append(br),
-                                 orig_art(br, env=env))[1])
+        lambda br, *, env=None, **kw: (compiled_branches.append(br),
+                                       orig_art(br, env=env, **kw))[1])
     touched = []
     for meth in ("add_gate", "add_toffolibox", "X"):
         o = getattr(Circuit, meth)
