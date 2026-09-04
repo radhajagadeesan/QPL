@@ -40,7 +40,8 @@ import pytest
 from lang.types import Q, Unit, Ten, Plus, Arrow
 from lang.terms import Id, Seq, TenTerm, TwistTen, PlusMap, NPlusMap, Var, H as Hg
 from compile.to_pytket import compile, compile_with_artifacts, select_frames
-from compile.frames import (Frame, Port, semantic_action, leakage, pretty,
+from compile.frames import (OpenUseBlockPlan,
+                            Frame, Port, semantic_action, leakage, pretty,
                             UnsupportedFrame, ProvenanceScope,
                             completed_dimension, ProvenanceError,
                             OccurrencePlacement, SidePlacement,
@@ -445,40 +446,83 @@ def test_D2_internal_plusmap_occurrence_is_exposed():
     assert pms, "no internal PlusMap/NPlusMap occurrence is exposed"
 
 
-def test_D3_completed_dimensions_balance():
+def test_D3_block_dimensions_are_64_and_16_with_parent_80():
+    """SUPERSEDES the uniform 256/256 model.
+
+    That model completed the whole occurrence against one context factor:
+    ingress (8+8) x 16_f = 256, egress (2+2) x 16_f x 4_h = 256, where the
+    "4_h" was a residual that does not exist -- h is the S_h operand factor
+    inside the right branch's own selected root. The completion is per block,
+    against the context each branch does NOT use.
+    """
     _, arts = compile_with_artifacts(D_term())
-    pms = [a for a in arts if isinstance(a.term, (PlusMap, NPlusMap))]
-    assert pms, "no internal sum occurrence"
-    a = pms[0]
-    assert a.input_frame.completed_dimension == 256, (
-        "ingress completed dimension must be (8+8)*16_f = 256")
-    assert a.output_frame.completed_dimension == 256, (
-        "egress completed dimension must be (2+2)*16_f*4_h = 256")
+    pms = [a for a in arts if isinstance(a.placement, OpenUseBlockPlan)]
+    assert pms, "no sum occurrence carries a use-block plan"
+    pl = pms[0].placement
+    dims = {b.index: b.dim for b in pl.branches}
+    assert dims == {0: 64, 1: 16}, f"block dims {dims}, want 64 and 16"
+    assert pl.ingress.dim == 80 and pl.egress.dim == 80
+    assert pl.ingress.dim not in (256, 320)
+    assert sum(dims.values()) == 80
 
 
 def test_D4_ambient_support_and_spectators():
+    """Read from the PLAN, not from Frame ports.
+
+    The Block spans 8 wires inside the occurrence's real 10-wire register.
+    """
     _, arts = compile_with_artifacts(D_term())
-    pms = [a for a in arts if isinstance(a.term, (PlusMap, NPlusMap))]
-    a = pms[0]
-    assert a.input_frame.n_qubits == 10, "ambient width is not 10"
-    support = {w for p in a.input_frame.ports for w in p.all_wires()}
-    assert len(support) == 8, f"support cardinality {len(support)}, not 8"
-    spectators = [p for p in a.input_frame.ports if p.role == "residual"]
-    assert len(spectators) == 2, f"{len(spectators)} spectators, not 2"
+    pl = [a.placement for a in arts
+          if isinstance(a.placement, OpenUseBlockPlan)][0]
+    assert pl.ambient_width == 10, f"register width {pl.ambient_width}"
+    assert pl.block_width == 8, f"block width {pl.block_width}"
+    assert pl.support == tuple(range(8)), f"support {pl.support}"
+    assert pl.spectators == (8, 9), f"spectators {pl.spectators}"
+    assert pl.tag_wires == (4,)
+    assert pl.workspace_wires == (5, 6, 7)
 
 
-def test_D5_typed_f_context_and_h_residual_with_provenance():
+def test_D5_f_completes_one_block_and_h_stays_inside_the_other():
+    """SUPERSEDES the fabricated h-port expectation.
+
+    f occurs ONCE, as a typed inactive completion of the block that does not
+    use it, and that same owner is in the other block's use set. h is never a
+    completion port: it is the typed, provenanced operand factor inside the
+    right block's own selected root.
+    """
     _, arts = compile_with_artifacts(D_term())
-    pms = [a for a in arts if isinstance(a.term, (PlusMap, NPlusMap))]
-    ports = pms[0].input_frame.ports + pms[0].output_frame.ports
-    typed = [p for p in ports if p.logical not in (Unit(),)]
-    assert any(isinstance(p.logical, Arrow) for p in typed), (
-        "no typed f:EndoOp context port")
-    for p in typed:
-        assert p.name not in ("fn_layout", "ancilla"), (
-            f"live resource kept a generic name: {p.name}")
-        assert getattr(p, "owner_id", None) is not None, f"{p.name}: no owner"
-        assert getattr(p, "cut_id", None) is not None, f"{p.name}: no cut"
+    pl = [a.placement for a in arts
+          if isinstance(a.placement, OpenUseBlockPlan)][0]
+    blocks = {b.index: b for b in pl.branches}
+
+    inactive = [x for x in blocks[0].inactive]
+    assert len(inactive) == 1 and isinstance(inactive[0].logical, Arrow), (
+        f"block 0 must be completed against exactly one typed f, got "
+        f"{[(x.name, x.logical) for x in inactive]}")
+    f_owner = inactive[0].owner_id
+    assert f_owner is not None
+    assert blocks[1].uses == (f_owner,), (
+        f"the owner completing block 0 must be the one block 1 uses; got "
+        f"{blocks[1].uses}")
+    assert blocks[1].inactive == (), "f must not complete both blocks"
+
+    ys = [f for f in blocks[0].ingress.route.parts if f.role == "residual"
+          and isinstance(f.logical, Arrow)]
+    assert len(ys) == 1 and ys[0].owner == f_owner
+
+    endo = Arrow(q, q)
+    s_h = [f for f in blocks[1].ingress.route.parts
+           if f.role == "operand" and f.logical == endo]
+    assert len(s_h) == 1, (
+        f"h must be a typed operand factor inside the right block's root; "
+        f"factors are "
+        f"{[(x.name, x.role, x.logical, x.dim) for x in blocks[1].ingress.route.parts]}")
+    assert s_h[0].owner is not None
+    for b in pl.branches:
+        for side in (b.ingress, b.egress):
+            for f in side.route.parts:
+                assert f.name not in ("h", "Y_h"), (
+                    f"an h completion port was invented: {f.name}")
 
 
 # ===========================================================================
@@ -557,8 +601,12 @@ def test_E5_at_least_one_witness_has_a_command_bearing_branch():
     assert len(a.cmds) >= 1, "the H branch emits no commands"
 
 
-def test_E6_bridge_exposes_nested_occurrence_frames():
-    """The OCaml bridge must round-trip nested artifact frames, not only the
+def test_E6_python_serialization_exposes_nested_occurrence_frames():
+    """RENAMED HONESTLY. This exercises the PYTHON nested-artifact
+    serialization path, not the OCaml bridge. Nothing here shows that the
+    bridge was fixed, and the earlier name claimed it did.
+
+    The OCaml bridge must round-trip nested artifact frames, not only the
     root. Recorded as its own red: a Python-only round-trip is not a
     substitute."""
     t = D_term()
@@ -572,7 +620,10 @@ def test_E6_bridge_exposes_nested_occurrence_frames():
 
 
 # ===========================================================================
-# G2a: bound open sum occurrences are PLANNED (shadow mode)
+# G2a: the shared occurrence planner -- NPlusMap ONLY, still shadow.
+# Binary open PlusMap no longer uses it: it consumes its completed-branch
+# Block directly (Parts J and K). These cases pin the planner itself and
+# the not-yet-migrated NPlusMap path.
 #
 # The planner is pure and shared: open PlusMap and open NPlusMap reach the same
 # algorithm through thin adapters that only collect their own sectors and free

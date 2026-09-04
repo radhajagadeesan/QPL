@@ -56,12 +56,15 @@ from compile.frames import (Frame, Sector, Port, canonical_frame,
                             chart_of_frame, par_then_repart, scatter_repart,
                             localize_scatter,
                             SelectedBoundary, TenPackSchedule,
+                            FRAME_DEFAULT, DERIVED, RoutingOnly,
+                            BlockDescriptor, aggregate_block_chart,
+                            check_binding_consistency,
                             tenpack, tensor_splice,
                             _matched_factor, check_spine_residual,
                             complete_branch, plan_use_block,
                             use_block_layout,
                             CompletedBranch, OpenUseBlockPlan,
-                            frames_agree, semantic_dim,
+                            frames_agree, semantic_dim, leakage,
                             apply_wire_perm, with_spectators,
                             distl_frames, encode_qubit_frames,
                             distributor_frames,
@@ -115,6 +118,14 @@ class Artifact:
     # DistR, Seq, Lam) reorders one relative to the other.
     ingress_wires: tuple = ()
     egress_wires: tuple = ()
+    # What this occurrence ACTUALLY did to the parent circuit, captured
+    # around its own emission. An identity relay must be certified from
+    # these, never from the child's constructor or from equal widths.
+    n_cmds: int = 0
+    phase_delta: float = 0.0
+    # A RoutingOnly certificate, when the emitter issued one. Never derived
+    # by a consumer from this artifact's other fields.
+    routing: object = None
 
     @property
     def n_qubits(self) -> int:
@@ -148,6 +159,9 @@ class Compiled:
     output_ports: tuple = ()
     global_phase: float = 0.0
     selected_boundary: object = None
+    # The ROOT occurrence's own cut identity, carried explicitly so a nested
+    # compilation has a real identity rather than a label.
+    root_cut_id: object = None
 
 
 # --- Auto-flatten helpers for nested PlusMap → NPlusMap conversion ---
@@ -1212,6 +1226,8 @@ class BranchArtifact(NamedTuple):
     circuit: object = None      # the SAME compilation, for its exact unitary
     # preserved from that one nested compilation, already resolved
     selected_boundary: object = None
+    # the nested compilation's ROOT occurrence cut -- a real identity
+    cut_id: object = None
 
     @property
     def unitary(self):
@@ -1237,7 +1253,8 @@ def _compile_branch_artifact(branch, *, env=None, scope=None):
         else compile(branch, materialize=True, _prov_scope=scope)
     return BranchArtifact(_get_sub_cmds(sub.circuit), float(sub.circuit.phase),
                           sub.input_frame, sub.output_frame, sub.circuit,
-                          selected_boundary=sub.selected_boundary)
+                          selected_boundary=sub.selected_boundary,
+                          cut_id=sub.root_cut_id)
 
 
 def _discharge_branch_phase(circ, tag_qubits, tag_values, phase_ht):
@@ -1755,6 +1772,124 @@ def _slot_wires(perm, offset, w):
     return tuple(perm[offset + i] for i in range(w))
 
 
+def _preflight_open_use_block(plan, ambient_width):
+    """Validate EVERY block before the parent gains a command or a phase.
+
+    Names the Block and the branch in every failure. Nothing here mutates
+    anything; the caller emits into a scratch circuit and appends only after
+    this returns.
+    """
+    where = "open use-block"
+    plan.validate()
+    if plan.ambient_width != ambient_width:
+        raise UnsupportedFrame(
+            f"{where}: the plan is over {plan.ambient_width} wires but the "
+            f"target circuit has {ambient_width}")
+    tw = tuple(plan.tag_wires)
+    if len(set(tw)) != len(tw):
+        raise UnsupportedFrame(f"{where}: tag wires {tw} are not injective")
+    for w in tw:
+        if not (0 <= w < ambient_width):
+            raise UnsupportedFrame(
+                f"{where}: tag wire {w} is outside a {ambient_width}-wire "
+                f"register")
+    seen_tags = set()
+    for b in plan.branches:
+        name = f"{where}, branch {b.index}"
+        if b.tag_value in seen_tags:
+            raise UnsupportedFrame(
+                f"{name}: tag value {b.tag_value} is used twice")
+        seen_tags.add(b.tag_value)
+        if not (0 <= b.tag_value < (1 << len(tw))):
+            raise UnsupportedFrame(
+                f"{name}: tag value {b.tag_value} is not representable by "
+                f"{len(tw)} tag wire(s)")
+        art = b.artifact
+        if art is None or b.artifact.selected_boundary is None:
+            raise UnsupportedFrame(
+                f"{name}: no prepared artifact or selected boundary")
+        sb = art.selected_boundary
+        if sb.ingress.dim != sb.egress.dim:
+            raise UnsupportedFrame(
+                f"{name}: the prepared boundary is {sb.ingress.dim} in and "
+                f"{sb.egress.dim} out; the two polarities do not balance")
+        l2a = tuple(b.local_to_ambient)
+        if len(set(l2a)) != len(l2a):
+            raise UnsupportedFrame(
+                f"{name}: local_to_ambient {l2a} is not injective")
+        for w in l2a:
+            if not (0 <= w < ambient_width):
+                raise UnsupportedFrame(
+                    f"{name}: local_to_ambient names wire {w}, outside a "
+                    f"{ambient_width}-wire register")
+        if set(l2a) & set(tw):
+            raise UnsupportedFrame(
+                f"{name}: its placement {l2a} overlaps the tag wires {tw}")
+        if set(l2a) & set(plan.spectators):
+            raise UnsupportedFrame(
+                f"{name}: its placement {l2a} reaches a spectator "
+                f"{sorted(set(l2a) & set(plan.spectators))}")
+        n_local = art.circuit.n_qubits if art.circuit is not None else len(l2a)
+        if len(l2a) != n_local:
+            raise UnsupportedFrame(
+                f"{name}: local_to_ambient names {len(l2a)} wires for a "
+                f"{n_local}-qubit prepared circuit")
+        for cmd in art.cmds:
+            idx = [q.index[0] for q in cmd.qubits]
+            for w in idx:
+                if not (0 <= w < len(l2a)):
+                    raise UnsupportedFrame(
+                        f"{name}: command {cmd.op.type.name} uses branch wire "
+                        f"{w}, which local_to_ambient does not record")
+            mapped = [l2a[w] for w in idx]
+            if len(set(mapped)) != len(mapped):
+                raise UnsupportedFrame(
+                    f"{name}: command {cmd.op.type.name} would receive a "
+                    f"physical wire twice (mapped {mapped})")
+            if set(mapped) & set(tw):
+                raise UnsupportedFrame(
+                    f"{name}: command {cmd.op.type.name} would touch the "
+                    f"outer tag wire(s) {sorted(set(mapped) & set(tw))}")
+        if art.circuit is not None:
+            lk = leakage(sb.ingress, art.unitary, sb.egress)
+            if lk >= 1e-10:
+                raise UnsupportedFrame(
+                    f"{name}: the prepared branch leaks {lk:.3e} out of its "
+                    f"own selected boundary; it cannot be blocked")
+    return True
+
+
+def _emit_open_use_block(circuit, plan):
+    """Emit an open sum DIRECTLY from its completed-branch Block.
+
+    Every block is validated first, then built into a SCRATCH circuit which is
+    appended only on success, so a malformed later branch cannot leave the
+    parent half-written. No Align, no A_pre/A_post: the plan's charts already
+    satisfy the block equation, and adding transport here would be a
+    heuristic covering a defect rather than a repair.
+
+    An inactive resource receives no gate -- its contribution is the identity
+    -- and each branch's circuit-global phase is discharged exactly once, at
+    its own tag value.
+    """
+    _preflight_open_use_block(plan, circuit.n_qubits)
+    scratch = Circuit(circuit.n_qubits)
+    tw = list(plan.tag_wires)
+    for b in plan.branches:
+        # A branch with no commands contributes the identity. Emitting the
+        # tag X-flip/unflip pair around nothing would add two redundant gates
+        # per empty arm without changing the semantics.
+        if b.artifact.cmds:
+            _emit_nway_controlled(scratch, tw, b.tag_value, b.artifact.cmds,
+                                  (lambda l2a: (lambda w: l2a[w]))(
+                                      tuple(b.local_to_ambient)))
+        # The recorded commands omit the branch circuit's global phase, so it
+        # is promoted here, once, to a relative phase on that branch's sector.
+        _discharge_branch_phase(scratch, tw, [b.tag_value], b.artifact.phase)
+    circuit.append(scratch)
+    return plan
+
+
 def _has_boundary_rule(t: Term) -> bool:
     """Terms whose selected boundary is NOT simply their frames.
 
@@ -1765,7 +1900,7 @@ def _has_boundary_rule(t: Term) -> bool:
     nothing is a rule that failed to fire, and is rejected rather than
     quietly defaulted.
     """
-    return isinstance(t, (Apply, Pair, LetPair))
+    return isinstance(t, (Apply, Pair, LetPair, Seq))
 
 
 def compile_with_artifacts(term: Term, *, materialize: bool = False,
@@ -1879,6 +2014,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             raise TypeCheckError(
                 f"cannot select boundary frames for {type(t).__name__}: {_e}")
         entry = tuple(p.new_to_old)
+        _n0, _ph0 = circ.n_gates, float(circ.phase)
         prev_occ = _cur_occ[0]
         _cur_occ[0] = occ
         try:
@@ -1886,6 +2022,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                      parent_in=fin, parent_out=fout)
         finally:
             _cur_occ[0] = prev_occ
+        _n_emitted = circ.n_gates - _n0
+        _phase_delta = float(circ.phase) - _ph0
         # An emitter may report a TRANSPORTED output frame (Seq after Align);
         # that effective frame, not the selected one, is what propagates.
         fout = _frame_override.pop(occ, fout)
@@ -1917,6 +2055,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         _ing_w = _placement_sink.pop(occ, None)
         if _ing_w is None:
             _ing_w = _slot_wires(entry, offset, fin.n_qubits)
+        _rc = _routing_sink.pop(occ, None)
+        if _rc is not None:
+            _rc = RoutingOnly(perm_at_entry=entry,
+                              perm_at_exit=_exit,
+                              n_cmds=_n_emitted, phase_delta=_phase_delta,
+                              **_rc)
         art = Artifact(term=t, occurrence=occ, offset=offset,
                        input_frame=fin, output_frame=fout,
                        perm_at_entry=entry, perm_at_exit=tuple(p.new_to_old),
@@ -1924,7 +2068,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                        cut_id=_cut_ids[occ],
                        placement=_shadow_plans.pop(occ, None),
                        selected_boundary=_sb,
-                       ingress_wires=_ing_w, egress_wires=_egr_w)
+                       ingress_wires=_ing_w, egress_wires=_egr_w,
+                       n_cmds=_n_emitted, phase_delta=_phase_delta,
+                       routing=_rc)
         frame_registry[occ] = art
         artifacts.append(art)
         return art
@@ -1939,6 +2085,27 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
     _boundary_sink = {}
     _placement_sink = {}
     _use_block_sink = {}
+    _routing_sink = {}
+    # name -> the identity minted where that name was BOUND.
+    # Saved and restored around every binder, so a Var reads the
+    # identity of the binder that lexically encloses it -- never one
+    # manufactured from its name, type, width, wires or own cut.
+    _binder_ids = {}
+
+    def _bind_ids(**names):
+        prev = dict(_binder_ids)
+        for nm in names:
+            _binder_ids[nm] = _prov.fork().owner()
+        return prev
+
+    def _unbind_ids(prev):
+        _binder_ids.clear()
+        _binder_ids.update(prev)
+    # Payload binders introduced by a CaseExpr, carried through its
+    # desugaring by object identity. Without this record the binder
+    # is indistinguishable from an unresolved free variable at the
+    # PlusMap, because the desugaring drops the names.
+    _payload_binders = {}
     _planner_observed = _PLANNER_OBSERVED
     _cur_occ = [0]
     circ = Circuit(n)
@@ -2288,7 +2455,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         ing, egr = tensor_splice(prod_in, prod_out, packed_in, packed_out,
                                  tensor_ty)
         return SelectedBoundary(ingress=ing, egress=egr,
-                                origin="letpair:splice", packing=sched)
+                                origin="letpair:splice", packing=sched,
+                                authority=DERIVED)
 
     def _plan_use_block_from(bins, bindings, layout, label="u"):
         """Complete each PREPARED alternative, then take their tagged Block.
@@ -2303,6 +2471,10 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             return None
         if not bindings:
             return None          # closed occurrence: Complete/Block is trivial
+        check_binding_consistency(bindings, "use-block: ")
+        for bi in bins:
+            check_binding_consistency(bi.bindings,
+                                      f"use-block branch {bi.index}: ")
         completed = []
         for bi in bins:
             used_ids = tuple(bi.uses)
@@ -2315,6 +2487,138 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 tag_value=bi.index, ambient_width=layout.ambient_width,
                 label=label))
         return plan_use_block(completed, layout)
+
+    def _certified_identity(a):
+        """Is this compiled child a certified identity relay leg?
+
+        Established from what the child ACTUALLY did -- no commands, no phase
+        delta, no permutation change, and an ingress chart that is its egress
+        chart -- never from its constructor, its type or equal widths. The
+        connector is certified separately, by the caller.
+        """
+        if a is None or a.selected_boundary is None:
+            return False
+        if a.n_cmds != 0:
+            return False
+        if abs(a.phase_delta) > 1e-12:
+            return False
+        if tuple(a.perm_at_entry) != tuple(a.perm_at_exit):
+            return False
+        sb = a.selected_boundary
+        return tuple(sb.ingress.codes) == tuple(sb.egress.codes)
+
+    def _seq_boundary(a_f, a_g, strict_identity_cut, cut_kind):
+        """The ONE narrow Seq rule: relay a derived boundary across an
+        identity leg.
+
+        A. left derived, right a certified identity  -> relay the left.
+        B. left a certified identity, right derived  -> relay the right.
+        C. both frame defaults                       -> frame default.
+        D. anything else                             -> fail closed.
+
+        A derived boundary is never silently replaced by a frame default, and
+        nothing is relayed across a wire-permutation align, a real Align or a
+        sibling that emitted a command, a phase or a permutation. Those are
+        general SeqCut transport, which this phase does not implement.
+        """
+        occ = _cur_occ[0]
+        f_der = a_f is not None and a_f.selected_boundary is not None \
+            and a_f.selected_boundary.authority == DERIVED
+        g_der = a_g is not None and a_g.selected_boundary is not None \
+            and a_g.selected_boundary.authority == DERIVED
+        _f_fd = a_f is not None and a_f.selected_boundary is not None \
+            and a_f.selected_boundary.authority == FRAME_DEFAULT
+        _g_fd = a_g is not None and a_g.selected_boundary is not None \
+            and a_g.selected_boundary.authority == FRAME_DEFAULT
+        if _f_fd and _g_fd:
+            # EXACTLY frame-default on both legs -- not merely "neither said
+            # derived", which would also swallow a missing boundary.
+            _boundary_sink[occ] = "seq:frame-default"
+            return
+        if strict_identity_cut:
+            # L1: a CERTIFIED bound-variable routing handoff. The left leg
+            # emitted nothing and carries no phase; it only brought its own
+            # recorded binding into the consumer's slot, and it says so with
+            # a certificate its own emitter issued. The right child was
+            # compiled UNDER that new schedule, so its ambient chart already
+            # names the correct physical states: the boundary is relayed
+            # BYTE-FOR-BYTE and nothing is transported here. Materialisation
+            # still transports the egress exactly once, at finalisation.
+            if (g_der and a_f is not None and a_f.routing is not None):
+                _cert = a_f.routing
+                _cert.validate("Seq: ", artifact=a_f)
+                _rb = a_g.selected_boundary
+                _reg = len(p.new_to_old)
+                if _rb.ingress.space != "ambient" or \
+                        _rb.egress.space != "ambient":
+                    raise UnsupportedFrame(
+                        f"Seq: the routed consumer's boundary is "
+                        f"{_rb.ingress.space!r}, not ambient, so a routing "
+                        f"handoff cannot relay it")
+                if _rb.ingress.n_qubits != _reg or _rb.egress.n_qubits != _reg:
+                    raise UnsupportedFrame(
+                        f"Seq: the routed consumer's boundary spans "
+                        f"{_rb.ingress.n_qubits} wires but the register is "
+                        f"{_reg}")
+                if tuple(_cert.egress_wires) != tuple(a_g.ingress_wires):
+                    raise UnsupportedFrame(
+                        f"Seq: the routing handoff is {_cert.egress_wires} "
+                        f"but the consumer receives on {a_g.ingress_wires}; "
+                        f"they are not the same resource")
+                _boundary_sink[occ] = _dc_replace(
+                    _rb, origin=f"seq:routing-relay<-{_rb.origin}")
+                return
+            # A: left derived, right a CERTIFIED IDENTITY.
+            # B: right derived, left a CERTIFIED IDENTITY.
+            # What matters is that the other leg is certified to contribute
+            # nothing -- not that it happens to lack a derived boundary of
+            # its own. A Pair that emits no gate, no phase and no permutation
+            # still carries a derived Par boundary, and refusing to relay
+            # past it would reject a legitimate identity leg.
+            _a_ok = f_der and _certified_identity(a_g)
+            _b_ok = g_der and _certified_identity(a_f)
+            if _a_ok and _b_ok:
+                raise UnsupportedFrame(
+                    f"Seq: both legs carry a derived boundary AND both are "
+                    f"certified identities, so which one the cut relays is "
+                    f"ambiguous. That is general SeqCut transport, which is "
+                    f"not implemented.")
+            if _a_ok:
+                _boundary_sink[occ] = _dc_replace(
+                    a_f.selected_boundary,
+                    origin=f"seq:relay-left<-{a_f.selected_boundary.origin}")
+                return
+            if _b_ok:
+                _boundary_sink[occ] = _dc_replace(
+                    a_g.selected_boundary,
+                    origin=f"seq:relay-right<-{a_g.selected_boundary.origin}")
+                return
+        _why = []
+        if f_der and g_der:
+            _why.append("both legs carry derived boundaries")
+        if not strict_identity_cut:
+            _why.append(f"the cut is {cut_kind}, not a strict identity")
+        for _nm, _a, _o in (("left", a_f, f_der), ("right", a_g, g_der)):
+            if _o or _a is None:
+                continue
+            if not _certified_identity(_a):
+                _r = "no artifact"
+                if _a is not None:
+                    if _a.n_cmds:
+                        _r = f"it emitted {_a.n_cmds} command(s)"
+                    elif abs(_a.phase_delta) > 1e-12:
+                        _r = f"it carries phase {_a.phase_delta}"
+                    elif tuple(_a.perm_at_entry) != tuple(_a.perm_at_exit):
+                        _r = "it permutes"
+                    elif _a.selected_boundary is None:
+                        _r = "it records no boundary"
+                    else:
+                        _r = "its ingress and egress charts differ"
+                _why.append(f"the {_nm} leg is not a certified identity: {_r}")
+        raise UnsupportedFrame(
+            f"Seq: general SeqCut transport is not implemented -- "
+            f"{'; '.join(_why)}. Refusing to replace a derived selected "
+            f"boundary with a frame default.")
 
     def _par_boundary(children, occ, label):
         """Par of the immediate children's selected boundaries, in order.
@@ -2366,7 +2670,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             return ch
 
         return SelectedBoundary(ingress=side("ingress"),
-                                egress=side("egress"), origin=label)
+                                egress=side("egress"), origin=label,
+                                authority=DERIVED)
 
     def _plan_open_occurrence_for(t, parent_in, parent_out, free_names,
                                   k_in, k_out, env_, branches=()):
@@ -2621,13 +2926,15 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                                               residual_name="splice_pad")
                     g_out = with_spectators(g_out, _amb,
                                             residual_name="splice_pad")
-            if not align_is_identity(cons_in, prod_out):
+            _strict_identity_cut = align_is_identity(cons_in, prod_out)
+            if not _strict_identity_cut:
                 wp = align_as_wire_permutation(cons_in, prod_out)
                 if wp is not None:
                     # Fast path: a pure wire permutation folds into WirePerm.
                     _frame_override[_cur_occ[0]] = transported_frame(
                         build_align(cons_in, prod_out), g_out)
-                    go(t.g, offset, env)
+                    _a_g = go(t.g, offset, env)
+                    _seq_boundary(a_f, _a_g, False, "wire-permutation align")
                     return
                 wires = [p.apply_new_to_old(offset + i)
                          for i in range(prod_out.n_qubits)]
@@ -2635,12 +2942,14 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 # G_C' = A G_C A^dagger, emitted chronologically as
                 # A^dagger ; G_C ; A.
                 emit_align(circ, wires, prod_out, cons_in)     # A^dagger
-                go(t.g, offset, env)                            # G_C
+                _a_g = go(t.g, offset, env)                     # G_C
                 emit_align(circ, wires, cons_in, prod_out)      # A
                 # The effective output is A u_C^+ ; propagate it onward.
                 _frame_override[_cur_occ[0]] = transported_frame(A, g_out)
+                _seq_boundary(a_f, _a_g, False, "a real Align")
                 return
-            go(t.g, offset, env)
+            _a_g = go(t.g, offset, env)
+            _seq_boundary(a_f, _a_g, True, "identity cut")
             return
 
         # TenTerm: parallel composition with offset semantics (Phase 2)
@@ -3081,12 +3390,19 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
 
         # Case/copairing: redirect to PlusMap (identical semantics and fields)
         if isinstance(t, Case):
-            go(PlusMap(t.ty_left, t.ty_right, t.left, t.right), offset, env)
+            _pm = PlusMap(t.ty_left, t.ty_right, t.left, t.right)
+            _payload_binders[id(_pm)] = _payload_binders.get(id(t), ())
+            go(_pm, offset, env)
             return
 
         # CaseExpr: pure syntactic sugar — desugar to Seq(scrut, Case(...))
         if isinstance(t, CaseExpr):
-            desugared = Seq(t.scrut, Case(t.ty_x, t.ty_y, t.left, t.right))
+            _case = Case(t.ty_x, t.ty_y, t.left, t.right)
+            # The pattern BINDS these names to the payload. Recorded here so
+            # the desugared PlusMap can tell a bound payload variable from a
+            # genuinely unresolved one.
+            _payload_binders[id(_case)] = (t.x, t.y)
+            desugared = Seq(t.scrut, _case)
             go(desugared, offset, env)
             if explain:
                 log.append(f"CaseExpr: desugared to Seq(scrut, Case({t.ty_x}, {t.ty_y}, ...))")
@@ -3130,6 +3446,28 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             ctx_left_w = max(left_w - payload_left_w, fv_left_w)
             ctx_right_w = max(right_w - payload_right_w, fv_right_w)
 
+
+            # An UNRESOLVED free variable is not an open branch: nothing in
+            # the enclosing environment supplies its context, so there is no
+            # binding to own, place or complete against. Decided HERE, before
+            # any branch is prepared and before the circuit is touched, and
+            # named -- the NPlusMap path has always done this, and the binary
+            # path silently compiled with no context port at all.
+            _pm_bound = set(_payload_binders.get(id(t), ()))
+            _pm_unresolved = []
+            for _side_nm, _br in (("left", t.left), ("right", t.right)):
+                for _nm, _ in _ordered_free_vars(_br):
+                    if _nm in _pm_bound:
+                        continue          # bound to this sum's own payload
+                    if not (env and _nm in env):
+                        _pm_unresolved.append((_side_nm, _nm))
+            if _pm_unresolved:
+                raise UnsupportedFrame(
+                    f"PlusMap: unresolved free variable(s) "
+                    f"{[f'{b}:{n}' for b, n in _pm_unresolved]} are not bound "
+                    f"in the enclosing environment, so their context is "
+                    f"unresolved and no binding can be completed against. "
+                    f"Failing closed before emission.")
 
             # FAIL CLOSED FIRST. When the parent's ingress and egress
             # embeddings differ, the branch result has to be carried between
@@ -3307,6 +3645,53 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         _PLANNER_INCOMPLETE.append(_nb2)
                     except ProvenanceError:
                         pass
+
+                if _ublock is not None:
+                    # PLAN-AUTHORITATIVE EMISSION. The completed blocks are
+                    # emitted directly from the plan: no Align, no A_pre or
+                    # A_post, no payload_base or ctx_parent_phys arithmetic,
+                    # and no second pass over the branches. Every block is
+                    # validated before the parent gains a command.
+                    _emit_open_use_block(circ, _ublock)
+                    # The occurrence's boundary IS the Block. Without this the
+                    # successful artifact would keep the obsolete
+                    # frame-default 16/4 boundary and would not compose.
+                    # The occurrence's boundary IS the Block. Without this
+                    # the successful artifact would keep the obsolete
+                    # frame-default boundary and would not compose.
+                    #
+                    # It is exposed as ONE aggregate factor over the Block's
+                    # own direct-sum alphabet, so it carries a genuine
+                    # one-factor scatter route and the ordinary TenPack and
+                    # Splice can consume it. The sectors are NOT split into
+                    # product factors: a direct sum is not a tensor product.
+                    _bdesc = BlockDescriptor(
+                        cut_id=_cut_ids[_cur_occ[0]],
+                        branch_cuts=tuple(b.artifact.cut_id
+                                          for b in _ublock.branches),
+                        tag_values=tuple(b.tag_value
+                                         for b in _ublock.branches),
+                        uses=tuple(tuple(b.uses) for b in _ublock.branches),
+                        inactive=tuple(tuple(x.owner_id for x in b.inactive)
+                                       for b in _ublock.branches),
+                        block_dims=tuple(b.dim for b in _ublock.branches),
+                        tag_wires=tuple(_ublock.tag_wires),
+                        block_to_ambient=tuple(_ublock.block_to_ambient),
+                        block_width=_ublock.block_width,
+                        ambient_width=_ublock.ambient_width)
+                    _bdesc.check_against(_ublock)
+                    _boundary_sink[_cur_occ[0]] = SelectedBoundary(
+                        ingress=aggregate_block_chart(_ublock, "ingress",
+                                                      _bdesc),
+                        egress=aggregate_block_chart(_ublock, "egress",
+                                                     _bdesc),
+                        origin="plusmap:use-block", authority=DERIVED)
+                    if explain:
+                        log.append(
+                            f"PlusMap open: emitted {len(_ublock.branches)} "
+                            f"completed blocks, parent dim "
+                            f"{_ublock.ingress.dim}")
+                    return
 
                 # EMIT from the SAME artifacts. No branch is compiled again.
                 for _pr in _prepared:
@@ -4632,6 +5017,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 # overlapping with Γ wires.
                 x_phys = [p.new_to_old[offset + ctx_w + i] for i in range(wA)]
                 new_env = {**env, t.name: x_phys}
+                _prev_ids = _bind_ids(**{t.name: 1})
 
                 # Compile body: it accesses both Γ (via env) and x
                 go(t.body, offset, new_env)
@@ -4655,6 +5041,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             # Closed lambda: x bound at [offset..offset+wA), no context overlap.
             x_phys = [p.new_to_old[offset + i] for i in range(wA)]
             new_env = {**env, t.name: x_phys}
+            _prev_ids = _bind_ids(**{t.name: 1})
 
             # Compile body with x bound
             go(t.body, offset, new_env)
@@ -4720,6 +5107,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 # Bind x to the argument wires (physical positions for perm stability)
                 x_phys = [p.new_to_old[offset + i] for i in range(wA)]
                 new_env = {**env, lam.name: x_phys}
+                _prev_ids = _bind_ids(**{lam.name: 1})
                 go(lam.body, offset, new_env)
                 # β-reduction ELIMINATES the cut, so there is no AppCut
                 # boundary to build here. Recorded explicitly.
@@ -4950,7 +5338,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 egress=_appcut_side("r_1^+", _sb_arg.egress,
                                     _a_arg.egress_wires,
                                     _head_out, "egress"),
-                origin="appcut")
+                origin="appcut", authority=DERIVED)
 
             total_width = wA + wB
             if total_width > 0 and wB > 0:
@@ -4981,6 +5369,15 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 # arrives on the binder's wires, not on whatever the slot was
                 # naming at entry. The emitter that knows this records it.
                 _placement_sink[_cur_occ[0]] = tuple(phys_list)
+                # ... and it is the ONLY thing that knows this occurrence
+                # merely routed that binding, so it issues the certificate.
+                # A consumer must never infer this from zero commands or a
+                # changed permutation.
+                _routing_sink[_cur_occ[0]] = dict(
+                    name=t.name, wires=tuple(phys_list),
+                    owner_id=_binder_ids.get(t.name),
+                    ingress_wires=tuple(phys_list),
+                    egress_wires=tuple(phys_list))
                 if var_width > 0:
                     inv_p = inverse(p)
                     curr_positions = [inv_p.new_to_old[ph] for ph in phys_list]
@@ -5055,6 +5452,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             _comp_in = tuple(w for w in range(len(p.new_to_old))
                              if w not in set(_rx_in) | set(_ry_in))
             new_env = {**env, t.x: x_phys, t.y: y_phys}
+            # The binder introduces the identities; they are restored when
+            # its body is done, so the scope is exactly this LetPair's.
+            _prev_ids = _bind_ids(**{t.x: 1, t.y: 1})
 
             # Propagate term_env: if the pair's term is a known Pair,
             # bind x and y to its components for later β-reduction.
@@ -5063,7 +5463,10 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 term_env[t.x] = pair_term.fst
                 term_env[t.y] = pair_term.snd
 
-            _a_body = go(t.body, offset, new_env)
+            try:
+                _a_body = go(t.body, offset, new_env)
+            finally:
+                _unbind_ids(_prev_ids)
             # r_x^+ and r_y^+ : the SAME slot read again, at the body's exit.
             # Recorded independently of the negative side; nothing here reads
             # x_phys/y_phys, which belong to the other polarity.
@@ -5195,6 +5598,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     input_frame=_fin, output_frame=_fout,
                     input_ports=_pin, output_ports=_pout,
                     global_phase=float(circ.phase),
-                    selected_boundary=_sel)
+                    selected_boundary=_sel, root_cut_id=_root.cut_id)
 
 

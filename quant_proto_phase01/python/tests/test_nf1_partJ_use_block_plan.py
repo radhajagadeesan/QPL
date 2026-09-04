@@ -47,10 +47,7 @@ CTRL_HO_PARENT = 80
 def ctrl_ho_plan(materialize=False):
     from test_nf1_beta_tensor import _fixture
     TP._USE_BLOCK_OBSERVED.clear()
-    try:
-        compile(_fixture("ctrl_ho_closed_plus_map"), materialize=materialize)
-    except Exception:
-        pass          # controlled emission on the open path is a later phase
+    compile(_fixture("ctrl_ho_closed_plus_map"), materialize=materialize)
     assert TP._USE_BLOCK_OBSERVED, "no use-block plan was produced"
     return TP._USE_BLOCK_OBSERVED[-1]
 
@@ -124,19 +121,41 @@ def test_J5_f_is_not_multiplied_into_both_branches(materialize):
 
 @pytest.mark.parametrize("materialize", MODES)
 def test_J6_no_h_residual_is_fabricated(materialize):
-    """h is already the S_h factor inside u1's selected root, not a port."""
+    """h is already an operand factor inside u1's selected root, not a port.
+
+    It is identified by RECORDED TYPE and PROVENANCE -- an operand factor of
+    logical type Q-oQ with a real owner -- never by "dimension 4", which
+    Q(x)Q also is.
+    """
     pl = ctrl_ho_plan(materialize)
     blocks = {b.index: b for b in pl.branches}
     for b in pl.branches:
         for side in (b.ingress, b.egress):
             for f in side.route.parts:
-                assert f.name != "h" and f.name != "Y_h", (
+                assert f.name not in ("h", "Y_h"), (
                     f"a residual was fabricated for the head: {f.name}")
-    # u1 carries a dimension-4 operand factor -- that IS h, inside the spine.
-    dims1 = [f.dim for f in blocks[1].ingress.route.parts]
-    assert 4 in dims1, (
-        f"u1's factors {dims1} do not contain the S_h operand; the head must "
-        f"already be represented inside the selected root")
+                if f.role == "residual" and f.name.startswith("Y_"):
+                    assert f.logical is not None
+
+    endo = Arrow(q, q)
+    s_h = [f for f in blocks[1].ingress.route.parts
+           if f.role == "operand" and f.logical == endo]
+    assert len(s_h) == 1, (
+        f"u1 must carry exactly one operand factor typed Q-oQ; got "
+        f"{[(f.name, f.role, f.logical, f.dim) for f in blocks[1].ingress.route.parts]}")
+    assert s_h[0].owner is not None and ":" in str(s_h[0].owner), (
+        f"S_h carries no recorded provenance: owner={s_h[0].owner!r}")
+    assert s_h[0].dim == 4
+
+    # NEGATIVE CONTROL: Q(x)Q is also dimension 4 and must NOT satisfy the
+    # test, so the identification cannot be reading the dimension.
+    decoy = ChartFactor(name="S", owner="cut:decoy", n_qubits=2,
+                        codes=(0, 1, 2, 3), role="operand", logical=Ten(q, q))
+    assert decoy.dim == s_h[0].dim == 4
+    assert decoy.logical != endo, (
+        "the decoy must be a different type of the same dimension")
+    assert not [f for f in (decoy,) if f.logical == endo], (
+        "an equal-dimension Q(x)Q factor must not be accepted as S_h")
 
 
 @pytest.mark.parametrize("materialize", MODES)
@@ -262,10 +281,7 @@ def test_J14_planning_leaves_every_prepared_artifact_unchanged():
     TP._compile_branch_artifact = spy
     TP._USE_BLOCK_OBSERVED.clear()
     try:
-        try:
-            compile(_fixture("ctrl_ho_closed_plus_map"), materialize=False)
-        except Exception:
-            pass
+        compile(_fixture("ctrl_ho_closed_plus_map"), materialize=False)
     finally:
         TP._compile_branch_artifact = orig
     assert TP._USE_BLOCK_OBSERVED, "the planner was not reached"
@@ -295,10 +311,7 @@ def test_J15_branches_are_prepared_once_and_used_by_identity():
     TP._compile_branch_artifact = spy
     TP._USE_BLOCK_OBSERVED.clear()
     try:
-        try:
-            compile(_fixture("ctrl_ho_closed_plus_map"), materialize=False)
-        except Exception:
-            pass
+        compile(_fixture("ctrl_ho_closed_plus_map"), materialize=False)
     finally:
         TP._compile_branch_artifact = orig
     pl = TP._USE_BLOCK_OBSERVED[-1]
@@ -548,18 +561,14 @@ def test_J26_the_plan_is_the_authoritative_placement(materialize):
     from test_nf1_beta_tensor import _fixture
     TP._USE_BLOCK_OBSERVED.clear()
     TP._PLANNER_INCOMPLETE.clear()
-    arts = []
-    try:
-        _, arts = TP.compile_with_artifacts(
-            _fixture("ctrl_ho_closed_plus_map"), materialize=materialize)
-    except Exception:
-        pass
+    _, arts = TP.compile_with_artifacts(
+        _fixture("ctrl_ho_closed_plus_map"), materialize=materialize)
     assert TP._USE_BLOCK_OBSERVED, "no plan was produced"
     pl = TP._USE_BLOCK_OBSERVED[-1]
     placed = [a.placement for a in arts if a.placement is not None]
-    if placed:
-        assert any(x is pl for x in placed), (
-            "the audit hook and the artifact's placement are two objects")
+    assert placed, "the occurrence records no placement at all"
+    assert any(x is pl for x in placed), (
+        "the audit hook and the artifact's placement are two objects")
     assert not TP._PLANNER_INCOMPLETE, (
         f"the withdrawn uniform planner still recorded "
         f"{TP._PLANNER_INCOMPLETE}; it must not coexist with the Block plan")
@@ -579,11 +588,7 @@ def test_J27_the_plan_holds_the_prepared_artifacts_by_identity(materialize):
     TP._compile_branch_artifact = spy
     TP._USE_BLOCK_OBSERVED.clear()
     try:
-        try:
-            compile(_fixture("ctrl_ho_closed_plus_map"),
-                    materialize=materialize)
-        except Exception:
-            pass
+        compile(_fixture("ctrl_ho_closed_plus_map"), materialize=materialize)
     finally:
         TP._compile_branch_artifact = orig
     pl = TP._USE_BLOCK_OBSERVED[-1]
@@ -612,3 +617,60 @@ def test_J28_no_selected_root_is_densified(materialize):
                 root.dim == (1 << root.n_qubits), (
                 f"block {b.index} {side}: the selected root was densified to "
                 f"its whole register")
+
+
+# ===========================================================================
+# 7. Inactive resources are carried as they are RECORDED, not densified
+# ===========================================================================
+
+def test_J29_a_sparse_inactive_binding_is_not_densified():
+    """Plus(Q,I) is dimension THREE on two wires.
+
+    Completing against it must multiply by 3, not by 2^2. Manufacturing
+    range(1 << len(wires)) turns a recorded resource into a bigger one and
+    the block dimension stops describing the derivation.
+    """
+    from lang.types import Plus as _Plus, Unit as _Unit
+    amb = 4
+    ch = _synthetic(1, amb)                       # branch root, dimension 2
+    sc = ProvenanceScope()
+    b = TypedBinding("z", _Plus(q, _Unit()), (0, 1), sc.owner(), sc.cut())
+    blk = complete_branch(index=0, artifact=_FakeArt(ch), uses=(),
+                          inactive=(b,), local_to_ambient=(3,),
+                          tag_value=0, ambient_width=amb)
+    assert blk.dim == 6, (
+        f"completed dimension {blk.dim}; want 2 x 3 = 6, not 2 x 4 = 8 -- "
+        f"the sparse inactive resource was densified")
+    y = [f for f in blk.ingress.route.parts if f.name == "Y_z"]
+    assert len(y) == 1
+    assert y[0].codes == (0, 1, 2), (
+        f"inactive codes {y[0].codes}; the recorded ordered encoding of "
+        f"Plus(Q,I) is (0,1,2)")
+    assert y[0].dim == 3 and y[0].n_qubits == 2
+    assert y[0].logical == _Plus(q, _Unit())
+    assert y[0].owner == b.owner_id
+
+
+def test_J30_one_owner_named_twice_is_one_inactive_factor():
+    """Duplicate references to a single owner complete ONCE; two distinct
+    owners of the same type complete separately."""
+    amb = 5
+    ch = _synthetic(1, amb)
+    sc = ProvenanceScope()
+    own, cut = sc.owner(), sc.cut()
+    b1 = TypedBinding("z", q, (0,), own, cut)
+    b1_again = TypedBinding("z", q, (0,), own, cut)
+    twice = complete_branch(index=0, artifact=_FakeArt(ch), uses=(),
+                            inactive=(b1, b1_again), local_to_ambient=(4,),
+                            tag_value=0, ambient_width=amb)
+    assert twice.dim == 2 * 2, (
+        f"one owner mentioned twice gave {twice.dim}; it is ONE resource")
+    names = [f.name for f in twice.ingress.route.parts if f.name == "Y_z"]
+    assert len(names) == 1
+
+    b2 = TypedBinding("w", q, (1,), sc.owner(), sc.cut())
+    distinct = complete_branch(index=0, artifact=_FakeArt(ch), uses=(),
+                               inactive=(b1, b2), local_to_ambient=(4,),
+                               tag_value=0, ambient_width=amb)
+    assert distinct.dim == 2 * 2 * 2, (
+        "two DISTINCT owners of the same type are two resources")

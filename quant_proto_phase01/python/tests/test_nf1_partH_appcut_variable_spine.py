@@ -704,27 +704,38 @@ GUARDS = [("valid open branch", lambda: PlusMap(q, q, _use("f"), Id(q))),
 
 @pytest.mark.parametrize("name,mk", GUARDS)
 @pytest.mark.parametrize("materialize", MODES)
-def test_H21_release_safety_guards_compile_and_get_a_root_default(
+def test_H21_release_safety_guards_now_consume_the_use_block(
         name, mk, materialize):
-    """COMPILE-ONLY ROOT/DEFAULT COVERAGE. Not an AppCut gate.
+    """SUPERSEDES the frame-default expectation.
 
-    These four witnesses must stay green and must come back with a usable
-    root selected boundary. The root here is a PlusMap, so that boundary is
-    the explicit frame default -- this test does NOT capture or verify the
-    inner AppCut boundaries inside `_use`, and makes no claim about them.
+    These four witnesses used to compile with a root frame default, because
+    the open sum had no plan. They now emit from their completed-branch
+    Block, so the root boundary IS that Block. The blockwise arithmetic is
+    asserted rather than accepting any successful compilation:
+
+        valid open branch   u0(4) + u1(2) x T_f(4) = 12
+        coherent sharing    both branches use f    =  8
     """
-    r = compile(mk(), env={"f": [2, 3]}, materialize=materialize)
+    from compile.frames import OpenUseBlockPlan
+    r, arts = compile_with_artifacts(mk(), env={"f": [2, 3]},
+                                     materialize=materialize)
     assert r.circuit is not None and r.circuit.n_qubits == 4
     sb = r.selected_boundary
-    assert isinstance(sb, SelectedBoundary), f"{name}: no selected boundary"
-    assert sb.origin == "frame-default"
+    assert isinstance(sb, SelectedBoundary)
+    assert sb.origin == "plusmap:use-block", (
+        f"{name}: the root kept {sb.origin!r} instead of its Block")
+    planned = [a for a in arts if isinstance(a.placement, OpenUseBlockPlan)]
+    assert planned, f"{name}: no use-block plan"
+    pl = planned[0].placement
+    want = 12 if "valid" in name else 8
+    assert pl.ingress.dim == pl.egress.dim == want, (
+        f"{name}: parent {pl.ingress.dim}/{pl.egress.dim}, want {want}")
+    assert sum(b.dim for b in pl.branches) == want, (
+        f"{name}: the parent is the DIRECT SUM of its blocks")
     for ch in (sb.ingress, sb.egress):
         assert ch.n_qubits == r.circuit.n_qubits
-        assert ch.dim > 0 and len(set(ch.codes)) == ch.dim
-    assert sb.ingress.codes == tuple(r.input_frame.codes)
-    assert sb.egress.codes == tuple(r.output_frame.codes)
-    assert not hasattr(r, "chart_error"), (
-        "a stashed chart error is not an acceptable outcome")
+        assert len(set(ch.codes)) == ch.dim
+    assert not hasattr(r, "chart_error")
 
 
 def test_H22_an_unequal_width_operand_fails_closed_with_a_named_reason():
@@ -825,10 +836,7 @@ def test_H11_ctrl_ho_selected_boundary_is_80_on_both_sides(materialize):
     from test_nf1_beta_tensor import _fixture
 
     TP._USE_BLOCK_OBSERVED.clear()
-    try:
-        compile(_fixture("ctrl_ho_closed_plus_map"), materialize=materialize)
-    except Exception:
-        pass          # controlled emission for the open path is a later phase
+    compile(_fixture("ctrl_ho_closed_plus_map"), materialize=materialize)
     assert TP._USE_BLOCK_OBSERVED, (
         "no use-block plan for ctrl_ho; the selected boundary cannot be "
         "checked")

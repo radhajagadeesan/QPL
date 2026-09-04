@@ -259,6 +259,31 @@ def completion_factor(port: "Port") -> int:
     return semantic_dim(port.logical)
 
 
+def check_binding_consistency(bindings, where=""):
+    """Two records of ONE owner must agree on everything recorded.
+
+    Equal owner id with a different type, placement, introduction cut or
+    encoding is not one resource seen twice; it is a contradiction, and
+    completing against either reading would be a guess.
+    """
+    seen = {}
+    for b in bindings:
+        key = b.owner_id
+        if key is None:
+            continue
+        prev = seen.get(key)
+        if prev is None:
+            seen[key] = b
+            continue
+        for fld in ("logical", "wires", "intro_cut", "codes"):
+            if getattr(prev, fld) != getattr(b, fld):
+                raise ProvenanceError(
+                    f"{where}owner {key} is recorded twice with different "
+                    f"{fld}: {getattr(prev, fld)!r} versus "
+                    f"{getattr(b, fld)!r}")
+    return True
+
+
 def _completion_factors(ports) -> dict:
     """Distinct live completion factors, keyed on (owner_id, cut_id).
 
@@ -1282,9 +1307,33 @@ class TypedBinding:
     wires: Tuple[int, ...]
     owner_id: str
     intro_cut: str
+    # The resource's ORDERED local encoding, recorded here at introduction.
+    # A consumer must never manufacture one: range(1 << len(wires)) densifies
+    # a sparse resource -- Plus(Q,I) is dimension 3 on two wires, not 4.
+    # Supplied explicitly for a derivation-selected binding; for the legacy
+    # public `env={name: wires}` boundary it is the type's canonical
+    # encoding, fixed here rather than rediscovered later.
+    codes: Tuple[int, ...] = ()
 
     def __post_init__(self):
         from lang.types import width as _w
+        if not self.codes:
+            object.__setattr__(self, "codes",
+                               tuple(canonical_frame(self.logical).codes))
+        if len(set(self.codes)) != len(self.codes):
+            raise ProvenanceError(
+                f"binding {self.name!r} repeats a code in {self.codes}")
+        _sd = semantic_dim(self.logical)
+        if len(self.codes) != _sd:
+            raise ProvenanceError(
+                f"binding {self.name!r} of type {pretty(self.logical)} has "
+                f"semantic dimension {_sd} but records {len(self.codes)} "
+                f"codes")
+        for c in self.codes:
+            if not (0 <= c < (1 << len(self.wires))):
+                raise ProvenanceError(
+                    f"binding {self.name!r}: code {c} outside its own "
+                    f"{len(self.wires)}-wire space")
         if len(set(self.wires)) != len(self.wires):
             raise ProvenanceError(
                 f"binding {self.name!r} claims a wire twice: {self.wires}")
@@ -1319,18 +1368,47 @@ class ChartFactor:
     owner: object                 # the artifact / premise this factor is of
     n_qubits: int
     codes: Tuple[int, ...]
-    role: str = "operand"         # "operand" | "residual"
+    role: str = "operand"         # "operand" | "residual" | "block"
     logical: object = None        # the factor's derivation-level type
+    # For role="block" only: the identity of the already-constructed direct
+    # sum this factor aggregates. A block is NEITHER an operand nor a
+    # source-typed residual, so typed residual matching must skip it.
+    descriptor: object = None
 
     @property
     def dim(self) -> int:
         return len(self.codes)
 
     def __post_init__(self):
-        if self.role not in ("operand", "residual"):
+        if self.role not in ("operand", "residual", "block"):
             raise ProvenanceError(
                 f"chart factor {self.name!r} has role {self.role!r}; a spine "
-                f"factor is an operand or the terminal residual")
+                f"factor is an operand or the terminal residual, and an "
+                f"aggregate direct sum is a block")
+        if self.role == "block":
+            d = self.descriptor
+            if d is None:
+                raise ProvenanceError(
+                    f"chart factor {self.name!r} is a block but records no "
+                    f"descriptor")
+            if self.logical is not None:
+                raise ProvenanceError(
+                    f"block factor {self.name!r} carries a logical type "
+                    f"{self.logical!r}; a direct sum is not a source-typed "
+                    f"residual")
+            if self.owner != d.cut_id:
+                raise ProvenanceError(
+                    f"block factor {self.name!r} is owned by {self.owner!r} "
+                    f"but its descriptor records {d.cut_id!r}")
+            want = sum(d.block_dims)
+            if len(self.codes) != want:
+                raise ProvenanceError(
+                    f"block factor {self.name!r} has dimension "
+                    f"{len(self.codes)} but its blocks sum to {want}")
+            if self.n_qubits != d.block_width:
+                raise ProvenanceError(
+                    f"block factor {self.name!r} spans {self.n_qubits} wires "
+                    f"but its descriptor records {d.block_width}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2024,6 +2102,235 @@ def _par_of(parts, placements, n, label, fallback):
 
 
 @dataclass(frozen=True, slots=True)
+class BlockDescriptor:
+    """The stable identity of an ALREADY-CONSTRUCTED Block.
+
+    Enough to audit the aggregate back to the Block it came from, and no
+    reference to the plan object itself -- holding the plan would make
+    equality circular and would invite a consumer to reach into the sectors.
+    A Block is a DIRECT SUM; the aggregate below is one alphabet, never a
+    product of these sectors.
+    """
+    cut_id: str
+    branch_cuts: Tuple[object, ...]
+    tag_values: Tuple[int, ...]
+    uses: Tuple[Tuple[str, ...], ...]
+    inactive: Tuple[Tuple[str, ...], ...]
+    block_dims: Tuple[int, ...]
+    tag_wires: Tuple[int, ...]
+    block_to_ambient: Tuple[int, ...]
+    block_width: int
+    ambient_width: int
+
+    def __post_init__(self):
+        n = len(self.branch_cuts)
+        for nm, f in (("tag_values", self.tag_values), ("uses", self.uses),
+                      ("inactive", self.inactive),
+                      ("block_dims", self.block_dims)):
+            if len(f) != n:
+                raise ProvenanceError(
+                    f"block descriptor: {nm} has {len(f)} entries for {n} "
+                    f"branches")
+        if len(set(self.block_to_ambient)) != len(self.block_to_ambient):
+            raise ProvenanceError(
+                f"block descriptor: block_to_ambient {self.block_to_ambient} "
+                f"is not injective")
+        if len(self.block_to_ambient) != self.block_width:
+            raise ProvenanceError(
+                f"block descriptor: block_to_ambient names "
+                f"{len(self.block_to_ambient)} wires for a "
+                f"{self.block_width}-wire block")
+        for c in self.branch_cuts:
+            if not c:
+                raise ProvenanceError(
+                    "block descriptor: a branch records no cut identity; a "
+                    "label is not an identity")
+        if len(set(self.branch_cuts)) != len(self.branch_cuts):
+            raise ProvenanceError(
+                f"block descriptor: branch cut identities {self.branch_cuts} "
+                f"are not distinct")
+
+    def check_against(self, plan, where="block descriptor"):
+        """Every recorded fact must agree with the plan it describes.
+
+        A forged or stale descriptor is refused BEFORE the aggregate is built
+        and therefore before any circuit mutation.
+        """
+        checks = (
+            ("ambient_width", self.ambient_width, plan.ambient_width),
+            ("block_width", self.block_width, plan.block_width),
+            ("block_to_ambient", tuple(self.block_to_ambient),
+             tuple(plan.block_to_ambient)),
+            ("tag_wires", tuple(self.tag_wires), tuple(plan.tag_wires)),
+            ("tag_values", tuple(self.tag_values),
+             tuple(b.tag_value for b in plan.branches)),
+            ("branch_cuts", tuple(self.branch_cuts),
+             tuple(b.artifact.cut_id for b in plan.branches)),
+            ("uses", tuple(self.uses),
+             tuple(tuple(b.uses) for b in plan.branches)),
+            ("inactive", tuple(self.inactive),
+             tuple(tuple(x.owner_id for x in b.inactive)
+                   for b in plan.branches)),
+            ("block_dims", tuple(self.block_dims),
+             tuple(b.dim for b in plan.branches)),
+        )
+        for name, mine, theirs in checks:
+            if mine != theirs:
+                raise ProvenanceError(
+                    f"{where}: {name} is {mine!r} but the Block records "
+                    f"{theirs!r}")
+        return True
+
+
+def aggregate_block_chart(plan, side, descriptor):
+    """The Block as ONE factor over its own direct-sum alphabet.
+
+    Repart_{block_to_ambient}( Par( BlockFactor ) )
+
+    Par has exactly ONE factor. This is not, and must never be described as,
+    a product of the Block's sectors: a direct sum is not a tensor product,
+    and the sectors are not recoverable from tag bits or code geometry here.
+
+    What the aggregate buys is a genuine one-factor SCATTER route, so the
+    ordinary TenPack and Splice can compose it without being weakened to
+    accept route-less charts.
+    """
+    parent = plan.ingress if side == "ingress" else plan.egress
+    b2a = tuple(descriptor.block_to_ambient)
+    n = descriptor.ambient_width
+    if parent.n_qubits != n:
+        raise ProvenanceError(
+            f"block aggregate {side}: the parent chart spans "
+            f"{parent.n_qubits} wires but the descriptor records {n}")
+    outside = [w for w in range(n) if w not in set(b2a)]
+    local = []
+    for c in parent.codes:
+        for w in outside:
+            if (c >> (n - 1 - w)) & 1:
+                raise ProvenanceError(
+                    f"block aggregate {side}: code {c} occupies wire {w}, "
+                    f"which the block placement does not name")
+        v = 0
+        for i, w in enumerate(b2a):
+            v |= ((c >> (n - 1 - w)) & 1) << (len(b2a) - 1 - i)
+        local.append(v)
+    if len(set(local)) != len(local):
+        raise ProvenanceError(
+            f"block aggregate {side}: the pullback is not injective")
+    f = ChartFactor(name="B", owner=descriptor.cut_id,
+                    n_qubits=descriptor.block_width, codes=tuple(local),
+                    role="block", logical=None, descriptor=descriptor)
+    rep, places = scatter_repart((b2a,), n)
+    ch = par_then_repart((f,), rep, n, f"block^{side}", placements=places,
+                         kind="scatter")
+    if ch.route.placements != (b2a,):
+        raise ProvenanceError(
+            f"block aggregate {side}: the factor was not placed on the "
+            f"descriptor's own block placement")
+    ch.validate_joint()
+    if tuple(ch.codes) != tuple(parent.codes):
+        raise ProvenanceError(
+            f"block aggregate {side}: scattering the pullback gives "
+            f"{ch.codes[:6]}... not the parent's {tuple(parent.codes)[:6]}...")
+    return ch
+
+
+@dataclass(frozen=True, slots=True)
+class RoutingOnly:
+    """A certificate that an occurrence ONLY ROUTED a recorded binding.
+
+    ISSUED BY THE EMITTER THAT KNOWS, at the moment it does the routing: the
+    bound-variable emitter, which brings one recorded binding into the
+    consumer's slot without touching the register. It is never inferred by a
+    consumer from zero commands, from a differing permutation, or from
+    recognising a term's syntax -- an arbitrary gate-free structural
+    permutation is NOT this.
+    """
+    name: str
+    wires: Tuple[int, ...]
+    owner_id: Optional[str]
+    ingress_wires: Tuple[int, ...]
+    egress_wires: Tuple[int, ...]
+    perm_at_entry: Tuple[int, ...] = ()
+    perm_at_exit: Tuple[int, ...] = ()
+    n_cmds: int = 0
+    phase_delta: float = 0.0
+
+    def validate(self, where="", artifact=None):
+        """Everything the certificate claims, checked.
+
+        With `artifact`, the certificate is also required to AGREE with the
+        occurrence that issued it -- a forged or stale certificate whose
+        permutations, handoffs, command count or phase differ from what the
+        artifact actually recorded is refused.
+        """
+        if self.n_cmds != 0:
+            raise ProvenanceError(
+                f"{where}routing certificate for {self.name!r} claims to be "
+                f"gate-free but {self.n_cmds} command(s) were emitted")
+        if abs(self.phase_delta) > 1e-12:
+            raise ProvenanceError(
+                f"{where}routing certificate for {self.name!r} carries phase "
+                f"{self.phase_delta}")
+        if not self.owner_id:
+            raise ProvenanceError(
+                f"{where}routing certificate for {self.name!r} carries no "
+                f"binder identity; it must come from the binder that "
+                f"introduced the name")
+        for nm, ws in (("ingress", self.ingress_wires),
+                       ("egress", self.egress_wires)):
+            if tuple(ws) != tuple(self.wires):
+                raise ProvenanceError(
+                    f"{where}routing certificate for {self.name!r}: its "
+                    f"{nm} handoff is {tuple(ws)} but its binding sits on "
+                    f"{tuple(self.wires)}")
+        if len(set(self.wires)) != len(self.wires):
+            raise ProvenanceError(
+                f"{where}routing certificate for {self.name!r} claims wire "
+                f"{self.wires} twice")
+        if len(self.perm_at_entry) != len(self.perm_at_exit):
+            raise ProvenanceError(
+                f"{where}routing certificate for {self.name!r}: entry and "
+                f"exit permutations describe {len(self.perm_at_entry)} and "
+                f"{len(self.perm_at_exit)} wires")
+        n = len(self.perm_at_entry)
+        for nm, ws in (("entry", self.perm_at_entry),
+                       ("exit", self.perm_at_exit)):
+            if ws and sorted(ws) != list(range(len(ws))):
+                raise ProvenanceError(
+                    f"{where}routing certificate {nm} permutation {ws} is "
+                    f"not a permutation")
+        for w in self.wires:
+            if n and not (0 <= w < n):
+                raise ProvenanceError(
+                    f"{where}routing certificate for {self.name!r}: wire {w} "
+                    f"is outside the {n}-wire register it records")
+        if artifact is not None:
+            for fld, mine in (("perm_at_entry", self.perm_at_entry),
+                              ("perm_at_exit", self.perm_at_exit)):
+                if tuple(getattr(artifact, fld)) != tuple(mine):
+                    raise ProvenanceError(
+                        f"{where}routing certificate for {self.name!r} "
+                        f"records {fld} {tuple(mine)} but the occurrence "
+                        f"recorded {tuple(getattr(artifact, fld))}")
+            if artifact.n_cmds != self.n_cmds or \
+                    abs(artifact.phase_delta - self.phase_delta) > 1e-12:
+                raise ProvenanceError(
+                    f"{where}routing certificate for {self.name!r} disagrees "
+                    f"with its occurrence on commands/phase")
+            if tuple(artifact.egress_wires) != tuple(self.egress_wires):
+                raise ProvenanceError(
+                    f"{where}routing certificate for {self.name!r} hands over "
+                    f"{tuple(self.egress_wires)} but the occurrence recorded "
+                    f"{tuple(artifact.egress_wires)}")
+        return True
+
+
+FRAME_DEFAULT = "frame-default"
+DERIVED = "derived"
+
+
+@dataclass(frozen=True, slots=True)
 class TenPackSchedule:
     """The binder schedules a canonical LetPair derivation records.
 
@@ -2104,6 +2411,10 @@ class SelectedBoundary:
     ingress: BoundaryChart
     egress: BoundaryChart
     origin: str
+    # EXPLICIT authority. `origin` stays diagnostic prose; nothing may infer
+    # authority by parsing it, comparing widths, inspecting codes, scanning
+    # free variables or looking at syntax.
+    authority: str = "frame-default"
     # The TenPack binder schedules, when this boundary came through one.
     # Carried so a consumer can see WHICH schedule packed it, rather than
     # having to trust that the two polarities were kept apart.
@@ -2115,7 +2426,18 @@ class SelectedBoundary:
         """The explicit default: this occurrence's boundary IS its frames."""
         return SelectedBoundary(ingress=chart_of_frame(frame_in, space),
                                 egress=chart_of_frame(frame_out, space),
-                                origin=origin)
+                                origin=origin, authority=FRAME_DEFAULT)
+
+    @property
+    def is_derived(self) -> bool:
+        return self.authority == DERIVED
+
+    def __post_init__(self):
+        if self.authority not in (FRAME_DEFAULT, DERIVED):
+            raise ProvenanceError(
+                f"selected boundary {self.origin!r} records authority "
+                f"{self.authority!r}; it is exactly {FRAME_DEFAULT!r} or "
+                f"{DERIVED!r}")
 
     def transport_egress(self, new_to_old):
         """Carry only the egress through a permutation applied after it."""
@@ -2505,11 +2827,16 @@ class OpenUseBlockPlan:
                     f"sizes, so W_block J^- = J^+ Vhat cannot hold")
             fi = blk.ingress.route.parts if blk.ingress.route else ()
             fe = blk.egress.route.parts if blk.egress.route else ()
-            if [(f.name, f.role, f.dim) for f in fi] != \
-                    [(f.name, f.role, f.dim) for f in fe]:
+            # ROLE, TYPE, OWNER and dimension, in order. Codes and placements
+            # legitimately differ between the two polarities -- that is what
+            # keeping them independent means -- so they are NOT compared.
+            def _sig(fs):
+                return [(f.role, f.logical, f.owner, f.dim) for f in fs]
+            if _sig(fi) != _sig(fe):
                 raise ProvenanceError(
                     f"block {blk.index}: Vhat's ordered factors differ "
-                    f"between polarities")
+                    f"between polarities:\n  ingress {_sig(fi)}\n  egress "
+                    f"{_sig(fe)}")
         if self.ingress.dim != self.egress.dim:
             raise ProvenanceError(
                 f"parent ingress {self.ingress.dim} != egress "
@@ -2646,12 +2973,18 @@ def complete_branch(*, index, artifact, uses, inactive, local_to_ambient,
                            f"{label or 'branch'}{index}^{which}")
         parts = list(base.route.parts)
         places = list(base.route.placements)
+        seen_owners = set()
         for b in inactive:
-            # The inactive resource is carried WHOLE: every assignment to its
-            # own wires, once, in ascending order.
+            # The inactive resource is carried as the binding RECORDED it --
+            # its own ordered codes, never all 2^k assignments to its wires.
+            # One owner contributes exactly once however often it is named;
+            # two distinct owners of the same type are two resources.
+            if b.owner_id in seen_owners:
+                continue
+            seen_owners.add(b.owner_id)
             parts.append(ChartFactor(
                 name=f"Y_{b.name}", owner=b.owner_id, n_qubits=len(b.wires),
-                codes=tuple(range(1 << len(b.wires))),
+                codes=tuple(b.codes),
                 role="residual", logical=b.logical))
             places.append(tuple(b.wires))
         rep, pl = scatter_repart(places, ambient_width)

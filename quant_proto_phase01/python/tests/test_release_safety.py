@@ -28,7 +28,7 @@ from lang.types import Unit, Q, Ten, Plus, Arrow
 from lang.terms import (Id, Seq, Apply, Lam, Var, Pair, LetPair, TenTerm,
                         DistL, PlusMap, TwistTen, WireIdentity,
                         H as Hg, S as Sg, T as Tg, X as Xg)
-from compile.to_pytket import compile
+from compile.to_pytket import compile, compile_with_artifacts
 from compile.frames import semantic_action, leakage, UnsupportedFrame
 from typing_.check import type_of
 
@@ -268,48 +268,102 @@ def test_E_qswitch_semantic_oracle_is_unresolved():
 # Conflating these was what made the earlier report overstate the evidence.
 
 @pytest.mark.parametrize("materialize", MODES)
-def test_F1_ctrl_ho_fails_closed_not_with_a_backend_error(materialize):
-    """The open-branch placement overlaps. That must be rejected BEFORE
-    emission with a deterministic diagnostic, not surface as a pytket
-    RuntimeError from inside circuit construction."""
-    t = _fixture("ctrl_ho_closed_plus_map")
-    with pytest.raises(UnsupportedFrame) as ei:
-        compile(t, materialize=materialize)
-    msg = str(ei.value)
-    assert "PlusMap" in msg or "branch" in msg, (
-        f"F1: diagnostic does not name the construct: {msg}")
-    assert "wire" in msg.lower(), (
-        f"F1: diagnostic does not name the conflicting wire: {msg}")
+def test_F1_ctrl_ho_compiles_and_is_exact_on_its_selected_block(materialize):
+    """SUPERSEDES "failure is success".
+
+    ctrl_ho used to be rejected because the open branch placement overlapped.
+    It now compiles from its completed-branch Block, and the claim is the
+    real one: the emitted circuit acts as blockdiag(Vhat_0, Vhat_1) on the
+    80-dimensional selected boundary, with no leakage and no phase.
+    """
+    import numpy as _np
+    import compile.to_pytket as _TP
+    from compile.frames import semantic_action as _sem, leakage as _leak
+
+    from compile.frames import OpenUseBlockPlan as _P
+
+    _TP._USE_BLOCK_OBSERVED.clear()
+    r, arts = compile_with_artifacts(_fixture("ctrl_ho_closed_plus_map"),
+                                     materialize=materialize)
+    assert r.circuit is not None
+    assert _TP._USE_BLOCK_OBSERVED, "no use-block plan was produced"
+    pl = _TP._USE_BLOCK_OBSERVED[-1]
+    assert pl.ingress.dim == 80 and pl.egress.dim == 80
+    # The PLAN is recorded during emission, in pre-materialisation
+    # coordinates. What composes with the rest of the circuit is the
+    # occurrence's selected boundary, which the root transports through the
+    # appended swap network. Read that.
+    planned = [a for a in arts if isinstance(a.placement, _P)]
+    assert planned, "the sum occurrence carries no use-block plan"
+    bd = planned[0].selected_boundary
+    assert bd.ingress.dim == 80 and bd.egress.dim == 80
+
+    # Vhat_i, built here from each branch's OWN selected boundary.
+    blocks = []
+    for b in pl.branches:
+        sb = b.artifact.selected_boundary
+        M = _sem(sb.ingress, b.artifact.unitary, sb.egress)
+        seen = set()
+        for x in b.inactive:
+            if x.owner_id in seen:
+                continue
+            seen.add(x.owner_id)
+            M = _np.kron(M, _np.eye(len(x.codes), dtype=complex))
+        blocks.append(M)
+    expected = _np.zeros((80, 80), dtype=complex)
+    o = 0
+    for m in blocks:
+        expected[o:o + m.shape[0], o:o + m.shape[1]] = m
+        o += m.shape[0]
+
+    U = r.circuit.get_unitary()
+    W = _sem(bd.ingress, U, bd.egress)
+    dev = float(_np.max(_np.abs(W - expected)))
+    assert dev < 1e-10, f"F1: max deviation {dev:.3e} from blockdiag(Vhat)"
+    assert _leak(bd.ingress, U, bd.egress) < 1e-10, "F1: the block leaks"
+    assert abs(r.global_phase) < 1e-12, f"F1: phase {r.global_phase}"
 
 
-def test_F2_ctrl_ho_typed_port_metadata_present():
-    """Separate ABSENT FEATURE: the completed-dimension / typed f,h port
-    metadata this witness would need. Absent metadata is recorded as absent,
-    never synthesized by the test."""
+def test_F2_ctrl_ho_block_metadata_is_present():
+    """SUPERSEDED PROSE REMOVED.
+
+    This used to record the absence of "separate typed f and h ports". There
+    are none to have: f is a typed inactive completion of the block that does
+    not use it, and h is an operand factor inside the other block's own
+    selected root. What must exist is the Block record itself.
+    """
     import compile.frames as fr
-    assert hasattr(fr, "completed_dimension"), (
-        "no completed_dimension: the cut cannot be checked for balance")
-    from compile.frames import Port
-    assert "owner_id" in Port.__dataclass_fields__, (
-        "Port carries no owner provenance")
+    for name in ("OpenUseBlockPlan", "CompletedBranch", "complete_branch",
+                 "plan_use_block", "use_block_layout"):
+        assert hasattr(fr, name), f"no {name}: the Block cannot be recorded"
+    from compile.frames import Port, TypedBinding
+    assert "owner_id" in Port.__dataclass_fields__
+    assert "codes" in TypedBinding.__dataclass_fields__, (
+        "a binding carries no recorded encoding, so completing against it "
+        "would have to manufacture one")
 
 
-def test_F3_ctrl_ho_action_is_unevaluated_while_compilation_fails():
-    """Records that no action/phase/leakage claim is being made for ctrl_ho.
-    This is NOT a semantic pass -- it asserts only that the witness does not
-    silently produce a circuit."""
-    t = _fixture("ctrl_ho_closed_plus_map")
-    produced = None
-    try:
-        produced = compile(t, materialize=False)
-    except UnsupportedFrame:
-        return                      # failed closed: nothing to evaluate
-    except Exception as e:
-        pytest.fail(f"F3: compilation failed with {type(e).__name__}: {e} -- "
-                    f"expected UnsupportedFrame before emission")
-    assert produced is None, (
-        "F3: a circuit was produced; the action must then be evaluated "
-        "rather than left unevaluated")
+def test_F3_ctrl_ho_action_is_evaluated_not_deferred():
+    """SUPERSEDES "no claim is being made".
+
+    A circuit IS produced now, so the action must be evaluated rather than
+    left unevaluated. F1 is the exact oracle; this pins that the artifact
+    also carries the Block as its selected boundary, so the result composes.
+    """
+    import compile.to_pytket as _TP
+    from compile.frames import OpenUseBlockPlan as _P
+
+    _r, arts = compile_with_artifacts(_fixture("ctrl_ho_closed_plus_map"))
+    planned = [a for a in arts if isinstance(a.placement, _P)]
+    assert planned, "the sum occurrence carries no use-block plan"
+    a = planned[0]
+    sb = a.selected_boundary
+    assert sb is not None and sb.origin == "plusmap:use-block", (
+        f"the occurrence kept the obsolete boundary {sb.origin if sb else None}")
+    assert sb.ingress.codes == a.placement.ingress.codes
+    assert sb.egress.codes == a.placement.egress.codes
+    assert sb.ingress.dim == 80 and sb.egress.dim == 80
+
 
 # ===========================================================================
 # G. Captured / open function: must be exact or fail closed
