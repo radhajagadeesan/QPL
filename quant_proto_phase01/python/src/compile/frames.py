@@ -2236,6 +2236,90 @@ def aggregate_block_chart(plan, side, descriptor):
 
 
 @dataclass(frozen=True, slots=True)
+class BranchParameter:
+    """The live summand premise a sum branch is given.
+
+    THE EXTRA DERIVATION PARAMETER. A bound variable cannot tell, from
+    anything local to itself, whether the slot it routes into currently holds
+    a live resource. When it is a sum branch it does; when it is an AppCut
+    head or a LetPair producer being fetched as a value it does not, and
+    there the slot is merely the naming about to be overwritten.
+
+    That difference is a property of the POSITION, so the derivation site
+    that introduces the payload states it. Everything here is recorded at
+    issue: nothing is read back from the branch term, a variable name, a
+    dimension, a bit pattern, or whether placements happen to overlap.
+    """
+    logical: Ty
+    owner_id: str
+    intro_cut: str
+    cut_id: str
+    codes: Tuple[int, ...]
+    ingress_placement: Tuple[int, ...]
+    register_width: int
+
+    def __post_init__(self):
+        from lang.types import width as _w
+        if not self.owner_id or not self.intro_cut or not self.cut_id:
+            raise ProvenanceError(
+                "branch parameter carries no owner or cut lineage")
+        w = _w(self.logical)
+        if len(self.ingress_placement) != w:
+            raise ProvenanceError(
+                f"branch parameter of type {pretty(self.logical)} is width "
+                f"{w} but its placement names "
+                f"{len(self.ingress_placement)} wires "
+                f"{self.ingress_placement}")
+        if len(set(self.ingress_placement)) != len(self.ingress_placement):
+            raise ProvenanceError(
+                f"branch parameter placement {self.ingress_placement} is not "
+                f"injective")
+        for x in self.ingress_placement:
+            if not (0 <= x < self.register_width):
+                raise ProvenanceError(
+                    f"branch parameter placement wire {x} is outside the "
+                    f"{self.register_width}-wire branch register")
+        if len(set(self.codes)) != len(self.codes):
+            raise ProvenanceError("branch parameter repeats a code")
+        if len(self.codes) != semantic_dim(self.logical):
+            raise ProvenanceError(
+                f"branch parameter of type {pretty(self.logical)} has "
+                f"semantic dimension {semantic_dim(self.logical)} but "
+                f"records {len(self.codes)} codes")
+        for c in self.codes:
+            if not (0 <= c < (1 << w)):
+                raise ProvenanceError(
+                    f"branch parameter code {c} outside its own {w}-wire "
+                    f"space")
+
+    def check_against(self, cert, register_width, where=""):
+        """The parameter and the binding must be two DISTINCT resources."""
+        if self.owner_id == cert.owner_id:
+            raise ProvenanceError(
+                f"{where}the branch parameter and the binding {cert.name!r} "
+                f"claim the same owner {self.owner_id}; they are two "
+                f"premises")
+        if self.register_width != register_width:
+            raise ProvenanceError(
+                f"{where}the branch parameter records a "
+                f"{self.register_width}-wire register but the occurrence is "
+                f"in {register_width}")
+        a, b = set(self.ingress_placement), set(cert.wires)
+        if a & b:
+            raise ProvenanceError(
+                f"{where}the branch parameter sits on "
+                f"{self.ingress_placement} and the binding {cert.name!r} on "
+                f"{tuple(cert.wires)}; they overlap on {sorted(a & b)}, so "
+                f"the routing cut is not two disjoint premises")
+        if len(self.ingress_placement) != len(cert.wires):
+            raise ProvenanceError(
+                f"{where}the branch parameter is "
+                f"{len(self.ingress_placement)} wires but the binding is "
+                f"{len(cert.wires)}")
+        return True
+
+
+@dataclass(frozen=True, slots=True)
 class RoutingOnly:
     """A certificate that an occurrence ONLY ROUTED a recorded binding.
 

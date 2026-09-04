@@ -481,8 +481,8 @@ def _ctrl_ho_branch_roots(materialize):
     seen = []
     orig = TP._compile_branch_artifact
 
-    def spy(branch, *, env=None, scope=None):
-        a = orig(branch, env=env, scope=scope)
+    def spy(branch, *, env=None, scope=None, **kw):
+        a = orig(branch, env=env, scope=scope, **kw)
         seen.append((a, env is not None))
         return a
 

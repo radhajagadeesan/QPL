@@ -391,8 +391,8 @@ def test_K13_the_same_artifacts_are_planned_and_emitted_once():
     made = []
     orig = TP._compile_branch_artifact
 
-    def spy(branch, *, env=None, scope=None):
-        a = orig(branch, env=env, scope=scope)
+    def spy(branch, *, env=None, scope=None, **kw):
+        a = orig(branch, env=env, scope=scope, **kw)
         made.append(a)
         return a
 

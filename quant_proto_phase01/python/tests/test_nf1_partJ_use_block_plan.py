@@ -271,8 +271,8 @@ def test_J14_planning_leaves_every_prepared_artifact_unchanged():
     snaps = []
     orig = TP._compile_branch_artifact
 
-    def spy(branch, *, env=None, scope=None):
-        a = orig(branch, env=env, scope=scope)
+    def spy(branch, *, env=None, scope=None, **kw):
+        a = orig(branch, env=env, scope=scope, **kw)
         snaps.append((a, len(a.cmds), a.phase, a.circuit,
                       _np.array(a.circuit.get_unitary(), copy=True),
                       [str(c) for c in a.cmds]))
@@ -303,8 +303,8 @@ def test_J15_branches_are_prepared_once_and_used_by_identity():
     made = []
     orig = TP._compile_branch_artifact
 
-    def spy(branch, *, env=None, scope=None):
-        a = orig(branch, env=env, scope=scope)
+    def spy(branch, *, env=None, scope=None, **kw):
+        a = orig(branch, env=env, scope=scope, **kw)
         made.append(a)
         return a
 
@@ -580,8 +580,8 @@ def test_J27_the_plan_holds_the_prepared_artifacts_by_identity(materialize):
     made = []
     orig = TP._compile_branch_artifact
 
-    def spy(branch, *, env=None, scope=None):
-        a = orig(branch, env=env, scope=scope)
+    def spy(branch, *, env=None, scope=None, **kw):
+        a = orig(branch, env=env, scope=scope, **kw)
         made.append(a)
         return a
 

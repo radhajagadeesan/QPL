@@ -57,6 +57,7 @@ from compile.frames import (Frame, Sector, Port, canonical_frame,
                             localize_scatter,
                             SelectedBoundary, TenPackSchedule,
                             FRAME_DEFAULT, DERIVED, RoutingOnly,
+                            BranchParameter,
                             BlockDescriptor, aggregate_block_chart,
                             check_binding_consistency,
                             tenpack, tensor_splice,
@@ -1245,12 +1246,15 @@ class BranchArtifact(NamedTuple):
         return _sa(self.fin, u, self.fout)
 
 
-def _compile_branch_artifact(branch, *, env=None, scope=None):
+def _compile_branch_artifact(branch, *, env=None, scope=None,
+                             parameter=None):
     """Prepare ONE branch. `scope` parents its provenance to the enclosing
     occurrence; without it the branch would mint its own root."""
-    sub = compile(branch, materialize=True, env=env, _prov_scope=scope) \
+    sub = compile(branch, materialize=True, env=env, _prov_scope=scope,
+                  _branch_parameter=parameter) \
         if env is not None \
-        else compile(branch, materialize=True, _prov_scope=scope)
+        else compile(branch, materialize=True, _prov_scope=scope,
+                     _branch_parameter=parameter)
     return BranchArtifact(_get_sub_cmds(sub.circuit), float(sub.circuit.phase),
                           sub.input_frame, sub.output_frame, sub.circuit,
                           selected_boundary=sub.selected_boundary,
@@ -1919,7 +1923,8 @@ def compile_with_artifacts(term: Term, *, materialize: bool = False,
 
 def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             env: Env = None, _artifact_sink=None,
-            _prov_scope: "ProvenanceScope" = None) -> Compiled:
+            _prov_scope: "ProvenanceScope" = None,
+            _branch_parameter: "BranchParameter" = None) -> Compiled:
     """`_prov_scope` is INTERNAL. A public compile mints exactly one
     ProvenanceScope root; nested branch preparation passes a child of the
     enclosing occurrence's scope so its identities are transitive descendants
@@ -2032,8 +2037,22 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         # interpret. An occurrence whose term has a selected-boundary rule
         # must have recorded one; otherwise a rule that silently failed to
         # fire would be indistinguishable from the ordinary default.
+        # ORDER: build and validate the routing certificate, resolve the
+        # boundary completely, then build the Artifact carrying it.
+        _rc = _routing_sink.pop(occ, None)
+        _exit0 = tuple(p.new_to_old)
+        if _rc is not None:
+            _rc = RoutingOnly(perm_at_entry=entry, perm_at_exit=_exit0,
+                              n_cmds=_n_emitted, phase_delta=_phase_delta,
+                              **_rc)
+            _rc.validate(f"occurrence {occ}: ")
         _sb = _boundary_sink.pop(occ, None)
-        if _sb is None:
+        # ROOT-SCOPED: the parameter is consumed only by the occurrence it was
+        # issued for. A nested Var never sees it.
+        if _rc is not None and occ == 0 and _branch_parameter is not None:
+            _sb = _var_boundary(t, _rc, _branch_parameter, entry, _exit0,
+                                offset, _cut_ids[occ], len(p.new_to_old))
+        elif _sb is None:
             if _has_boundary_rule(t):
                 raise TypeCheckError(
                     f"{type(t).__name__} has a selected-boundary rule but "
@@ -2055,12 +2074,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         _ing_w = _placement_sink.pop(occ, None)
         if _ing_w is None:
             _ing_w = _slot_wires(entry, offset, fin.n_qubits)
-        _rc = _routing_sink.pop(occ, None)
-        if _rc is not None:
-            _rc = RoutingOnly(perm_at_entry=entry,
-                              perm_at_exit=_exit,
-                              n_cmds=_n_emitted, phase_delta=_phase_delta,
-                              **_rc)
         art = Artifact(term=t, occurrence=occ, offset=offset,
                        input_frame=fin, output_frame=fout,
                        perm_at_entry=entry, perm_at_exit=tuple(p.new_to_old),
@@ -2101,6 +2114,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
     def _unbind_ids(prev):
         _binder_ids.clear()
         _binder_ids.update(prev)
+
+    # The public `env={name: wires}` boundary IS a binder: it is where those
+    # resources enter this derivation, so an identity is minted here rather
+    # than left absent and reconstructed later from a name or a type.
+    for _env_nm in (env or ()):
+        _binder_ids[_env_nm] = _prov.fork().owner()
     # Payload binders introduced by a CaseExpr, carried through its
     # desugaring by object identity. Without this record the binder
     # is indistinguishable from an unresolved free variable at the
@@ -2619,6 +2638,74 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             f"Seq: general SeqCut transport is not implemented -- "
             f"{'; '.join(_why)}. Refusing to replace a derived selected "
             f"boundary with a frame default.")
+
+    def _var_boundary(t, cert, param, entry, exit_, offset, cut, reg):
+        """A bound variable's selected boundary WHEN the derivation has said
+        its slot holds a live summand payload.
+
+            S_parameter (x) Y_binding   ->   S_result (x) Y_displaced
+
+        Read positionally: the first factor is the SLOT -- it receives the
+        branch parameter and leaves carrying the routed result -- and the
+        second is the CARRIER, which brings the binding in and leaves holding
+        the displaced payload. So the placements are
+
+            ingress:  S on the entry slot,  Y on the binding
+            egress:   S on the exit slot,   Y on the entry slot
+
+        which for a payload at local wire 0 with its binding at wire 1 gives
+        ((0,), (1,)) and, before materialisation, ((1,), (0,)). Both come
+        from the recorded entry and exit schedules; the egress is never
+        obtained by assuming the routing is an involutive swap.
+
+        Without a BranchParameter this rule does not apply at all: an AppCut
+        head or a LetPair producer is FETCHED, its slot holds nothing live,
+        and its boundary stays exactly what it was.
+        """
+        w = width(t.ty)
+        slot_in = _slot_wires(entry, offset, w)
+        slot_out = _slot_wires(exit_, offset, w)
+        bind = tuple(cert.wires)
+        for nm, ws in (("entry slot", slot_in), ("exit slot", slot_out),
+                       ("binding", bind)):
+            if len(ws) != w:
+                raise UnsupportedFrame(
+                    f"bound Var {t.name!r}: its {nm} names {len(ws)} wires "
+                    f"for a width-{w} type {pretty(t.ty)}")
+        if slot_out != bind:
+            raise UnsupportedFrame(
+                f"bound Var {t.name!r}: its exit slot is {slot_out} but its "
+                f"binding sits on {bind}; it did not route the binding in")
+        if param.logical != t.ty:
+            raise UnsupportedFrame(
+                f"bound Var {t.name!r}: the branch parameter is typed "
+                f"{pretty(param.logical)} but the occurrence is "
+                f"{pretty(t.ty)}")
+        if tuple(param.ingress_placement) != slot_in:
+            raise UnsupportedFrame(
+                f"bound Var {t.name!r}: the branch parameter was placed on "
+                f"{tuple(param.ingress_placement)} but this occurrence's "
+                f"entry slot is {slot_in}")
+        param.check_against(cert, reg, f"bound Var {t.name!r}: ")
+
+        S = ChartFactor(name="S", owner=cut, n_qubits=w,
+                        codes=tuple(param.codes), role="residual",
+                        logical=t.ty)
+        Y = ChartFactor(name=f"Y_{cert.name}", owner=cert.owner_id,
+                        n_qubits=w, codes=tuple(canonical_frame(t.ty).codes),
+                        role="operand", logical=t.ty)
+
+        def side(places):
+            rep, pl = scatter_repart(places, reg)
+            ch = par_then_repart((S, Y), rep, reg, f"var:{t.name}",
+                                 placements=pl, kind="scatter")
+            ch.validate_joint()
+            return ch
+
+        return SelectedBoundary(ingress=side((slot_in, bind)),
+                                egress=side((slot_out, slot_in)),
+                                origin=f"var:branch-parameter({cert.name})",
+                                authority=DERIVED)
 
     def _par_boundary(children, occ, label):
         """Par of the immediate children's selected boundaries, in order.
@@ -3561,9 +3648,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         max(_pi.n_qubits, _po.n_qubits), max(k, 1),
                         len(p.new_to_old))
                 _prepared = []
-                for _bidx, (branch, pw, ctx_w, anti) in enumerate([
-                    (t.left, payload_left_w, ctx_left_w, True),
-                    (t.right, payload_right_w, ctx_right_w, False),
+                for _bidx, (branch, pw, ctx_w, anti, st) in enumerate([
+                    (t.left, payload_left_w, ctx_left_w, True, t.ty_left),
+                    (t.right, payload_right_w, ctx_right_w, False, t.ty_right),
                 ]):
                     if pw + ctx_w == 0:
                         _prepared.append(None)
@@ -3590,9 +3677,21 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                                             branch_to_compile, name,
                                             deferred_fns[key])
                             branch_to_compile = _normalize(branch_to_compile)
+                        # THE DERIVATION SITE. This adapter is what puts a
+                        # live summand payload in the branch's slot, so it is
+                        # what states that -- from the selected summand type
+                        # and the workspace placement it just chose, never
+                        # from the branch term or any geometry.
+                        _bp = BranchParameter(
+                            logical=st, owner_id=_ub_scope.fork().owner(),
+                            intro_cut=_ub_scope.cut(),
+                            cut_id=_ub_scope.cut(),
+                            codes=tuple(canonical_frame(st).codes),
+                            ingress_placement=tuple(range(pw)),
+                            register_width=pw + ctx_w)
                         _art = _compile_branch_artifact(
                             branch_to_compile, env=sub_env,
-                            scope=_branch_scope())
+                            scope=_branch_scope(), parameter=_bp)
                         ctx_parent_phys = []
                         for name, ty_fv in fv:
                             if name in env:
