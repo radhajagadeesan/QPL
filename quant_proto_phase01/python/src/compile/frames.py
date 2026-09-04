@@ -217,37 +217,6 @@ class ProvenanceError(Exception):
     """Missing, duplicated or ambiguous ownership / cut lineage."""
 
 
-class NeedsBranchPreparation(ProvenanceError):
-    """The occurrence cannot be planned until its branches are prepared.
-
-    Raised when the completed cuts do not balance because the branch egress
-    cuts are not available yet -- a resource contained inside an ingress
-    summand has to be reclassified as a typed residual at egress, and only the
-    prepared branch artifact can say which one.
-
-    This is NOT a placement. An unbalanced plan must never be attachable or
-    consumable, so this is an exception rather than a partially filled
-    OccurrencePlacement.
-
-    `missing_factor` is the numeric gap ONLY. The resource behind it must come
-    from the derivation-selected branch egress cut, never be synthesized from
-    the factor.
-    """
-
-    def __init__(self, ingress: int, egress: int):
-        self.ingress = ingress
-        self.egress = egress
-        self.missing_factor = (ingress // egress if egress and
-                               ingress % egress == 0 else None)
-        super().__init__(
-            f"completed cuts do not balance: ingress {ingress} versus egress "
-            f"{egress}"
-            + (f" (missing egress factor {self.missing_factor})"
-               if self.missing_factor else "")
-            + "; the branch egress cuts are not prepared, so no placement "
-              "can be produced")
-
-
 def completion_factor(port: "Port") -> int:
     """How much a live port multiplies the completed dimension.
 
@@ -2596,6 +2565,8 @@ class BranchInputs:
     # branch's syntax or re-derives its layout:
     bindings: Tuple[object, ...] = ()          # the TypedBindings it uses
     local_to_ambient: Tuple[int, ...] = ()     # branch-local -> register
+    # The recorded handoffs of those bindings into this branch's preparation.
+    transport: Tuple["BindingTransport", ...] = ()
 
     @property
     def fin(self):
@@ -2722,48 +2693,99 @@ class OccurrencePlacement:
 # The occurrence planner (pure)
 # ---------------------------------------------------------------------------
 
-def _lift_branch_residuals(branches, chosen, parent_cut):
-    """Live typed residual ports recorded by the prepared branch artifacts.
+@dataclass(frozen=True, slots=True)
+class BindingTransport:
+    """One owned resource handed INTO a branch preparation, recorded AT the
+    handoff.
 
-    Lifted through the recorded local-to-occurrence injection and RE-CUT onto
-    the parent egress side: a branch-local cut_id is not automatically the
-    parent egress cut. Ownership is carried over unchanged -- transport must
-    not mint a new owner.
+    Identity is not re-established afterwards by matching a name, a type, a
+    dimension, an encoding or a wire. The parent's TypedBinding is handed
+    down and the nested derivation adopts its owner and its introduction
+    lineage, so the resource inside the branch IS the resource outside it.
+    What is recorded here is that handoff: the same owner, the same origin,
+    the same type and ordered codes, the branch-local wires it was given, and
+    the parent wires those transport back onto.
 
-    Two branches' residuals are merged only when their recorded owner_id
-    agrees. Equal name, type, dimension or wire is NOT proof of sameness.
+    This is what a resource a branch CONSUMES has instead of a factor. An
+    Apply spine splices its function argument into the result, so the
+    resource is gone from the branch's own chart -- but it did not stop being
+    that resource, and `used_bindings` alone is only the parent's intention.
     """
-    out = {}
-    for bi in branches or ():
-        for pt in bi.fout.ports:
-            if isinstance(pt.logical, Unit):
-                continue                     # a true spectator, not a resource
-            if pt.owner_id is None:
+    owner_id: str
+    intro_cut: str
+    logical: Ty
+    codes: Tuple[int, ...]
+    local_wires: Tuple[int, ...]
+    ambient_wires: Tuple[int, ...]
+    name: str = ""
+
+    def __post_init__(self):
+        from lang.types import width as _w
+        if self.owner_id is None or self.intro_cut is None:
+            raise ProvenanceError(
+                f"binding transport {self.name!r}: a handoff without an owner "
+                f"or an introduction cut proves nothing")
+        if len(self.local_wires) != len(self.ambient_wires):
+            raise ProvenanceError(
+                f"binding transport {self.name!r}: {len(self.local_wires)} "
+                f"branch-local wires against {len(self.ambient_wires)} parent "
+                f"wires")
+        for tag, ws in (("branch-local", self.local_wires),
+                        ("parent", self.ambient_wires)):
+            if len(set(ws)) != len(ws):
                 raise ProvenanceError(
-                    f"branch {bi.index} egress port {pt.name!r} of type "
-                    f"{pretty(pt.logical)} carries no owner_id; a live "
-                    f"residual cannot be placed without recorded ownership")
-            lifted = tuple(chosen[w] if w < len(chosen) else w
-                           for w in pt.wires)
-            origin = pt.require_origin(f"branch {bi.index} egress port")
-            key = (pt.owner_id, origin)
-            if key in out:
-                prev = out[key]
-                # Owner AND origin already agree. Type, role and placement
-                # must too -- equal dimension, name or wires are never proof.
-                if (prev.logical != pt.logical or prev.role != "residual"
-                        or prev.wires != lifted):
-                    raise ProvenanceError(
-                        f"owner {pt.owner_id} at origin {origin} appears as "
-                        f"two different residuals "
-                        f"({pretty(prev.logical)}@{prev.wires} versus "
-                        f"{pretty(pt.logical)}@{lifted}); the derivation does "
-                        f"not identify them")
-                continue
-            out[key] = Port(pt.name, pt.logical, lifted, role="residual",
-                            by_sector=(), owner_id=pt.owner_id,
-                            cut_id=parent_cut, origin_cut=origin)
-    return tuple(out.values())
+                    f"binding transport {self.name!r}: the {tag} placement "
+                    f"{ws} claims a wire twice")
+        if _w(self.logical) != len(self.local_wires):
+            raise ProvenanceError(
+                f"binding transport {self.name!r}: {pretty(self.logical)} is "
+                f"width {_w(self.logical)} but occupies "
+                f"{len(self.local_wires)} wires")
+        if len(self.codes) != semantic_dim(self.logical):
+            raise ProvenanceError(
+                f"binding transport {self.name!r}: {pretty(self.logical)} has "
+                f"semantic dimension {semantic_dim(self.logical)} but "
+                f"{len(self.codes)} codes are recorded")
+
+    def check_transport(self, local_to_ambient, where=""):
+        """The branch-local wires land exactly on the parent's."""
+        l2a = tuple(local_to_ambient)
+        for w in self.local_wires:
+            if not (0 <= w < len(l2a)):
+                raise ProvenanceError(
+                    f"{where}binding {self.name!r} was given branch-local "
+                    f"wire {w}, which local_to_ambient does not record")
+        got = tuple(l2a[w] for w in self.local_wires)
+        if got != tuple(self.ambient_wires):
+            raise ProvenanceError(
+                f"{where}binding {self.name!r} transports from "
+                f"{self.local_wires} to {got}, but the parent holds it on "
+                f"{self.ambient_wires}")
+        return True
+
+
+def issue_binding_transport(parent, local_view, local_to_ambient, where=""):
+    """Record ONE handoff, at the site that performs it.
+
+    Refuses anything that is not literally the same resource: a fresh owner,
+    a rewritten introduction cut, a changed type or a re-encoded resource are
+    all a DIFFERENT resource wearing the same name.
+    """
+    for fld in ("owner_id", "intro_cut", "logical", "codes"):
+        if getattr(parent, fld) != getattr(local_view, fld):
+            raise ProvenanceError(
+                f"{where}the branch-local view of {parent.name!r} disagrees "
+                f"with the parent binding on {fld}: "
+                f"{getattr(local_view, fld)!r} against "
+                f"{getattr(parent, fld)!r}; a handed-down resource keeps its "
+                f"identity")
+    t = BindingTransport(
+        owner_id=parent.owner_id, intro_cut=parent.intro_cut,
+        logical=parent.logical, codes=tuple(parent.codes),
+        local_wires=tuple(local_view.wires),
+        ambient_wires=tuple(parent.wires), name=parent.name)
+    t.check_transport(local_to_ambient, where)
+    return t
 
 
 @dataclass(frozen=True, slots=True)
@@ -2791,6 +2813,18 @@ class CompletedBranch:
     # The map emission will need. Recorded, so nothing downstream has to
     # reconstruct it from chart geometry.
     local_to_ambient: Tuple[int, ...] = ()
+    # The resources this branch USES, as their full typed bindings and not
+    # only as the owner ids in `uses`. A resource consumed inside a branch's
+    # own derivation is spliced into that branch's chart rather than carried
+    # beside it, so without this record its type, placement and lineage would
+    # survive only where some OTHER branch happens to list it as inactive.
+    # Provenance must not depend on that accident -- nor on whether the
+    # parent Frame turned out able to factorize it.
+    used_bindings: Tuple["TypedBinding", ...] = ()
+    # The recorded HANDOFFS: one per resource this branch was given. These
+    # are what prove the nested derivation used the parent's resource, which
+    # `used_bindings` -- the parent's intention -- cannot say on its own.
+    binding_transport: Tuple["BindingTransport", ...] = ()
 
     @property
     def dim(self) -> int:
@@ -2807,6 +2841,21 @@ class CompletedBranch:
                 raise ProvenanceError(
                     f"branch {self.index}: owner {b.owner_id} is recorded as "
                     f"both used and inactive")
+        _used_ids = {b.owner_id for b in self.used_bindings}
+        if self.used_bindings and _used_ids != set(self.uses):
+            raise ProvenanceError(
+                f"branch {self.index}: the typed used-bindings name "
+                f"{sorted(_used_ids)} but `uses` records "
+                f"{sorted(set(self.uses))}")
+        _tr_ids = {t.owner_id for t in self.binding_transport}
+        if len(_tr_ids) != len(self.binding_transport):
+            raise ProvenanceError(
+                f"branch {self.index}: one owner is transported twice")
+        if self.binding_transport and _tr_ids != set(self.uses):
+            raise ProvenanceError(
+                f"branch {self.index}: handoffs were recorded for "
+                f"{sorted(_tr_ids)} but `uses` records "
+                f"{sorted(set(self.uses))}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -3037,7 +3086,8 @@ def use_block_layout(bindings, main_width, tag_width, ambient_width):
 
 
 def complete_branch(*, index, artifact, uses, inactive, local_to_ambient,
-                    tag_value, ambient_width, label=""):
+                    tag_value, ambient_width, label="", used_bindings=(),
+                    binding_transport=()):
     """Complete ONE alternative against the resources it does not use.
 
     Both polarities are built independently from the branch's own selected
@@ -3081,7 +3131,9 @@ def complete_branch(*, index, artifact, uses, inactive, local_to_ambient,
     return CompletedBranch(index=index, artifact=artifact, uses=uses,
                            inactive=inactive, tag_value=tag_value,
                            ingress=side("ingress"), egress=side("egress"),
-                           local_to_ambient=tuple(local_to_ambient))
+                           local_to_ambient=tuple(local_to_ambient),
+                           used_bindings=tuple(used_bindings),
+                           binding_transport=tuple(binding_transport))
 
 
 def plan_use_block(completed, layout, label="block"):
@@ -3140,78 +3192,361 @@ def plan_use_block(completed, layout, label="block"):
     return plan
 
 
-def plan_open_occurrence(*, parent_in, parent_out, branches, bindings,
-                         ambient_width, scope, tag_width_in, tag_width_out,
-                         perm=None):
-    """Select an occurrence placement around externally owned context.
+def scatter_code(code, wires, ambient_width):
+    """One local code placed on `wires` of an `ambient_width` register.
 
-    PURE: no circuit, no emitter state, no mutation. One algorithm and one
-    policy for open PlusMap and open NPlusMap alike -- the two differ only in
-    how their caller collects sectors and branch artifacts, which is why B and
-    D are one bug rather than two.
-
-    Policy, in order:
-      * externally owned context coordinates are PRESERVED exactly as the
-        binding records them -- the occurrence moves, the resource does not;
-      * tag then payload take the remaining coordinates in ascending order,
-        deterministically;
-      * each binding becomes ONE unconditional context port per side -- carried
-        through inactive sectors, never copied per sector and never counted as
-        a summand label.
-
-    Ownership and occupancy come from the recorded bindings. Nothing consults
-    `type_of`, a free-variable width scan, a name, or basis-bit geometry;
-    `width(binding.logical)` is used only to VALIDATE a recorded binding, which
-    TypedBinding already did.
+    Big-endian in both spaces: bit i of the local code (counting from the
+    most significant of `len(wires)`) lands on `wires[i]`.
     """
-    owned = []
+    v = 0
+    k = len(wires)
+    for i, w in enumerate(wires):
+        if not (0 <= w < ambient_width):
+            raise ProvenanceError(
+                f"wire {w} is outside a register of {ambient_width}")
+        if (code >> (k - 1 - i)) & 1:
+            v |= 1 << (ambient_width - 1 - w)
+    return v
+
+
+def completed_embedding(frame, bindings):
+    """The frame's MAIN codes completed by each distinct binding, IN ORDER.
+
+    Main outermost, then one factor per distinct owner in `bindings` order --
+    the same nesting `complete_branch` uses when it appends the resources a
+    branch does not touch after that branch's own factors. Each binding
+    contributes its own RECORDED ordered codes on its own recorded wires;
+    nothing here densifies a sparse resource to 2^len(wires).
+
+    This is the ORDERED counterpart of `completed_dimension`: that one answers
+    "how many states", this one answers "which states, in which order", which
+    is what a Block chart has to be compared against. A frame claiming
+    dimension 8 and a boundary describing a different eight states is exactly
+    the disagreement `classify_factorization` exists to name.
+    """
+    n = frame.n_qubits
+    out = list(frame.codes)
+    seen = set()
     for b in bindings:
-        for w in b.wires:
+        if b.owner_id in seen:
+            continue
+        seen.add(b.owner_id)
+        factor = tuple(scatter_code(c, b.wires, n) for c in b.codes)
+        out = [m | c for m in out for c in factor]
+    if len(set(out)) != len(out):
+        raise ProvenanceError(
+            "the completed embedding repeats a code: the main placement and "
+            "an owned resource are claiming the same coordinate")
+    return tuple(out)
+
+
+# How a parent Frame stands to the Block that is its occurrence's complete cut.
+#
+# The Block is ALWAYS the authority. These say whether a Frame is additionally
+# able to present that same cut as a product of a main interface and
+# unconditional context ports -- which is a strictly weaker vocabulary, and one
+# that simply cannot express a branch that CONSUMES a resource rather than
+# carrying it alongside.
+FACTORIZED = "FACTORIZED"
+BLOCK_ONLY = "BLOCK_ONLY"
+
+
+@dataclass(frozen=True, slots=True)
+class FactorizationCertificate:
+    """One polarity's recorded verdict, issued where both structures are built.
+
+    BLOCK_ONLY is a POSITIVE finding, not a missing result: it records that
+    both the Frame and the Block were built and individually validated, and
+    that no uniform product factorization of the Block exists. Every resource
+    the Frame therefore cannot present is named here and stays fully typed and
+    provenance-bearing in the CompletedBranch/OpenUseBlockPlan records.
+    Malformed provenance is a different thing entirely and raises before any
+    verdict is reached.
+    """
+    side: str
+    status: str
+    ambient_width: int
+    frame_dim: int                             # the MAIN interface alone
+    block_dim: int                             # the complete cut
+    main_codes: Tuple[int, ...]
+    main_wires: Tuple[int, ...]
+    # (owner_id, name) of every owned resource, split by whether the Frame is
+    # able to present it as an unconditional context port.
+    factors: Tuple[Tuple[str, str], ...] = ()
+    omitted: Tuple[Tuple[str, str], ...] = ()
+    reason: str = ""
+
+    def __post_init__(self):
+        if self.side not in ("ingress", "egress"):
+            raise ProvenanceError(
+                f"factorization certificate: side {self.side!r} is neither "
+                f"ingress nor egress")
+        if self.status not in (FACTORIZED, BLOCK_ONLY):
+            raise ProvenanceError(
+                f"factorization certificate: unknown status {self.status!r}")
+        if self.status == FACTORIZED:
+            if self.omitted:
+                raise ProvenanceError(
+                    f"{self.side}: a FACTORIZED frame presents every owned "
+                    f"resource, but {self.omitted} are recorded as omitted")
+            if not self.factors:
+                raise ProvenanceError(
+                    f"{self.side}: FACTORIZED records no factors, so it "
+                    f"claims a factorization of nothing")
+        else:
+            if self.factors:
+                raise ProvenanceError(
+                    f"{self.side}: a BLOCK_ONLY frame presents no context "
+                    f"port, but {self.factors} are recorded as presented")
+            if not self.omitted:
+                raise ProvenanceError(
+                    f"{self.side}: BLOCK_ONLY names no omitted resource, so "
+                    f"nothing explains why the Frame is not the complete cut")
+            if not self.reason:
+                raise ProvenanceError(
+                    f"{self.side}: BLOCK_ONLY records no reason")
+
+    @property
+    def factorized(self) -> bool:
+        return self.status == FACTORIZED
+
+
+def check_context_ports(ports, bindings, cut_id, main_wires, ambient_width,
+                        where=""):
+    """Every candidate context port, against the binding it claims to present.
+
+    Runs BEFORE any factorization verdict. What it refuses -- a port that
+    misreports its type, its placement, its owner or its lineage, a port that
+    collides with the main interface or with another resource, a sector-
+    conditioned context -- is malformed provenance, and malformed provenance
+    must never be laundered into "well, then it is BLOCK_ONLY".
+    """
+    check_binding_consistency(bindings, where)
+    by_owner = {b.owner_id: b for b in bindings}
+    if len(ports) != len(by_owner):
+        raise ProvenanceError(
+            f"{where}{len(ports)} candidate context port(s) for "
+            f"{len(by_owner)} distinct owned resource(s)")
+    seen_owner, seen_wire = set(), set(main_wires)
+    if len(set(main_wires)) != len(main_wires):
+        raise ProvenanceError(
+            f"{where}the main placement {main_wires} is not injective")
+    for w in main_wires:
+        if not (0 <= w < ambient_width):
+            raise ProvenanceError(
+                f"{where}the main placement names wire {w}, outside a "
+                f"{ambient_width}-wire register")
+    for p in ports:
+        b = by_owner.get(p.owner_id)
+        if b is None:
+            raise ProvenanceError(
+                f"{where}context port {p.name!r} claims owner "
+                f"{p.owner_id!r}, which no recorded binding holds")
+        if p.owner_id in seen_owner:
+            raise ProvenanceError(
+                f"{where}owner {p.owner_id} is presented by two ports")
+        seen_owner.add(p.owner_id)
+        if p.role != "context":
+            raise ProvenanceError(
+                f"{where}port {p.name!r} presents an owned resource with "
+                f"role {p.role!r}, not 'context'")
+        if p.by_sector:
+            raise ProvenanceError(
+                f"{where}context port {p.name!r} is sector-conditioned "
+                f"{p.by_sector}; an outer context is carried once, "
+                f"unconditionally")
+        if p.logical != b.logical:
+            raise ProvenanceError(
+                f"{where}context port {p.name!r} is typed "
+                f"{pretty(p.logical)} but its binding records "
+                f"{pretty(b.logical)}")
+        if tuple(p.wires) != tuple(b.wires):
+            raise ProvenanceError(
+                f"{where}context port {p.name!r} sits on {tuple(p.wires)} but "
+                f"its binding records {tuple(b.wires)}")
+        if p.cut_id != cut_id:
+            raise ProvenanceError(
+                f"{where}context port {p.name!r} is cut at {p.cut_id!r}, not "
+                f"at this occurrence's cut {cut_id!r}")
+        if p.origin_cut != b.intro_cut:
+            raise ProvenanceError(
+                f"{where}context port {p.name!r} records origin "
+                f"{p.origin_cut!r} but the resource was introduced at "
+                f"{b.intro_cut!r}; lineage cannot be reconstructed")
+        for w in p.wires:
             if not (0 <= w < ambient_width):
                 raise ProvenanceError(
-                    f"binding {b.name!r} sits on wire {w}, outside an ambient "
-                    f"register of {ambient_width}")
-            if w in owned:
+                    f"{where}context port {p.name!r} names wire {w}, outside "
+                    f"a {ambient_width}-wire register")
+            if w in seen_wire:
                 raise ProvenanceError(
-                    f"wire {w} is owned by two bindings")
-            owned.append(w)
-    owned_set = set(owned)
-    free = [w for w in range(ambient_width) if w not in owned_set]
+                    f"{where}context port {p.name!r} claims wire {w}, which "
+                    f"the main placement or another resource already holds")
+            seen_wire.add(w)
+    return True
 
-    def _side(parent, k, is_in):
-        cut = scope.cut()
-        need = parent.n_qubits
-        if len(free) < need:
+
+def check_block_resource_identity(plan, bindings, parameter_owners=(),
+                                  where=""):
+    """The Block's resources ARE the parent's resources -- by identity.
+
+    The ordered-code agreement `classify_factorization` decides is about the
+    BASIS. It is satisfied by any chart with the right shape, including one
+    whose factors belong to freshly minted owners, because a flattened chart
+    carries no identities. This is the companion gate: it looks inside the
+    blocks and requires every owned resource to be the parent's own.
+
+    For a resource a branch CARRIES, the proof is the factor: same owner,
+    same type, same ordered codes, on the parent's own wires after the
+    branch-local placement transports. For a resource a branch CONSUMES there
+    is no factor to point at, and the proof is the recorded handoff, which was
+    issued where the resource was handed down. Neither is a name match, a
+    dimension match or a wire match.
+
+    The live summand parameter is a DIFFERENT resource from any of them and
+    must not share an owner with one.
+    """
+    by_owner = {b.owner_id: b for b in bindings}
+    params = set(parameter_owners)
+    clash = params & set(by_owner)
+    if clash:
+        raise ProvenanceError(
+            f"{where}the live summand parameter and an owned resource share "
+            f"owner {sorted(clash)}; the payload a branch is GIVEN is not the "
+            f"context it uses")
+    for blk in plan.branches:
+        at = f"{where}block {blk.index}: "
+        tr = {t.owner_id: t for t in blk.binding_transport}
+        if set(tr) != set(blk.uses):
             raise ProvenanceError(
-                f"{'ingress' if is_in else 'egress'}: {need} coordinates are "
-                f"needed for tag+payload but only {len(free)} are unowned in "
-                f"an ambient register of {ambient_width}")
-        chosen = tuple(free[:need])
-        tag = chosen[:k]
-        payload = chosen[k:]
-        ports = tuple(
-            Port(b.name, b.logical, tuple(b.wires), role="context",
-                 owner_id=b.owner_id, cut_id=cut)
-            for b in bindings)
-        if not is_in:
-            # Egress additionally carries whatever the PREPARED branches
-            # actually classified as live residual result ports. Nothing is
-            # synthesized here: if a branch recorded none, none appears, and
-            # the completed cuts will refuse to balance.
-            ports = ports + tuple(_lift_branch_residuals(branches, chosen, cut))
-        return SidePlacement(
-            cut_id=cut, ambient_width=ambient_width,
-            local_to_ambient=chosen, tag_wires=tag, payload_wires=payload,
-            ports=ports)
+                f"{at}handoffs recorded for {sorted(tr)} but the branch uses "
+                f"{sorted(set(blk.uses))}; a used resource with no recorded "
+                f"handoff is not proved to be the parent's")
+        for oid, t in tr.items():
+            b = by_owner.get(oid)
+            if b is None:
+                raise ProvenanceError(
+                    f"{at}handoff names owner {oid}, which this occurrence "
+                    f"does not own")
+            if (t.intro_cut != b.intro_cut or t.logical != b.logical
+                    or tuple(t.codes) != tuple(b.codes)
+                    or tuple(t.ambient_wires) != tuple(b.wires)):
+                raise ProvenanceError(
+                    f"{at}the handoff of {b.name!r} disagrees with the parent "
+                    f"binding on its lineage, type, encoding or placement")
+            t.check_transport(blk.local_to_ambient, at)
+        for side in ("ingress", "egress"):
+            chart = blk.ingress if side == "ingress" else blk.egress
+            if chart.route is None:
+                raise ProvenanceError(
+                    f"{at}{side} carries no route, so its factors cannot be "
+                    f"identified")
+            seen = {}
+            for f, place in zip(chart.route.parts, chart.route.placements):
+                b = by_owner.get(f.owner)
+                if b is None:
+                    continue                 # not an owned resource
+                if f.owner in seen:
+                    raise ProvenanceError(
+                        f"{at}{side}: owner {f.owner} appears as two factors; "
+                        f"one resource is one factor")
+                seen[f.owner] = f
+                if f.logical != b.logical:
+                    raise ProvenanceError(
+                        f"{at}{side}: factor {f.name!r} is typed "
+                        f"{pretty(f.logical)} but {b.name!r} is "
+                        f"{pretty(b.logical)}")
+                if tuple(f.codes) != tuple(b.codes):
+                    raise ProvenanceError(
+                        f"{at}{side}: factor {f.name!r} encodes {f.codes} but "
+                        f"{b.name!r} is recorded as {tuple(b.codes)}")
+                if f.n_qubits != len(b.wires):
+                    raise ProvenanceError(
+                        f"{at}{side}: factor {f.name!r} spans {f.n_qubits} "
+                        f"wires but {b.name!r} occupies {len(b.wires)}")
+                if tuple(place) != tuple(b.wires):
+                    raise ProvenanceError(
+                        f"{at}{side}: {b.name!r} sits on {tuple(place)} but "
+                        f"the parent holds it on {tuple(b.wires)}; the "
+                        f"branch-local placement does not transport onto the "
+                        f"parent's")
+            for x in blk.inactive:
+                if x.owner_id not in seen:
+                    raise ProvenanceError(
+                        f"{at}{side}: {x.name!r} is carried through untouched "
+                        f"but no factor of that owner appears, so it was not "
+                        f"carried at all")
+            # A resource a branch USES may be absent -- consumed into the
+            # branch's own derivation, which is what the handoff covers. But
+            # if a factor stands on exactly the coordinates this occurrence
+            # RECORDED for that resource, then that factor is that resource,
+            # and it had better be the parent's. This is the placement the
+            # derivation wrote down, not a guess from a type, a width or a
+            # name; and an overlapping factor is deliberately not enough,
+            # because an Apply spine's residual legitimately covers part of
+            # the argument it consumed.
+            for oid, t in tr.items():
+                if not t.ambient_wires:
+                    continue
+                for f, place in zip(chart.route.parts,
+                                    chart.route.placements):
+                    if tuple(place) == tuple(t.ambient_wires) \
+                            and f.owner != oid:
+                        raise ProvenanceError(
+                            f"{at}{side}: the factor {f.name!r} stands on "
+                            f"{tuple(place)}, the coordinates recorded for "
+                            f"{t.name!r}, but is owned by {f.owner} rather "
+                            f"than the resource handed down ({oid}); a "
+                            f"branch that carries the parent's resource must "
+                            f"carry the PARENT'S resource")
+    return True
 
-    ingress = _side(parent_in, tag_width_in, True)
-    egress = _side(parent_out, tag_width_out, False)
-    place = OccurrencePlacement(ingress=ingress, egress=egress,
-                                pending_perm=tuple(perm or ()))
 
-    ci = ingress.completed_dimension(parent_in.dim)
-    co = egress.completed_dimension(parent_out.dim)
-    if ci != co:
-        # Explicitly incomplete, not a degraded plan.
-        raise NeedsBranchPreparation(ci, co)
-    return place
+def classify_factorization(*, side, main_frame, ports, bindings, chart, cut_id,
+                           main_wires, where=""):
+    """Decide, POSITIVELY, how this polarity's Frame stands to its Block.
+
+    Both structures are built and validated first and independently; the
+    verdict is then a comparison of two exact embeddings, never the result of
+    catching an error. Equal dimension decides nothing here: the ambient
+    width, the exact ordered codes and every port's type, role, placement,
+    owner and lineage all have to agree, because a Frame that completes to the
+    right NUMBER of states in the wrong ORDER would have every consumer
+    composing against the wrong basis.
+
+    Returns `(certificate, ports_to_attach)`. A BLOCK_ONLY frame attaches
+    none, and its Block keeps every resource, typed and identified.
+    """
+    check_context_ports(ports, bindings, cut_id, main_wires,
+                        chart.n_qubits, where)
+    if main_frame.n_qubits != chart.n_qubits:
+        raise ProvenanceError(
+            f"{where}the main frame is over {main_frame.n_qubits} wires but "
+            f"the Block chart is over {chart.n_qubits}")
+    if tuple(main_frame.codes) != tuple(
+            scatter_code(c, main_wires, chart.n_qubits)
+            for c in canonical_frame(main_frame.logical).codes):
+        raise ProvenanceError(
+            f"{where}the main frame's codes are not its logical interface "
+            f"placed on the recorded main coordinates {main_wires}")
+    named = tuple((b.owner_id, b.name) for b in bindings)
+    got = completed_embedding(main_frame, bindings)
+    want = tuple(chart.codes)
+    common = dict(side=side, ambient_width=chart.n_qubits,
+                  frame_dim=main_frame.dim, block_dim=len(want),
+                  main_codes=tuple(main_frame.codes),
+                  main_wires=tuple(main_wires))
+    if got == want:
+        return (FactorizationCertificate(status=FACTORIZED, factors=named,
+                                         **common),
+                tuple(ports))
+    if len(got) == len(want):
+        reason = (f"the Frame completes to the same {len(want)} states in a "
+                  f"different order: {got[:6]}... against {want[:6]}...")
+    else:
+        reason = (f"the Frame completes to {len(got)} states and the Block "
+                  f"has {len(want)}: a branch that CONSUMES an owned resource "
+                  f"does not carry it as a uniform product factor")
+    return (FactorizationCertificate(status=BLOCK_ONLY, omitted=named,
+                                     reason=reason, **common),
+            ())

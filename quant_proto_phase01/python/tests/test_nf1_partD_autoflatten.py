@@ -599,35 +599,49 @@ def test_a_branch_with_free_vars_in_env_is_not_rejected_as_unresolved():
     assert "unresolved" in str(ei.value)
 
 
-def test_bound_open_NPlusMap_end_to_end_is_KNOWN_RED():
-    """MANDATORY WITNESS for the open/context-provenance + F2 repair.
+@pytest.mark.parametrize("wire", [0, 1, 2])
+@pytest.mark.parametrize("materialize", [False, True])
+def test_bound_open_NPlusMap_end_to_end_is_exact(wire, materialize):
+    """THE REPLACEMENT the KNOWN_RED gate demanded.
 
-    The classification above is correct, but end-to-end compilation of a
-    BOUND-open NPlusMap is still red. This pins the observed failure so it
-    cannot quietly disappear or be mistaken for support:
+    That gate pinned the observed failure -- z at wire 0 or 1 raising
+    "Multiple operation arguments reference q[0]" -- and said explicitly that
+    when the open/context path was repaired it MUST be replaced by an
+    exactness gate rather than deleted. This is that gate.
 
-        env {"z": [0]}  ->  RuntimeError: Multiple operation arguments
-                            reference q[0]
-        env {"z": [1]}  ->  the same, naming q[1]
+    The context wire no longer collides: the occurrence is placed AROUND the
+    resource its branch binds, and the register carries the main span plus one
+    coordinate per owned wire -- three, at every placement.
 
-    The context wire collides with the register the NPlusMap occupies -- the
-    same overlapping-argument class as release-safety F1, which is why F1 and
-    this witness belong to one repair.
+    The oracle is built here from the two branch morphisms and the sector
+    inclusions, independently of the plan-building helpers under test. In
+    semantic coordinates the parent enumerates (tag, payload, z), so the same
+    matrix is expected at every placement:
 
-    A non-overlapping binding (z at wire 2) does compile, but this phase
-    established NO semantic gate for it; that it compiles is not a claim that
-    it is correct.
-
-    When the open/context path is repaired this test MUST be replaced by an
-    exactness gate, not deleted.
+        (0, p, z)  |->  (0, z, p)
+        (1, p, z)  |->  (1, H p, z)
     """
     from lang.terms import Var
     t = NPlusMap((q, q), (Var("z", q), Hg(0, q)))
-    for wire in (0, 1):
-        with pytest.raises(RuntimeError) as ei:
-            compile(t, env={"z": [wire]})
-        assert f"q[{wire}]" in str(ei.value), str(ei.value)
-        assert "Multiple operation arguments" in str(ei.value), str(ei.value)
-    # non-overlapping binding compiles; deliberately NOT asserted correct
-    r = compile(t, env={"z": [2]})
-    assert len(r.circuit.get_commands()) == 4
+    r = compile(t, env={"z": [wire]}, materialize=materialize)
+    assert r.circuit.n_qubits == 3, (
+        f"one context wire took the register to {r.circuit.n_qubits}")
+
+    Hm = np.array([[1, 1], [1, -1]], dtype=complex) / np.sqrt(2)
+    O = np.zeros((8, 8), dtype=complex)
+    for pay in (0, 1):
+        for z in (0, 1):
+            O[0 * 4 + z * 2 + pay, 0 * 4 + pay * 2 + z] = 1.0
+            for out in (0, 1):
+                O[1 * 4 + out * 2 + z, 1 * 4 + pay * 2 + z] = Hm[out, pay]
+
+    sb = r.selected_boundary
+    assert sb.ingress.dim == 8 and sb.egress.dim == 8, (
+        f"the completed cut is {sb.ingress.dim}/{sb.egress.dim}, not 4 x 2")
+    U = r.circuit.get_unitary()
+    act = semantic_action(sb.ingress, U, sb.egress)
+    assert np.allclose(act, O, atol=1e-10, rtol=0.0), (
+        f"framed action differs from the oracle by "
+        f"{np.max(np.abs(act - O)):.3e}")
+    assert leakage(sb.ingress, U, sb.egress) < 1e-10
+    assert abs(float(r.circuit.phase)) < 1e-10

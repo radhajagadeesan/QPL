@@ -50,7 +50,6 @@ from lang.types import width, Arrow, Unit, Plus, Ten, pretty as _pretty_ty
 from dataclasses import dataclass as _dc_alias, replace as _dc_replace
 from compile.frames import (Frame, Sector, Port, canonical_frame,
                             ProvenanceScope, ProvenanceError, TypedBinding,
-                            NeedsBranchPreparation, plan_open_occurrence,
                             BranchInputs, SelectionContext, EMPTY_SELECTION,
                             BoundaryChart, ChartRoute, ChartFactor,
                             chart_of_frame, par_then_repart, scatter_repart,
@@ -60,6 +59,10 @@ from compile.frames import (Frame, Sector, Port, canonical_frame,
                             BranchParameter,
                             BlockDescriptor, aggregate_block_chart,
                             check_binding_consistency,
+                            classify_factorization, scatter_code,
+                            FACTORIZED, BLOCK_ONLY, FactorizationCertificate,
+                            BindingTransport, issue_binding_transport,
+                            check_block_resource_identity,
                             tenpack, tensor_splice,
                             _matched_factor, check_spine_residual,
                             complete_branch, plan_use_block,
@@ -109,7 +112,9 @@ class Artifact:
     perm_at_exit: tuple = ()
     plan: object = None          # PlusMapAlignPlan, when this occurrence has one
     cut_id: object = None        # this OCCURRENCE's cut lineage, minted per visit
-    placement: object = None     # G2: the shadow OccurrencePlacement, if any
+    # THE occurrence's placement: the live OpenUseBlockPlan its emission
+    # consumed, by identity. Never a second, parallel record.
+    placement: object = None
     # The derivation-selected boundary of THIS occurrence, resolved before the
     # artifact is built. Never a deferred description to be interpreted later.
     selected_boundary: object = None
@@ -127,6 +132,12 @@ class Artifact:
     # A RoutingOnly certificate, when the emitter issued one. Never derived
     # by a consumer from this artifact's other fields.
     routing: object = None
+    # (ingress, egress) FactorizationCertificates, when this occurrence's
+    # complete cut is a Block. Each says POSITIVELY whether the Frame beside
+    # it is able to present that cut as main (x) unconditional context, or
+    # whether the SelectedBoundary is the sole complete-cut authority. The
+    # two polarities are classified independently.
+    factorization: tuple = ()
 
     @property
     def n_qubits(self) -> int:
@@ -163,6 +174,9 @@ class Compiled:
     # The ROOT occurrence's own cut identity, carried explicitly so a nested
     # compilation has a real identity rather than a label.
     root_cut_id: object = None
+    # The root occurrence's (ingress, egress) FactorizationCertificates, when
+    # it has a Block cut. Empty otherwise -- never a silent "no verdict".
+    factorization: tuple = ()
 
 
 # --- Auto-flatten helpers for nested PlusMap → NPlusMap conversion ---
@@ -613,9 +627,9 @@ def _as_uniformly_controlled_u2(U):
 
 # G2 only: lets a test capture the placement of an occurrence whose emission
 # still raises. Successful occurrences carry it on their Artifact instead.
-_PLANNER_OBSERVED = []
+
 _USE_BLOCK_OBSERVED = []
-_PLANNER_INCOMPLETE = []
+
 
 
 def _plusmap_placement(n_qubits, k):
@@ -752,9 +766,23 @@ def allocation_width(t: Term, env: Env = None) -> int:
     if _contains_encode_decode(t):
         n = max(n, 2)          # the legacy one-hot pair works in two wires
     if env:
+        _main = n
         for phys_list in env.values():
             for phys in phys_list:
                 n = max(n, phys + 1)
+        # An OPEN sum places its main interface AROUND the coordinates its
+        # environment owns: a resource its branches bind cannot also carry
+        # this occurrence's tag or payload. So the register needs the main
+        # span PLUS one coordinate per owned wire -- exactly one each, which
+        # is why a single-wire context takes a 2-wire sum to 3 and no
+        # further. `phys + 1` alone only notices a resource sitting ABOVE the
+        # span, which is why the same binding at wire 2 compiled and at wire
+        # 0 collided.
+        if isinstance(t, (PlusMap, NPlusMap)):
+            owned = {w for nm, _ty in _ordered_free_vars(t) if nm in env
+                     for w in env[nm]}
+            if owned:
+                n = max(n, _main + len(owned))
     return n
 
 
@@ -1247,16 +1275,33 @@ class BranchArtifact(NamedTuple):
 
 
 def _compile_branch_artifact(branch, *, env=None, scope=None,
-                             parameter=None):
+                             parameter=None, typed_env=None):
     """Prepare ONE branch. `scope` parents its provenance to the enclosing
-    occurrence; without it the branch would mint its own root."""
+    occurrence; without it the branch would mint its own root.
+
+    `fin`/`fout` are the branch's own LOCAL logical frames -- the exact ones
+    the root occurrence of this single subcompile selected. A sub-compile
+    given an `env` finishes by widening its public frames with the outer
+    context it was handed, and taking those would carry ambient coordinates
+    into a frame that is supposed to describe the branch alone. The COMPLETE
+    interface, context included, is `selected_boundary`; a consumer that needs
+    it reads that, rather than a silently widened fin/fout.
+    """
+    _sink = {}
     sub = compile(branch, materialize=True, env=env, _prov_scope=scope,
-                  _branch_parameter=parameter) \
+                  _branch_parameter=parameter, _artifact_sink=_sink,
+                  _typed_env=typed_env) \
         if env is not None \
         else compile(branch, materialize=True, _prov_scope=scope,
-                     _branch_parameter=parameter)
+                     _branch_parameter=parameter, _artifact_sink=_sink)
+    _root = next((a for a in _sink.get("artifacts", ())
+                  if a.occurrence == 0), None)
+    if _root is None:
+        raise TypeCheckError(
+            f"branch {type(branch).__name__} produced no root occurrence, so "
+            f"it has no local frames to travel with its commands")
     return BranchArtifact(_get_sub_cmds(sub.circuit), float(sub.circuit.phase),
-                          sub.input_frame, sub.output_frame, sub.circuit,
+                          _root.input_frame, _root.output_frame, sub.circuit,
                           selected_boundary=sub.selected_boundary,
                           cut_id=sub.root_cut_id)
 
@@ -1924,11 +1969,20 @@ def compile_with_artifacts(term: Term, *, materialize: bool = False,
 def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             env: Env = None, _artifact_sink=None,
             _prov_scope: "ProvenanceScope" = None,
-            _branch_parameter: "BranchParameter" = None) -> Compiled:
+            _branch_parameter: "BranchParameter" = None,
+            _typed_env: dict = None) -> Compiled:
     """`_prov_scope` is INTERNAL. A public compile mints exactly one
     ProvenanceScope root; nested branch preparation passes a child of the
     enclosing occurrence's scope so its identities are transitive descendants
-    rather than a second, unrelated universe."""
+    rather than a second, unrelated universe.
+
+    `_typed_env` is INTERNAL too: the branch-local VIEW of resources the
+    enclosing derivation already owns, keyed by the name `env` uses. A plain
+    `env={name: wires}` says only where a resource sits, so this compilation
+    would mint a fresh owner for it and the resource inside would not be the
+    resource outside. When a typed view is handed down, its owner and its
+    introduction lineage are ADOPTED here rather than re-established later by
+    matching a name, a type, a dimension, an encoding or a wire."""
     # Check for Feedback - not currently supported
     if _contains_feedback(term):
         raise NotImplementedError(
@@ -2031,7 +2085,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         _phase_delta = float(circ.phase) - _ph0
         # An emitter may report a TRANSPORTED output frame (Seq after Align);
         # that effective frame, not the selected one, is what propagates.
+        # An open sum additionally reports its INGRESS: its main placement is
+        # selected around owned context at emission time, so the default
+        # selection made before the body ran is not where the interface
+        # actually sits. The two sides are overridden independently.
         fout = _frame_override.pop(occ, fout)
+        fin = _frame_in_override.pop(occ, fin)
         # The selected boundary is resolved HERE, per occurrence, before the
         # artifact exists -- never left as a description for the root to
         # interpret. An occurrence whose term has a selected-boundary rule
@@ -2079,22 +2138,25 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                        perm_at_entry=entry, perm_at_exit=tuple(p.new_to_old),
                        plan=_plan_sink.pop(occ, None),
                        cut_id=_cut_ids[occ],
-                       placement=_shadow_plans.pop(occ, None),
+                       placement=_placement_plans.pop(occ, None),
                        selected_boundary=_sb,
                        ingress_wires=_ing_w, egress_wires=_egr_w,
                        n_cmds=_n_emitted, phase_delta=_phase_delta,
-                       routing=_rc)
+                       routing=_rc,
+                       factorization=_factorization_sink.pop(occ, ()))
         frame_registry[occ] = art
         artifacts.append(art)
         return art
 
     artifacts = []
     _frame_override = {}
+    _frame_in_override = {}
+    _factorization_sink = {}
     _plan_sink = {}
     _cut_ids = {}
     _prov = _prov_scope if _prov_scope is not None else ProvenanceScope()
     _binding_cache = {}
-    _shadow_plans = {}
+    _placement_plans = {}
     _boundary_sink = {}
     _placement_sink = {}
     _use_block_sink = {}
@@ -2118,14 +2180,33 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
     # The public `env={name: wires}` boundary IS a binder: it is where those
     # resources enter this derivation, so an identity is minted here rather
     # than left absent and reconstructed later from a name or a type.
+    #
+    # UNLESS the enclosing derivation handed one down. Then this compilation
+    # is not where the resource enters at all -- it entered outside -- and
+    # minting here would make the branch's copy a different resource that
+    # merely happens to have the same type on the same wires.
     for _env_nm in (env or ()):
-        _binder_ids[_env_nm] = _prov.fork().owner()
+        _tv = (_typed_env or {}).get(_env_nm)
+        if _tv is None:
+            _binder_ids[_env_nm] = _prov.fork().owner()
+            continue
+        if tuple(_tv.wires) != tuple(env[_env_nm]):
+            raise ProvenanceError(
+                f"handed-down binding {_env_nm!r} records wires "
+                f"{tuple(_tv.wires)} but this compilation was given "
+                f"{tuple(env[_env_nm])}")
+        _binder_ids[_env_nm] = _tv.owner_id
+        _binding_cache[(_env_nm, tuple(_tv.wires))] = _tv
+    for _env_nm in (_typed_env or ()):
+        if not env or _env_nm not in env:
+            raise ProvenanceError(
+                f"a typed view of {_env_nm!r} was handed down but this "
+                f"compilation has no such resource in scope")
     # Payload binders introduced by a CaseExpr, carried through its
     # desugaring by object identity. Without this record the binder
     # is indistinguishable from an unresolved free variable at the
     # PlusMap, because the desugaring drops the names.
     _payload_binders = {}
-    _planner_observed = _PLANNER_OBSERVED
     _cur_occ = [0]
     circ = Circuit(n)
     p = identity(n)
@@ -2501,11 +2582,223 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                              if b.owner_id not in used_ids)
             completed.append(complete_branch(
                 index=bi.index, artifact=bi.artifact, uses=used_ids,
-                inactive=inactive,
+                inactive=inactive, used_bindings=tuple(bi.bindings),
+                binding_transport=tuple(bi.transport),
                 local_to_ambient=bi.local_to_ambient,
                 tag_value=bi.index, ambient_width=layout.ambient_width,
                 label=label))
         return plan_use_block(completed, layout)
+
+    def _emit_open_nplusmap(t, k, offset, env, parent_in, parent_out):
+        """Emit an open n-ary sum DIRECTLY from its completed-branch Block.
+
+        THE single placement authority for this occurrence. Every alternative
+        is prepared exactly once, here, and the objects prepared are the exact
+        objects the planner and the emitter consume -- by identity, not
+        through a second parallel record. Nothing below re-selects the parent
+        frames, rescans a branch's syntax, recompiles a substituted branch, or
+        reconstructs a placement from `payload_base`, a width, or a physical
+        wire.
+
+        Once the prepared roots exist the completed plan is OWED: no failure
+        here is swallowed and there is no legacy fallback, and every check runs
+        before the parent circuit gains a command.
+        """
+        occ = _cur_occ[0]
+        n_amb = len(p.new_to_old)
+
+        # -- the occurrence's owned resources, in one recorded order --------
+        _fv_uniq, _seen_nm = [], set()
+        for _br in t.branches:
+            for nm, ty_ in _ordered_free_vars(_br):
+                if nm not in _seen_nm:
+                    _seen_nm.add(nm)
+                    _fv_uniq.append((nm, ty_))
+        _ub_scope = _prov.fork()
+        _bindings = _typed_bindings(_fv_uniq, _ub_scope, env)
+        if not _bindings:
+            raise UnsupportedFrame(
+                f"NPlusMap: the occurrence is open in {[nm for nm, _ in _fv_uniq]} "
+                f"but no binding could be taken from the environment, so the "
+                f"Block has no context to complete against.")
+        check_binding_consistency(_bindings, "NPlusMap open: ")
+
+        _main_w = max(parent_in.n_qubits, parent_out.n_qubits)
+        _layout = use_block_layout(_bindings, _main_w, k, n_amb)
+
+        # -- PREPARE every alternative EXACTLY once -------------------------
+        _prepared, _param_owners = [], []
+        for i, (st, br) in enumerate(zip(t.summand_types, t.branches)):
+            pw = width(st)
+            fv = _ordered_free_vars(br)
+            if fv:
+                sub_env, ctx_pos = {}, pw
+                for nm, ty_fv in fv:
+                    w_fv = width(ty_fv)
+                    sub_env[nm] = list(range(ctx_pos, ctx_pos + w_fv))
+                    ctx_pos += w_fv
+                # Recorded ONCE, here: which owned resources this branch binds.
+                _used = _typed_bindings(fv, _ub_scope, env)
+                # THE HANDOFF. The parent's binding is handed down as a
+                # branch-local VIEW -- same owner, same introduction lineage,
+                # same type and ordered codes, on the branch-local wires this
+                # adapter just assigned it. The nested compilation adopts that
+                # identity instead of minting its own, so the resource inside
+                # the branch IS the resource outside it, and the fact is
+                # recorded here rather than reconstructed afterwards.
+                _views, _local_env = {}, {}
+                for _b in _used:
+                    _lw = tuple(sub_env[_b.name])
+                    _views[_b.name] = TypedBinding(
+                        name=_b.name, logical=_b.logical, wires=_lw,
+                        owner_id=_b.owner_id, intro_cut=_b.intro_cut,
+                        codes=tuple(_b.codes))
+                    _local_env[_b.name] = _b
+                _to_compile = br
+                if deferred_fns:
+                    for nm, _ty_fv in fv:
+                        _key = tuple(env[nm])
+                        if _key in deferred_fns:
+                            _to_compile = _substitute(_to_compile, nm,
+                                                      deferred_fns[_key])
+                    _to_compile = _normalize(_to_compile)
+                # THE DERIVATION SITE. This adapter is what puts a live
+                # summand payload in the branch's slot, so it is what states
+                # it -- from the selected summand type and the workspace
+                # placement just chosen, never from the branch term or any
+                # geometry.
+                _bp = BranchParameter(
+                    logical=st, owner_id=_ub_scope.fork().owner(),
+                    intro_cut=_ub_scope.cut(), cut_id=_ub_scope.cut(),
+                    codes=tuple(canonical_frame(st).codes),
+                    ingress_placement=tuple(range(pw)),
+                    register_width=ctx_pos)
+                _art = _compile_branch_artifact(
+                    _to_compile, env=sub_env, scope=_branch_scope(),
+                    parameter=_bp, typed_env=_views)
+                _param_owners.append(_bp.owner_id)
+            else:
+                # No free variable at all: this alternative uses nothing.
+                # Recorded, not rediscovered later by a second scan.
+                _used, _views = (), {}
+                _art = _compile_branch_artifact(br, scope=_branch_scope())
+            _local = tuple(_layout.workspace_wires[:pw]) + tuple(
+                w for b in _used for w in b.wires)
+            _transport = tuple(
+                issue_binding_transport(_b, _views[_b.name], _local,
+                                        f"NPlusMap open branch {i}: ")
+                for _b in _used)
+            _prepared.append(BranchInputs(
+                index=i, artifact=_art,
+                uses=tuple(b.owner_id for b in _used),
+                bindings=tuple(_used), local_to_ambient=_local,
+                transport=_transport))
+
+        # COMPLETE each alternative against the context it does NOT use, then
+        # Block the results. The plan holds the prepared artifacts themselves.
+        _ublock = _plan_use_block_from(tuple(_prepared), _bindings, _layout,
+                                       label="n")
+        if _ublock is None:
+            raise UnsupportedFrame(
+                "NPlusMap: the completed-branch Block could not be planned "
+                "for an open occurrence; failing closed before emission.")
+        # THE authoritative placement. The audit list holds the same object.
+        _placement_plans[occ] = _ublock
+        _USE_BLOCK_OBSERVED.append(_ublock)
+
+        # -- the parent's own interface, built FROM THE RECORDED LAYOUT ------
+        # Not "widen canonically, then attach a port": the main sum is placed
+        # on exactly the tag and workspace coordinates the layout selected
+        # around the owned context, and the owned context appears once, as a
+        # typed context port carrying its binder's identity and lineage.
+        _dom, _cod = type_of(t)
+        _cut = _cut_ids[occ]
+        _cand_ports = tuple(
+            Port(b.name, b.logical, tuple(b.wires), role="context",
+                 owner_id=b.owner_id, cut_id=_cut, origin_cut=b.intro_cut)
+            for b in _bindings)
+        _main_wires = tuple(_layout.tag_wires) + tuple(_layout.workspace_wires)
+
+        def _main_frame(ty, label):
+            base = canonical_frame(ty)
+            if base.n_qubits != len(_main_wires):
+                raise UnsupportedFrame(
+                    f"NPlusMap open: {_pretty_ty(ty)} needs "
+                    f"{base.n_qubits} main coordinates but the layout "
+                    f"selected {len(_main_wires)}; the two sides of this "
+                    f"occurrence do not share one main placement. Failing "
+                    f"closed before emission.")
+            return Frame(logical=ty, n_qubits=n_amb,
+                         codes=tuple(scatter_code(c, _main_wires, n_amb)
+                                     for c in base.codes),
+                         label=label)
+
+        _fin_main = _main_frame(_dom, "NPlusMap open in")
+        _fout_main = _main_frame(_cod, "NPlusMap open out")
+
+        _bdesc = BlockDescriptor(
+            cut_id=_cut,
+            branch_cuts=tuple(b.artifact.cut_id for b in _ublock.branches),
+            tag_values=tuple(b.tag_value for b in _ublock.branches),
+            uses=tuple(tuple(b.uses) for b in _ublock.branches),
+            inactive=tuple(tuple(x.owner_id for x in b.inactive)
+                           for b in _ublock.branches),
+            block_dims=tuple(b.dim for b in _ublock.branches),
+            tag_wires=tuple(_ublock.tag_wires),
+            block_to_ambient=tuple(_ublock.block_to_ambient),
+            block_width=_ublock.block_width,
+            ambient_width=_ublock.ambient_width)
+        _bdesc.check_against(_ublock)
+        _agg_in = aggregate_block_chart(_ublock, "ingress", _bdesc)
+        _agg_out = aggregate_block_chart(_ublock, "egress", _bdesc)
+
+        # EVERY gate runs before the parent gains a command: the plan's own
+        # validation and preflight, then the agreement between the completed
+        # parent Frame and the Block it claims to describe -- ordered codes,
+        # not merely equal cardinality.
+        # EVERY gate runs before the parent gains a command: the plan's own
+        # validation and preflight, then -- for each polarity independently --
+        # the classification of how the Frame stands to the Block it
+        # accompanies. The Block is the complete cut either way; what is
+        # decided here is only whether the weaker Frame vocabulary can also
+        # present it as main (x) unconditional context. Malformed provenance
+        # raises inside the classifier; it never becomes a verdict.
+        _preflight_open_use_block(_ublock, circ.n_qubits)
+        # ... and the Block's resources ARE this occurrence's resources. The
+        # ordered-code agreement below is about the BASIS and is satisfied by
+        # any chart of the right shape; this is what refuses one whose factors
+        # belong to freshly minted owners.
+        check_block_resource_identity(_ublock, _bindings, tuple(_param_owners),
+                                      "NPlusMap open: ")
+        _cert_in, _pin_ports = classify_factorization(
+            side="ingress", main_frame=_fin_main, ports=_cand_ports,
+            bindings=_bindings, chart=_agg_in, cut_id=_cut,
+            main_wires=_main_wires, where="NPlusMap open ingress: ")
+        _cert_out, _pout_ports = classify_factorization(
+            side="egress", main_frame=_fout_main, ports=_cand_ports,
+            bindings=_bindings, chart=_agg_out, cut_id=_cut,
+            main_wires=_main_wires, where="NPlusMap open egress: ")
+        _fin_b = _dc_replace(_fin_main, ports=_pin_ports)
+        _fout_b = _dc_replace(_fout_main, ports=_pout_ports)
+
+        _emit_open_use_block(circ, _ublock)
+        _frame_in_override[occ] = _fin_b
+        _frame_override[occ] = _fout_b
+        # The slot this occurrence's INPUT arrived on is its main interface --
+        # the tag and workspace coordinates the layout selected. The owned
+        # context is not part of that input: the branches USE it, and it is
+        # named by the context ports and by the Block, not by the slot. Taken
+        # from the recorded layout, so nothing reads it back off a frame width.
+        _placement_sink[occ] = _main_wires
+        _factorization_sink[occ] = (_cert_in, _cert_out)
+        _boundary_sink[occ] = SelectedBoundary(
+            ingress=_agg_in, egress=_agg_out,
+            origin="nplusmap:use-block", authority=DERIVED)
+        if explain:
+            log.append(
+                f"NPlusMap open: emitted {len(_ublock.branches)} completed "
+                f"blocks, parent dim {_ublock.ingress.dim}")
+        return _ublock
 
     def _certified_identity(a):
         """Is this compiled child a certified identity relay leg?
@@ -2759,25 +3052,6 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         return SelectedBoundary(ingress=side("ingress"),
                                 egress=side("egress"), origin=label,
                                 authority=DERIVED)
-
-    def _plan_open_occurrence_for(t, parent_in, parent_out, free_names,
-                                  k_in, k_out, env_, branches=()):
-        """Thin adapter: collect THIS construct's inputs, defer every
-        placement decision to the one shared planner."""
-        scope = _prov.fork()
-        bindings = _typed_bindings(free_names, scope, env_)
-        if not bindings:
-            return None
-        # The ambient register is the occurrence's own boundary PLUS the
-        # coordinates its owned context occupies. Passing the current register
-        # instead would reproduce the very collision this stage exists to
-        # remove: the context and the tag would be forced to share a wire.
-        ctx_w = sum(len(b.wires) for b in bindings)
-        ambient = max(parent_in.n_qubits, parent_out.n_qubits) + ctx_w
-        return plan_open_occurrence(
-            parent_in=parent_in, parent_out=parent_out, branches=branches,
-            bindings=bindings, ambient_width=ambient, scope=scope,
-            tag_width_in=k_in, tag_width_out=k_out, perm=tuple(p.new_to_old))
 
     def _plusmap_align_plan(t, arts, k, parent_in, parent_out,
                             placement_fn=None, P_inv=None,
@@ -3726,24 +4000,11 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                            else _plan_use_block_from(_bins, _ub_bindings,
                                                      _ub_layout))
                 if _ublock is not None:
-                    # THE authoritative placement for this occurrence. The
-                    # audit list holds the same object, not a second record.
-                    _shadow_plans[_cur_occ[0]] = _ublock
+                    # THE authoritative placement for this occurrence -- the
+                    # only one. The audit list holds the same object, not a
+                    # second record.
+                    _placement_plans[_cur_occ[0]] = _ublock
                     _USE_BLOCK_OBSERVED.append(_ublock)
-                else:
-                    # Not-yet-migrated path only: no prepared selected roots to
-                    # complete, so the older uniform planner still applies.
-                    try:
-                        _sp2 = _plan_open_occurrence_for(
-                            t, _pi, _po, _fv_uniq, max(k, 1), max(k, 1), env,
-                            branches=_bins)
-                        if _sp2 is not None:
-                            _shadow_plans[_cur_occ[0]] = _sp2
-                            _PLANNER_OBSERVED.append(_sp2)
-                    except NeedsBranchPreparation as _nb2:
-                        _PLANNER_INCOMPLETE.append(_nb2)
-                    except ProvenanceError:
-                        pass
 
                 if _ublock is not None:
                     # PLAN-AUTHORITATIVE EMISSION. The completed blocks are
@@ -4666,23 +4927,15 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     f"in the enclosing environment, so their context is "
                     f"unresolved. Failing closed before emission.")
             if any(_np_fv):
-                # G2 SHADOW: same planner, same policy, different adapter.
-                try:
-                    _fv_all = []
-                    _seen_nm = set()
-                    for _br in t.branches:
-                        for nm, ty_ in _ordered_free_vars(_br):
-                            if nm not in _seen_nm:
-                                _seen_nm.add(nm)
-                                _fv_all.append((nm, ty_))
-                    _pi, _po = select_frames(t)
-                    _sp = _plan_open_occurrence_for(
-                        t, _pi, _po, _fv_all, k, k, env)
-                    if _sp is not None:
-                        _shadow_plans[_cur_occ[0]] = _sp
-                        _planner_observed.append(_sp)
-                except ProvenanceError:
-                    pass
+                # PLAN-AUTHORITATIVE OPEN PATH. Every alternative is prepared
+                # exactly once here, and the Block built from those exact
+                # objects is what emits. There is no shadow placement, no
+                # second scan of a branch's syntax, and no legacy fallback:
+                # once the prepared roots exist the completed plan is OWED, so
+                # a failure propagates with the parent circuit untouched
+                # rather than dropping through to `payload_base` arithmetic.
+                _emit_open_nplusmap(t, k, offset, env, parent_in, parent_out)
+                return
             _np_arts = None
             _np_plan = None
             if not any(_np_fv):
@@ -4715,78 +4968,36 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     _emit_frame_align(_npf_in, _np_plan.F_pre, offset,
                                       _np_plan.n_qubits, where="A_pre (NPlusMap)")
 
-            for i, (st, br) in enumerate(zip(t.summand_types, t.branches)):
-                branch_pw = width(st)
-                # Check if branch is open: any free var present in outer env.
-                fv = _ordered_free_vars(br)
-                fv_in_env = [(name, ty_fv) for name, ty_fv in fv if name in env]
-
-                if fv_in_env:
-                    # Open branch: build sub_env, substitute deferred Lams, compile.
-                    sub_env = {}
-                    ctx_pos = branch_pw
-                    for name, ty_fv in fv_in_env:
-                        w_fv = width(ty_fv)
-                        sub_env[name] = list(range(ctx_pos, ctx_pos + w_fv))
-                        ctx_pos += w_fv
-
-                    branch_to_compile = br
-                    if deferred_fns:
-                        for name, ty_fv in fv_in_env:
-                            key = tuple(env[name])
-                            if key in deferred_fns:
-                                branch_to_compile = _substitute(
-                                    branch_to_compile, name, deferred_fns[key])
-                        branch_to_compile = _normalize(branch_to_compile)
-
-                    sub_cmds, branch_phase_ht = _compile_branch(
-                        branch_to_compile, env=sub_env,
-                        scope=_branch_scope())
-
-                    if sub_cmds:
-                        ctx_parent_phys = []
-                        for name, ty_fv in fv_in_env:
-                            ctx_parent_phys.extend(env[name])
-
-                        def make_wire_map_open(_pw=branch_pw, _pb=payload_base,
-                                               _cpp=list(ctx_parent_phys)):
-                            def wire_map(w):
-                                if w < _pw:
-                                    return p.apply_new_to_old(_pb + w)
-                                else:
-                                    return _cpp[w - _pw]
-                            return wire_map
-
-                        _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
-                                              make_wire_map_open())
+            # Every OPEN occurrence returned above, through its Block, so by
+            # construction every branch reaching here is closed.
+            for i, br in enumerate(t.branches):
+                # Closed branch: reuse the single compile from above.
+                if _np_arts is not None:
+                    sub_cmds = _np_arts[i].cmds
+                    branch_phase_ht = _np_arts[i].phase
                 else:
-                    # Closed branch: reuse the single compile from above.
-                    if _np_arts is not None:
-                        sub_cmds = _np_arts[i].cmds
-                        branch_phase_ht = _np_arts[i].phase
-                    else:
-                        sub_cmds, branch_phase_ht = _compile_branch(
+                    sub_cmds, branch_phase_ht = _compile_branch(
                         br, scope=_branch_scope())
 
-                    if sub_cmds:
-                        if _np_plan is not None:
-                            # THE authority. `payload_base + w` happens to give
-                            # the same answer here, and keeping both would
-                            # recreate exactly the drift removed for Strategy A.
-                            def make_wire_map(_pl=_np_plan.placements[i],
-                                              _off=offset):
-                                def wire_map(w):
-                                    return p.apply_new_to_old(_off + _pl.wire(w))
-                                return wire_map
-                        else:
-                            # Unplanned legacy path only.
-                            def make_wire_map(pb=payload_base):
-                                def wire_map(w):
-                                    return p.apply_new_to_old(pb + w)
-                                return wire_map
+                if sub_cmds:
+                    if _np_plan is not None:
+                        # THE authority. `payload_base + w` happens to give
+                        # the same answer here, and keeping both would
+                        # recreate exactly the drift removed for Strategy A.
+                        def make_wire_map(_pl=_np_plan.placements[i],
+                                          _off=offset):
+                            def wire_map(w):
+                                return p.apply_new_to_old(_off + _pl.wire(w))
+                            return wire_map
+                    else:
+                        # Unplanned legacy path only.
+                        def make_wire_map(pb=payload_base):
+                            def wire_map(w):
+                                return p.apply_new_to_old(pb + w)
+                            return wire_map
 
-                        _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
-                                              make_wire_map())
+                    _emit_nway_controlled(circ, tag_phys, i, sub_cmds,
+                                          make_wire_map())
 
                 _discharge_branch_phase(circ, tag_phys, [i], branch_phase_ht)
 
@@ -5697,6 +5908,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     input_frame=_fin, output_frame=_fout,
                     input_ports=_pin, output_ports=_pout,
                     global_phase=float(circ.phase),
-                    selected_boundary=_sel, root_cut_id=_root.cut_id)
+                    selected_boundary=_sel, root_cut_id=_root.cut_id,
+                    factorization=_root.factorization)
 
 

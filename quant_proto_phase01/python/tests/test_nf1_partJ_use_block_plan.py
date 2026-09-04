@@ -560,7 +560,6 @@ def test_J26_the_plan_is_the_authoritative_placement(materialize):
     """One object: the artifact's placement channel and the audit hook."""
     from test_nf1_beta_tensor import _fixture
     TP._USE_BLOCK_OBSERVED.clear()
-    TP._PLANNER_INCOMPLETE.clear()
     _, arts = TP.compile_with_artifacts(
         _fixture("ctrl_ho_closed_plus_map"), materialize=materialize)
     assert TP._USE_BLOCK_OBSERVED, "no plan was produced"
@@ -569,9 +568,14 @@ def test_J26_the_plan_is_the_authoritative_placement(materialize):
     assert placed, "the occurrence records no placement at all"
     assert any(x is pl for x in placed), (
         "the audit hook and the artifact's placement are two objects")
-    assert not TP._PLANNER_INCOMPLETE, (
-        f"the withdrawn uniform planner still recorded "
-        f"{TP._PLANNER_INCOMPLETE}; it must not coexist with the Block plan")
+    # The withdrawn uniform planner cannot coexist with the Block plan
+    # because it no longer exists: every placement channel an occurrence has
+    # is the OpenUseBlockPlan itself.
+    assert all(isinstance(x, OpenUseBlockPlan) for x in placed), (
+        f"an occurrence records a placement that is not its Block plan: "
+        f"{[type(x).__name__ for x in placed]}")
+    assert not hasattr(TP, "plan_open_occurrence"), (
+        "the retired shadow planner is still reachable from the compiler")
 
 
 @pytest.mark.parametrize("materialize", MODES)

@@ -39,6 +39,7 @@ import pytest
 
 from lang.types import Q, Unit, Ten, Plus, Arrow
 from lang.terms import Id, Seq, TenTerm, TwistTen, PlusMap, NPlusMap, Var, H as Hg
+from pytket import Circuit
 from compile.to_pytket import compile, compile_with_artifacts, select_frames
 from compile.frames import (OpenUseBlockPlan,
                             Frame, Port, semantic_action, leakage, pretty,
@@ -620,31 +621,60 @@ def test_E6_python_serialization_exposes_nested_occurrence_frames():
 
 
 # ===========================================================================
-# G2a: the shared occurrence planner -- NPlusMap ONLY, still shadow.
-# Binary open PlusMap no longer uses it: it consumes its completed-branch
-# Block directly (Parts J and K). These cases pin the planner itself and
-# the not-yet-migrated NPlusMap path.
+# G2b: the LIVE open-occurrence placement -- ONE authority.
 #
-# The planner is pure and shared: open PlusMap and open NPlusMap reach the same
-# algorithm through thin adapters that only collect their own sectors and free
-# names. Emission does not consume the result at this stage -- B z@0/z@1 and
-# ctrl_ho keep their exact prior diagnostics.
+# The shared shadow planner is gone. Open PlusMap and open NPlusMap both
+# select their coordinates through `use_block_layout` and both emit from the
+# `OpenUseBlockPlan` built on top of it, so there is no second algorithm that
+# could agree with the compiler by accident. Every pin below therefore drives
+# the real compiler, or the live layout/plan the compiler itself calls, and
+# reads the plan object the emission actually consumed.
+#
+# The B witness is the decisive case: its completed blocks are 4 and 4 and its
+# parent is their direct sum, 8.
 # ===========================================================================
 
-from compile.frames import (plan_open_occurrence, TypedBinding,          # noqa
-                            NeedsBranchPreparation, canonical_frame)     # noqa
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))            # noqa
+from dataclasses import replace as _replace                              # noqa
+from compile.frames import (TypedBinding, canonical_frame,               # noqa
+                            BoundaryChart, use_block_layout,             # noqa
+                            complete_branch, plan_use_block,             # noqa
+                            CompletedBranch, BranchParameter,            # noqa
+                            classify_factorization, check_context_ports, # noqa
+                            FACTORIZED, BLOCK_ONLY)                      # noqa
 import compile.to_pytket as TP                                            # noqa
 
 
-def _plan_for_binding(wire, ambient=3, perm=None):
-    """Drive the SHARED planner directly, with one z:Q binding."""
-    sc = ProvenanceScope()
-    par = canonical_frame(Plus(q, q))
-    b = TypedBinding("z", q, (wire,), sc.owner(), sc.cut())
-    return plan_open_occurrence(
-        parent_in=par, parent_out=par, branches=(), bindings=(b,),
-        ambient_width=ambient, scope=sc, tag_width_in=1, tag_width_out=1,
-        perm=perm)
+def _live(wire=2, materialize=False, term=None, env=None):
+    """Drive the REAL compiler; hand back what it actually emitted."""
+    TP._USE_BLOCK_OBSERVED.clear()
+    res, arts = compile_with_artifacts(
+        term if term is not None else B_witness(),
+        env=env if env is not None else {"z": [wire]},
+        materialize=materialize)
+    assert TP._USE_BLOCK_OBSERVED, (
+        "the compiler never reached the use-block planner")
+    return res, arts, TP._USE_BLOCK_OBSERVED[-1]
+
+
+def _ctx_ports(frame):
+    return [p for p in frame.ports if p.role == "context"]
+
+
+# --- the external oracle, built from the primitive branch actions ----------
+# Assembled from the two branch morphisms and the explicit sector inclusions,
+# with no reference to the plan-building helpers under test. Semantic index
+# is (tag, payload, z) in every placement, because that is the order the
+# parent chart enumerates.
+def _B_oracle():
+    Hm = np.array([[1, 1], [1, -1]], dtype=complex) / np.sqrt(2)
+    O = np.zeros((8, 8), dtype=complex)
+    for pay in (0, 1):
+        for z in (0, 1):
+            O[0 * 4 + z * 2 + pay, 0 * 4 + pay * 2 + z] = 1.0
+            for out in (0, 1):
+                O[1 * 4 + out * 2 + z, 1 * 4 + pay * 2 + z] = Hm[out, pay]
+    return O
 
 
 @pytest.mark.parametrize("wire,ctx,tag,pay", [
@@ -652,96 +682,235 @@ def _plan_for_binding(wire, ambient=3, perm=None):
     (1, (1,), (0,), (2,)),
     (2, (2,), (0,), (1,)),
 ])
-def test_G2a_placement_pins(wire, ctx, tag, pay):
-    """Owned context preserved; tag then payload take the remaining wires in
-    ascending order."""
-    pl = _plan_for_binding(wire)
-    for side in (pl.ingress, pl.egress):
-        assert len(side.ports) == 1, "expected exactly one z:Q context port"
-        p0 = side.ports[0]
-        assert p0.wires == ctx and p0.logical == q and p0.role == "context"
-        assert p0.by_sector == (), "context was copied per sector"
-        assert side.tag_wires == tag, f"tag {side.tag_wires} != {tag}"
-        assert side.payload_wires == pay, f"payload {side.payload_wires} != {pay}"
-        assert side.completed_dimension(4) == 8, "4_main x 2_z = 8"
-    assert pl.ingress.cut_id != pl.egress.cut_id, "sides share a cut"
-    assert pl.ingress.ports[0].owner_id == pl.egress.ports[0].owner_id, (
+def test_G2b_placement_pins(wire, ctx, tag, pay):
+    """Owned context preserved; tag then workspace take the remaining wires in
+    ascending order. Now read off the LIVE plan and the successful artifact."""
+    res, _arts, pl = _live(wire)
+    assert pl.tag_wires == tag, f"tag {pl.tag_wires} != {tag}"
+    assert pl.workspace_wires == pay, f"workspace {pl.workspace_wires} != {pay}"
+    assert pl.ambient_width == 3 and pl.spectators == ()
+    assert {b.index: b.dim for b in pl.branches} == {0: 4, 1: 4}
+    assert pl.ingress.dim == 8 and pl.egress.dim == 8
+    assert sum(b.dim for b in pl.branches) == pl.ingress.dim, (
+        "the parent is the DIRECT SUM of its blocks")
+    # Both polarities, independently.
+    for label, frame in (("ingress", res.input_frame),
+                         ("egress", res.output_frame)):
+        ports = _ctx_ports(frame)
+        assert len(ports) == 1, (
+            f"{label}: expected one typed context port, got "
+            f"{[(p.name, p.role, p.logical) for p in frame.ports]}")
+        p0 = ports[0]
+        assert p0.wires == ctx and p0.logical == q
+        assert p0.by_sector == (), f"{label}: context was copied per sector"
+        assert p0.owner_id is not None and p0.cut_id is not None
+        assert p0.origin_cut is not None, f"{label}: lineage was dropped"
+        assert completed_dimension(frame) == 8, "4_main x 2_z = 8"
+    a_in, a_out = _ctx_ports(res.input_frame)[0], _ctx_ports(res.output_frame)[0]
+    assert a_in.owner_id == a_out.owner_id, (
         "one binding became two owners across the two sides")
-
-
-def test_G2a_two_equal_typed_resources_stay_distinct():
-    sc = ProvenanceScope()
-    par = canonical_frame(Plus(q, q))
-    a = TypedBinding("z", q, (0,), sc.owner(), sc.cut())
-    b = TypedBinding("w", q, (1,), sc.owner(), sc.cut())
-    pl = plan_open_occurrence(
-        parent_in=par, parent_out=par, branches=(), bindings=(a, b),
-        ambient_width=4, scope=sc, tag_width_in=1, tag_width_out=1)
-    owners = {p.owner_id for p in pl.ingress.ports}
-    assert len(owners) == 2, "two equal-typed resources collapsed"
-    assert pl.ingress.completed_dimension(4) == 4 * 2 * 2
-
-
-def test_G2a_same_context_mentioned_twice_is_one_factor():
-    sc = ProvenanceScope()
-    own, cut = sc.owner(), sc.cut()
-    side = SidePlacement(
-        cut_id=cut, ambient_width=4, local_to_ambient=(1, 2),
-        tag_wires=(1,), payload_wires=(2,),
-        ports=(Port("z", q, (0,), role="context", owner_id=own, cut_id=cut),
-               Port("z", q, (0,), role="context", owner_id=own, cut_id=cut)))
-    assert side.completed_dimension(4) == 8, "one owner counted twice"
-
-
-def test_G2a_nonzero_offset_placement():
-    """A wider ambient register with the context high up: tag and payload
-    still take the lowest unowned wires in ascending order."""
-    pl = _plan_for_binding(4, ambient=5)
-    assert pl.ingress.ports[0].wires == (4,)
-    assert pl.ingress.tag_wires == (0,)
-    assert pl.ingress.payload_wires == (1,)
-    assert pl.ingress.completed_dimension(4) == 8
-
-
-def test_G2a_pending_permutation_is_recorded_and_does_not_move_ownership():
-    """Ownership is recorded in AMBIENT coordinates, so a pending wire
-    permutation must not silently relocate it. The perm is carried on the
-    plan, with its direction pinned."""
-    perm = (2, 0, 1)
-    pl = _plan_for_binding(0, perm=perm)
-    assert pl.pending_perm == perm, "pending permutation not recorded"
-    plain = _plan_for_binding(0)
-    assert plain.pending_perm == ()
-    assert pl.ingress.ports[0].wires == plain.ingress.ports[0].wires
-    assert pl.ingress.tag_wires == plain.ingress.tag_wires
-    assert pl.ingress.payload_wires == plain.ingress.payload_wires
+    assert a_in.origin_cut == a_out.origin_cut
 
 
 @pytest.mark.parametrize("wire", [0, 1, 2])
-def test_G2a_compiler_path_reaches_the_same_planner(wire):
-    """Anti-vacuity: the REAL compiler path must call the shared planner.
+def test_G2b_the_expected_ports_exist_before_disjointness_is_tested(wire):
+    """ANTI-VACUITY for B4. Grouping wires by role passes trivially when the
+    roles are absent, so the roles are asserted present first."""
+    res, _arts, pl = _live(wire)
+    for frame in (res.input_frame, res.output_frame):
+        roles = {p.role for p in frame.ports}
+        assert "context" in roles, f"no context port to be disjoint from: {roles}"
+    occupied = set(pl.tag_wires) | set(pl.workspace_wires)
+    owned = {w for p in _ctx_ports(res.input_frame) for w in p.wires}
+    assert owned, "no owned coordinate was recorded"
+    assert not (occupied & owned), (
+        f"tag/workspace {sorted(occupied)} overlaps the owned context "
+        f"{sorted(owned)}")
 
-    Not a second test-only plan -- z@2 attaches it to the Artifact, z@0/z@1
-    expose it through the spy while the unchanged guard still raises.
+
+def test_G2b_two_equal_typed_resources_stay_distinct():
+    """Two equal-typed binders are two resources; the live layout preserves
+    both and the completion counts both."""
+    sc = ProvenanceScope()
+    a = TypedBinding("z", q, (0,), sc.owner(), sc.cut())
+    b = TypedBinding("w", q, (1,), sc.owner(), sc.cut())
+    lay = use_block_layout((a, b), 2, 1, 4)
+    assert lay.owned_wires == (0, 1)
+    assert lay.tag_wires == (2,) and lay.workspace_wires == (3,)
+    cut = sc.cut()
+    f = Frame(logical=Plus(q, q), n_qubits=4, codes=(0, 1, 2, 3),
+              ports=tuple(Port(x.name, x.logical, x.wires, role="context",
+                               owner_id=x.owner_id, cut_id=cut,
+                               origin_cut=x.intro_cut)
+                          for x in (a, b)))
+    assert len({p.owner_id for p in f.ports}) == 2, (
+        "two equal-typed resources collapsed")
+    assert completed_dimension(f) == 4 * 2 * 2
+
+
+def test_G2b_same_context_mentioned_twice_is_one_factor():
+    """One binder named twice is ONE resource: distinctness is decided by
+    recorded (owner, cut), never by how often a port appears."""
+    sc = ProvenanceScope()
+    own, cut = sc.owner(), sc.cut()
+    dup = tuple(Port("z", q, (0,), role="context", owner_id=own, cut_id=cut,
+                     origin_cut=cut) for _ in range(2))
+    f = Frame(logical=Plus(q, q), n_qubits=3, codes=(0, 1, 2, 3), ports=dup)
+    assert completed_dimension(f) == 8, "one owner counted twice"
+
+
+def test_G2b_nonzero_offset_placement():
+    """A wider ambient register with the context high up: tag and workspace
+    still take the lowest unowned wires in ascending order."""
+    res, _arts, pl = _live(4)
+    assert pl.ambient_width == 5
+    assert _ctx_ports(res.input_frame)[0].wires == (4,)
+    assert pl.tag_wires == (0,) and pl.workspace_wires == (1,)
+    assert completed_dimension(res.input_frame) == 8
+    assert pl.ingress.dim == 8
+
+
+@pytest.mark.parametrize("wire", [0, 1, 2])
+def test_G2b_both_modes_agree_and_each_matches_the_external_oracle(wire):
+    """REPLACES the dead `pending_perm` field pin.
+
+    Ownership is recorded in AMBIENT coordinates, so materialising -- which
+    appends a swap network and empties the pending permutation -- must not
+    relocate it. Agreement between the two modes is necessary but NOT
+    sufficient (both could be identically wrong), so each mode is also
+    checked against the external oracle above, which was built from the
+    branch morphisms and the sector inclusions alone.
     """
-    TP._PLANNER_OBSERVED.clear()
-    got = None
+    O = _B_oracle()
+    shots = []
+    for mode in (False, True):
+        res, _arts, pl = _live(wire, materialize=mode)
+        sb = res.selected_boundary
+        U = res.circuit.get_unitary()
+        act = semantic_action(sb.ingress, U, sb.egress)
+        assert np.allclose(act, O, atol=ATOL, rtol=0.0), (
+            f"materialize={mode}: framed action differs from the external "
+            f"oracle by {np.max(np.abs(act - O)):.3e}")
+        assert leakage(sb.ingress, U, sb.egress) < ATOL
+        assert abs(float(res.circuit.phase)) < ATOL
+        shots.append((pl.tag_wires, pl.workspace_wires, pl.block_to_ambient,
+                      tuple(sb.ingress.codes), tuple(sb.egress.codes),
+                      tuple(res.input_frame.codes),
+                      tuple(p.wires for p in _ctx_ports(res.input_frame))))
+    assert shots[0] == shots[1], (
+        f"the two materialization modes disagree on the live layout or the "
+        f"ordered boundary codes:\n  {shots[0]}\n  {shots[1]}")
+
+
+@pytest.mark.parametrize("wire", [0, 1, 2])
+def test_G2b_artifact_preflight_and_emission_share_one_plan_object(wire):
+    """ANTI-VACUITY. Not "a plan was produced" -- the SAME object reaches the
+    preflight, the emitter and the artifact, by identity."""
+    saw = {}
+    o_pre, o_emit = TP._preflight_open_use_block, TP._emit_open_use_block
+
+    def spy_pre(plan, amb):
+        saw.setdefault("pre", []).append(plan)
+        return o_pre(plan, amb)
+
+    def spy_emit(circ, plan):
+        saw.setdefault("emit", []).append(plan)
+        return o_emit(circ, plan)
+
+    TP._preflight_open_use_block, TP._emit_open_use_block = spy_pre, spy_emit
     try:
-        _, arts = compile_with_artifacts(B_witness(), env={"z": [wire]})
-        got = [a.placement for a in arts if a.placement is not None]
-        got = got[0] if got else None
-    except Exception:
-        got = TP._PLANNER_OBSERVED[-1] if TP._PLANNER_OBSERVED else None
-    assert got is not None, "the compiler path did not reach the planner"
-    expected = _plan_for_binding(wire)
-    assert got.ingress.ports[0].wires == expected.ingress.ports[0].wires
-    assert got.ingress.tag_wires == expected.ingress.tag_wires
-    assert got.ingress.payload_wires == expected.ingress.payload_wires
+        _res, arts, pl = _live(wire)
+    finally:
+        TP._preflight_open_use_block, TP._emit_open_use_block = o_pre, o_emit
+    placed = [a for a in arts if a.placement is not None]
+    assert len(placed) == 1, f"{len(placed)} occurrences claim a placement"
+    assert placed[0].placement is pl, "the artifact carries a different plan"
+    assert saw["emit"] and all(x is pl for x in saw["emit"])
+    assert saw["pre"] and all(x is pl for x in saw["pre"])
+    # and the plan holds the prepared branch artifacts themselves
+    for b in pl.branches:
+        assert b.artifact is not None and b.artifact.selected_boundary is not None
 
 
-def test_G2a_no_partial_artifact_after_a_failed_compile():
-    with pytest.raises(RuntimeError):
-        compile_with_artifacts(B_witness(), env={"z": [0]})
+@pytest.mark.parametrize("wire", [0, 1, 2])
+def test_G2b_each_branch_is_compiled_exactly_once(wire):
+    """Counted on the real `compile()` invocations, not on a wrapper."""
+    t = B_witness()
+    counts = {}
+    orig = TP.compile
+
+    def spy(term, **kw):
+        for i, br in enumerate(t.branches):
+            if term is br:
+                counts[i] = counts.get(i, 0) + 1
+        return orig(term, **kw)
+
+    TP.compile = spy
+    try:
+        TP.compile(t, env={"z": [wire]})
+    finally:
+        TP.compile = orig
+    assert counts == {0: 1, 1: 1}, (
+        f"branch compile() counts {counts}; each alternative is prepared "
+        f"exactly once")
+
+
+def test_G2b_a_malformed_live_plan_is_refused_before_parent_mutation():
+    """REPLACES the old "no partial artifact after a failed z@0 compile".
+
+    z@0 is a valid binding and now compiles, so the witness has to be
+    genuinely invalid: a recorded branch placement perturbed to collide with
+    the tag. The parent must be untouched, not partially written.
+    """
+    _res, _arts, pl = _live(2)
+    bad_b = _replace(pl.branches[1], local_to_ambient=(pl.tag_wires[0],))
+    bad = _replace(pl, branches=(pl.branches[0], bad_b))
+    circ = Circuit(pl.ambient_width)
+    circ.X(0)
+    before = circ.n_gates
+    with pytest.raises(UnsupportedFrame) as ei:
+        TP._emit_open_use_block(circ, bad)
+    assert "tag" in str(ei.value)
+    assert circ.n_gates == before, "the parent gained commands on a failure path"
+
+
+def test_G2b_a_perturbed_recorded_placement_is_discriminated():
+    """Move ONE recorded coordinate and require the emission to change.
+
+    The H branch is the one with commands, so its placement is the one whose
+    perturbation is observable: sending it to the owned context wire instead
+    of the workspace is still a legal placement as far as the tag and the
+    spectators are concerned, and it must produce a different circuit.
+    """
+    _res, _arts, pl = _live(2)
+    assert TP._preflight_open_use_block(pl, pl.ambient_width)
+    b1 = pl.branches[1]
+    assert b1.artifact.cmds, "the perturbed branch emits nothing to observe"
+    owned = tuple(w for w in range(pl.ambient_width)
+                  if w not in set(pl.tag_wires) | set(pl.workspace_wires))
+    moved = _replace(b1, local_to_ambient=owned[:1])
+    assert moved.local_to_ambient != b1.local_to_ambient
+    bad = _replace(pl, branches=pl.branches[:1] + (moved,))
+    circ = Circuit(pl.ambient_width)
+    TP._emit_open_use_block(circ, bad)
+    ref = Circuit(pl.ambient_width)
+    TP._emit_open_use_block(ref, pl)
+    assert not np.allclose(circ.get_unitary(), ref.get_unitary(), atol=ATOL), (
+        "moving a branch's recorded placement changed nothing, so the "
+        "emitter is not consuming it")
+
+
+def test_G2b_unbalanced_blocks_are_never_attachable():
+    """A block whose two polarities do not balance must not become a
+    CompletedBranch at all."""
+    _res, _arts, pl = _live(2)
+    b = pl.branches[0]
+    thin = BoundaryChart(n_qubits=b.ingress.n_qubits,
+                         codes=tuple(b.ingress.codes)[:-1], route=None,
+                         label="thin", space="ambient")
+    with pytest.raises(ProvenanceError) as ei:
+        _replace(b, egress=thin)
+    assert "balance" in str(ei.value)
 
 
 def test_G2a_ctrl_ho_is_completed_blockwise_not_uniformly():
@@ -783,12 +952,394 @@ def test_G2a_ctrl_ho_is_completed_blockwise_not_uniformly():
     assert pl.validate()
 
 
-def test_G2a_unbalanced_plans_are_never_attachable():
+# ===========================================================================
+# G2c: FACTORIZED vs BLOCK_ONLY.
+#
+# The Block is ALWAYS the complete cut. A Frame is a possibly-factorized VIEW
+# of it, and whether that view exists is decided positively, per polarity, by
+# comparing two exact embeddings -- never by catching an error, and never by
+# equal dimension.
+# ===========================================================================
+
+@pytest.mark.parametrize("wire", [0, 1, 2])
+@pytest.mark.parametrize("materialize", MODES)
+def test_G2c_B_witness_is_FACTORIZED(wire, materialize):
+    res, _arts, pl = _live(wire, materialize=materialize)
+    cin, cout = res.factorization
+    assert (cin.status, cout.status) == (FACTORIZED, FACTORIZED)
+    assert (cin.side, cout.side) == ("ingress", "egress")
+    for c in (cin, cout):
+        assert c.omitted == () and len(c.factors) == 1
+        assert c.factors[0][1] == "z"
+        assert c.frame_dim == 4 and c.block_dim == 8
+        assert c.ambient_width == 3
+    assert [p.name for p in _ctx_ports(res.input_frame)] == ["z"]
+    assert [p.name for p in _ctx_ports(res.output_frame)] == ["z"]
+
+
+def test_G2c_three_branch_witness_is_BLOCK_ONLY():
+    """The f0/f1/f2 occurrence: each branch CONSUMES its own function through
+    an Apply spine, so its completed block is not that branch's payload times
+    a uniform f-factor. The Frame cannot present that, and says so."""
+    import test_n_plusmap_open as NPO
+    TP._USE_BLOCK_OBSERVED.clear()
+    res, arts = compile_with_artifacts(NPO._abstract_three_branch())
+    assert TP._USE_BLOCK_OBSERVED, "the use-block planner was never reached"
+    pl = TP._USE_BLOCK_OBSERVED[-1]
+    placed = [a for a in arts if a.factorization]
+    assert placed, "no occurrence recorded a factorization verdict"
+    a = placed[-1]
+    cin, cout = a.factorization
+    assert (cin.status, cout.status) == (BLOCK_ONLY, BLOCK_ONLY)
+    for c in (cin, cout):
+        assert c.factors == (), "a BLOCK_ONLY frame presents no context port"
+        assert len(c.omitted) == 3
+        assert {n for _, n in c.omitted} == {"f0", "f1", "f2"}
+        assert c.reason, "BLOCK_ONLY recorded no reason"
+        assert c.frame_dim == 6
+        assert c.block_dim == 192
+        assert c.block_dim != 384, "the withdrawn uniform value reappeared"
+    # The Frame says only what it can: the main interface, no misleading
+    # unconditional f0/f1/f2 ports.
+    for frame in (a.input_frame, a.output_frame):
+        assert frame.dim == 6
+        assert _ctx_ports(frame) == []
+        assert completed_dimension(frame) == 6
+    assert {b.index: b.dim for b in pl.branches} == {0: 64, 1: 64, 2: 64}
+    assert pl.ingress.dim == 192 and pl.egress.dim == 192
+    assert sum(b.dim for b in pl.branches) == pl.ingress.dim
+
+
+def test_G2c_BLOCK_ONLY_keeps_every_resource_typed_and_identified():
+    """Nothing may disappear merely because the Frame cannot factorize it."""
+    import test_n_plusmap_open as NPO
+    TP._USE_BLOCK_OBSERVED.clear()
+    _res, arts = compile_with_artifacts(NPO._abstract_three_branch())
+    pl = TP._USE_BLOCK_OBSERVED[-1]
+    a = [x for x in arts if x.factorization][-1]
+    omitted = {oid for oid, _ in a.factorization[0].omitted}
+    assert len(omitted) == 3
+    typed = {}
+    for b in pl.branches:
+        for tb in tuple(b.used_bindings) + tuple(b.inactive):
+            typed[tb.owner_id] = tb
+    assert omitted <= set(typed), (
+        f"resources {sorted(omitted - set(typed))} vanished from the Block "
+        f"when the Frame could not present them")
+    for oid in omitted:
+        tb = typed[oid]
+        assert tb.logical == Arrow(q, q), f"{tb.name} lost its type"
+        assert tb.wires and tb.intro_cut and tb.codes
+    # and every block records BOTH the resources it uses and those it does not
+    for b in pl.branches:
+        assert {x.owner_id for x in b.used_bindings} == set(b.uses)
+        assert len(b.used_bindings) == 1 and len(b.inactive) == 2
+
+
+def test_G2c_a_reordered_completion_is_not_FACTORIZED():
+    """NEGATIVE ORDER TEST. Equal cardinality is not a factorization: a Frame
+    completing to the same states in a different order would have every
+    consumer composing against the wrong basis."""
     sc = ProvenanceScope()
-    with pytest.raises(NeedsBranchPreparation):
-        plan_open_occurrence(
-            parent_in=canonical_frame(Plus(q, q)),
-            parent_out=canonical_frame(q),
-            branches=(), scope=sc, ambient_width=4,
-            bindings=(TypedBinding("z", q, (3,), sc.owner(), sc.cut()),),
-            tag_width_in=1, tag_width_out=0)
+    cut = sc.cut()
+    b = TypedBinding("z", q, (2,), sc.owner(), sc.cut())
+    port = Port("z", q, (2,), role="context", owner_id=b.owner_id,
+                cut_id=cut, origin_cut=b.intro_cut)
+    main = Frame(logical=Plus(q, q), n_qubits=3, codes=(0, 2, 4, 6))
+    good = BoundaryChart(n_qubits=3, codes=tuple(range(8)), route=None,
+                         label="good", space="ambient")
+    cert, ports = classify_factorization(
+        side="ingress", main_frame=main, ports=(port,), bindings=(b,),
+        chart=good, cut_id=cut, main_wires=(0, 1), where="t: ")
+    assert cert.status == FACTORIZED and ports == (port,)
+
+    swapped = tuple(range(8))
+    swapped = swapped[:2] + (swapped[3], swapped[2]) + swapped[4:]
+    assert sorted(swapped) == sorted(good.codes) and swapped != good.codes
+    perm = BoundaryChart(n_qubits=3, codes=swapped, route=None,
+                         label="perm", space="ambient")
+    cert2, ports2 = classify_factorization(
+        side="ingress", main_frame=main, ports=(port,), bindings=(b,),
+        chart=perm, cut_id=cut, main_wires=(0, 1), where="t: ")
+    assert cert2.status == BLOCK_ONLY, (
+        "a differently ORDERED completion of the same cardinality was "
+        "certified as FACTORIZED")
+    assert ports2 == () and "different order" in cert2.reason
+    assert cert2.block_dim == cert.block_dim == 8
+
+
+def test_G2c_malformed_provenance_raises_and_never_becomes_BLOCK_ONLY():
+    """Malformed provenance is not a factorization verdict. Every one of
+    these must raise, and none may be laundered into BLOCK_ONLY."""
+    sc = ProvenanceScope()
+    cut, other = sc.cut(), sc.cut()
+    b = TypedBinding("z", q, (2,), sc.owner(), sc.cut())
+    main = Frame(logical=Plus(q, q), n_qubits=3, codes=(0, 2, 4, 6))
+    chart = BoundaryChart(n_qubits=3, codes=tuple(range(8)), route=None,
+                          label="c", space="ambient")
+
+    def run(port, bindings=(b,), main_wires=(0, 1)):
+        return classify_factorization(
+            side="ingress", main_frame=main, ports=(port,),
+            bindings=bindings, chart=chart, cut_id=cut,
+            main_wires=main_wires, where="t: ")
+
+    ok = dict(name="z", logical=q, wires=(2,), role="context",
+              owner_id=b.owner_id, cut_id=cut, origin_cut=b.intro_cut)
+    cases = {
+        "role": dict(ok, role="residual"),
+        "type": dict(ok, logical=Arrow(q, q)),
+        "placement": dict(ok, wires=(1,)),
+        "owner": dict(ok, owner_id=sc.owner()),
+        "cut": dict(ok, cut_id=other),
+        "origin": dict(ok, origin_cut=other),
+        "sector-conditioned": dict(ok, by_sector=((0, (2,)),)),
+    }
+    for label, kw in cases.items():
+        with pytest.raises(ProvenanceError):
+            run(Port(**kw))
+    # a collision between the main placement and the owned resource
+    with pytest.raises(ProvenanceError):
+        run(Port(**ok), main_wires=(0, 2))
+    # and the well-formed control still classifies
+    assert run(Port(**ok))[0].status == FACTORIZED
+
+
+# ===========================================================================
+# G2d: resource IDENTITY across the branch boundary.
+#
+# Ordered-code agreement is about the BASIS. A flattened chart carries no
+# identities, so a Block whose factors belong to freshly minted owners
+# satisfies it exactly as well as one carrying the parent's own resources.
+# These gates are what make the difference observable: the resource inside a
+# branch must BE the resource outside it, established by handing the parent's
+# binding down, never by matching a name, a type, a dimension, an encoding or
+# a wire afterwards.
+# ===========================================================================
+
+from compile.frames import (BindingTransport, issue_binding_transport,   # noqa
+                            check_block_resource_identity,               # noqa
+                            ChartFactor, ChartRoute)                     # noqa
+
+
+def _b_parts(blk, side):
+    chart = blk.ingress if side == "ingress" else blk.egress
+    return dict(zip(chart.route.parts, chart.route.placements))
+
+
+def _named_factor(artifact, side, name):
+    sb = artifact.selected_boundary
+    chart = sb.ingress if side == "ingress" else sb.egress
+    return [f for f in chart.route.parts if f.name == name]
+
+
+@pytest.mark.parametrize("wire", [0, 1, 2])
+@pytest.mark.parametrize("materialize", MODES)
+def test_G2d_one_owner_across_the_whole_occurrence(wire, materialize):
+    """THE gate. Four records of z, one identity -- on both polarities.
+
+    Before the handoff existed the outer Frame, `used_bindings` and
+    `inactive` all agreed on the parent owner while the branch's own selected
+    root carried a fresh one, so the certificate proved basis-code equality
+    and nothing about the resource.
+    """
+    res, _arts, pl = _live(wire, materialize=materialize)
+    b0, b1 = pl.branches
+    outer = [p for p in res.input_frame.ports if p.role == "context"]
+    outer_out = [p for p in res.output_frame.ports if p.role == "context"]
+    assert len(outer) == len(outer_out) == 1
+    owner = outer[0].owner_id
+    origin = outer[0].origin_cut
+
+    assert outer_out[0].owner_id == owner
+    assert outer_out[0].origin_cut == origin
+    assert [x.owner_id for x in b0.used_bindings] == [owner]
+    assert [x.owner_id for x in b1.inactive] == [owner]
+    assert [t.owner_id for t in b0.binding_transport] == [owner]
+
+    # the branch's OWN selected root, both polarities
+    for side in ("ingress", "egress"):
+        yz = _named_factor(b0.artifact, side, "Y_z")
+        assert len(yz) == 1, f"{side}: the branch root has no Y_z factor"
+        assert yz[0].owner == owner, (
+            f"{side}: the branch root's Y_z is {yz[0].owner}, not the "
+            f"parent's {owner}")
+        assert yz[0].logical == q
+        # ... and the live summand payload is a DIFFERENT resource
+        s = _named_factor(b0.artifact, side, "S")
+        assert len(s) == 1 and s[0].owner != owner, (
+            f"{side}: the summand parameter and z share an owner")
+
+    # lineage and type, everywhere
+    for rec in (outer[0], outer_out[0]):
+        assert rec.logical == q
+    for tb in tuple(b0.used_bindings) + tuple(b1.inactive):
+        assert tb.logical == q and tb.intro_cut == origin
+    for t in b0.binding_transport:
+        assert t.logical == q and t.intro_cut == origin
+
+    # the branch-local placement transports onto the parent's
+    t = b0.binding_transport[0]
+    assert tuple(b0.local_to_ambient[w] for w in t.local_wires) == \
+        t.ambient_wires == (wire,)
+    for side in ("ingress", "egress"):
+        placed = {f.owner: pl_ for f, pl_ in _b_parts(b0, side).items()}
+        assert placed[owner] == (wire,), (
+            f"{side}: z landed on {placed[owner]}, not the parent's ({wire},)")
+
+    # and the shape is unchanged
+    assert b0.dim == 4 and b1.dim == 4
+    assert pl.ingress.dim == 8 and pl.egress.dim == 8
+    assert all(c.status == FACTORIZED for c in res.factorization)
+    assert check_block_resource_identity(
+        pl, tuple(b0.used_bindings), tuple(), "t: ")
+
+
+def test_G2d_three_branch_resources_keep_their_parent_identity():
+    """The BLOCK_ONLY witness. Each f_i is CONSUMED by its branch's Apply
+    spine, so there is no factor to point at -- the proof is the recorded
+    handoff, which is why `used_bindings` alone was never enough."""
+    import test_n_plusmap_open as NPO
+    TP._USE_BLOCK_OBSERVED.clear()
+    _res, arts = compile_with_artifacts(NPO._abstract_three_branch())
+    pl = TP._USE_BLOCK_OBSERVED[-1]
+    a = [x for x in arts if x.factorization][-1]
+    assert all(c.status == BLOCK_ONLY for c in a.factorization)
+
+    owners = {}
+    for b in pl.branches:
+        for x in b.inactive:
+            owners.setdefault(x.owner_id, x)
+    assert len(owners) == 3, "the three function resources are not distinct"
+
+    for b in pl.branches:
+        assert len(b.binding_transport) == 1
+        t = b.binding_transport[0]
+        parent = owners.get(t.owner_id)
+        assert parent is not None, (
+            f"branch {b.index} was handed {t.owner_id}, which no other block "
+            f"records as an owned resource; its identity is unverifiable")
+        assert t.intro_cut == parent.intro_cut, "introduction lineage changed"
+        assert t.logical == parent.logical == Arrow(q, q)
+        assert tuple(t.codes) == tuple(parent.codes)
+        assert tuple(t.ambient_wires) == tuple(parent.wires)
+        t.check_transport(b.local_to_ambient, "t: ")
+        # consumed, so absent from its own chart -- and that is exactly the
+        # case the handoff exists to cover
+        carried = {f.owner for f in b.ingress.route.parts}
+        assert t.owner_id not in carried
+        assert {x.owner_id for x in b.inactive} <= carried
+    assert check_block_resource_identity(
+        pl, tuple(owners.values()), tuple(), "t: ")
+
+
+def _reminted(pl, side_names=("ingress", "egress")):
+    """Branch 0's chart with its z factor reassigned to a fresh owner."""
+    b0 = pl.branches[0]
+    owner = b0.used_bindings[0].owner_id
+    fresh = ProvenanceScope().owner()
+    assert fresh != owner
+    out = {}
+    for side in side_names:
+        chart = b0.ingress if side == "ingress" else b0.egress
+        parts = tuple(_replace(f, owner=fresh) if f.owner == owner else f
+                      for f in chart.route.parts)
+        out[side] = _replace(chart, route=_replace(chart.route, parts=parts))
+    return _replace(b0, **out)
+
+
+def test_G2d_a_reminted_resource_is_refused_and_not_downgraded():
+    """MUTATION GATE. Give branch 0's z factor a fresh owner: the codes are
+    untouched, so the BASIS still agrees exactly -- and that is the point.
+
+    The identity gate must refuse it, and the refusal must NOT be absorbed as
+    a BLOCK_ONLY verdict: a resource that is not the parent's is an error,
+    not a frame that merely cannot factorize.
+    """
+    res, _arts, pl = _live(2)
+    bindings = tuple(pl.branches[0].used_bindings)
+    assert check_block_resource_identity(pl, bindings, (), "t: ")
+    bad = _replace(pl, branches=(_reminted(pl),) + pl.branches[1:])
+
+    # the BASIS is untouched: ordered codes still agree, so classification
+    # would still say FACTORIZED. The two gates are independent.
+    assert tuple(bad.branches[0].ingress.codes) == \
+        tuple(pl.branches[0].ingress.codes)
+    assert all(c.status == FACTORIZED for c in res.factorization)
+
+    with pytest.raises(ProvenanceError) as ei:
+        check_block_resource_identity(bad, bindings, (), "t: ")
+    msg = str(ei.value)
+    assert "carry the PARENT'S resource" in msg, msg
+    assert BLOCK_ONLY not in msg, "an identity failure was reported as a verdict"
+
+
+def test_G2d_omitting_the_handoff_fails_the_live_B_gate():
+    """MUTATION GATE, end to end. Withhold the typed view and the nested
+    compilation mints its own owner again -- which is exactly the defect this
+    repair closed. The occurrence must fail before it emits anything."""
+    emitted = []
+    o_art, o_emit = TP._compile_branch_artifact, TP._emit_open_use_block
+
+    def no_handoff(branch, *, env=None, scope=None, parameter=None,
+                   typed_env=None, **kw):
+        return o_art(branch, env=env, scope=scope, parameter=parameter,
+                     typed_env=None, **kw)
+
+    def spy_emit(circ, plan):
+        emitted.append(plan)
+        return o_emit(circ, plan)
+
+    TP._compile_branch_artifact, TP._emit_open_use_block = no_handoff, spy_emit
+    try:
+        with pytest.raises(ProvenanceError) as ei:
+            compile(B_witness(), env={"z": [2]})
+    finally:
+        TP._compile_branch_artifact, TP._emit_open_use_block = o_art, o_emit
+    assert not emitted, "the parent was emitted despite an unproved resource"
+    assert "carry the PARENT'S resource" in str(ei.value), str(ei.value)
+
+
+def test_G2d_a_broken_local_to_ambient_transport_is_refused():
+    """MUTATION GATE. Move the branch-local wires the binding was handed to,
+    and the handoff no longer lands on the parent's placement."""
+    _res, _arts, pl = _live(2)
+    b0 = pl.branches[0]
+    bindings = tuple(b0.used_bindings)
+    swapped = _replace(b0, local_to_ambient=tuple(reversed(b0.local_to_ambient)))
+    bad = _replace(pl, branches=(swapped,) + pl.branches[1:])
+    with pytest.raises(ProvenanceError) as ei:
+        check_block_resource_identity(bad, bindings, (), "t: ")
+    assert "transport" in str(ei.value)
+
+
+def test_G2d_a_handoff_may_not_mint_a_new_identity():
+    """`issue_binding_transport` refuses to record a handoff that is not one:
+    a fresh owner, a rewritten origin, a changed type or a re-encoding is a
+    DIFFERENT resource wearing the same name."""
+    sc = ProvenanceScope()
+    parent = TypedBinding("z", q, (2,), sc.owner(), sc.cut())
+    ok = TypedBinding("z", q, (1,), parent.owner_id, parent.intro_cut,
+                      codes=tuple(parent.codes))
+    assert issue_binding_transport(parent, ok, (0, 2), "t: ").ambient_wires == (2,)
+    for bad in (TypedBinding("z", q, (1,), sc.owner(), parent.intro_cut),
+                TypedBinding("z", q, (1,), parent.owner_id, sc.cut())):
+        with pytest.raises(ProvenanceError) as ei:
+            issue_binding_transport(parent, bad, (0, 2), "t: ")
+        assert "keeps its identity" in str(ei.value)
+    # ... and a view whose local wires do not reach the parent's placement
+    with pytest.raises(ProvenanceError) as ei:
+        issue_binding_transport(parent, ok, (0, 1), "t: ")
+    assert "transports from" in str(ei.value)
+
+
+def test_G2d_the_summand_parameter_is_never_the_context():
+    """The payload a branch is GIVEN and the context it USES are two
+    resources; sharing an owner would make the completion count one twice."""
+    _res, _arts, pl = _live(2)
+    bindings = tuple(pl.branches[0].used_bindings)
+    owner = bindings[0].owner_id
+    assert check_block_resource_identity(pl, bindings, ("own:elsewhere",), "t: ")
+    with pytest.raises(ProvenanceError) as ei:
+        check_block_resource_identity(pl, bindings, (owner,), "t: ")
+    assert "not the context it uses" in str(ei.value)
