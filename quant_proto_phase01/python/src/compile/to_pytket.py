@@ -62,7 +62,7 @@ from compile.frames import (Frame, Sector, Port, canonical_frame,
                             classify_factorization, scatter_code,
                             FACTORIZED, BLOCK_ONLY, FactorizationCertificate,
                             BindingTransport, issue_binding_transport,
-                            check_block_resource_identity,
+                            check_block_resource_identity, localize_bindings,
                             tenpack, tensor_splice,
                             _matched_factor, check_spine_residual,
                             complete_branch, plan_use_block,
@@ -2639,21 +2639,16 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     ctx_pos += w_fv
                 # Recorded ONCE, here: which owned resources this branch binds.
                 _used = _typed_bindings(fv, _ub_scope, env)
-                # THE HANDOFF. The parent's binding is handed down as a
-                # branch-local VIEW -- same owner, same introduction lineage,
-                # same type and ordered codes, on the branch-local wires this
-                # adapter just assigned it. The nested compilation adopts that
-                # identity instead of minting its own, so the resource inside
-                # the branch IS the resource outside it, and the fact is
-                # recorded here rather than reconstructed afterwards.
-                _views, _local_env = {}, {}
-                for _b in _used:
-                    _lw = tuple(sub_env[_b.name])
-                    _views[_b.name] = TypedBinding(
-                        name=_b.name, logical=_b.logical, wires=_lw,
-                        owner_id=_b.owner_id, intro_cut=_b.intro_cut,
-                        codes=tuple(_b.codes))
-                    _local_env[_b.name] = _b
+                # THE HANDOFF, through the shared localiser. The parent's
+                # binding is handed down as a branch-local VIEW -- same owner,
+                # same introduction lineage, same type and ordered codes, on
+                # the branch-local wires this adapter assigned it -- and the
+                # nested compilation adopts that identity instead of minting
+                # its own.
+                _local = tuple(_layout.workspace_wires[:pw]) + tuple(
+                    w for b in _used for w in b.wires)
+                _views, _transport = localize_bindings(
+                    _used, sub_env, _local, f"NPlusMap open branch {i}: ")
                 _to_compile = br
                 if deferred_fns:
                     for nm, _ty_fv in fv:
@@ -2680,14 +2675,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             else:
                 # No free variable at all: this alternative uses nothing.
                 # Recorded, not rediscovered later by a second scan.
-                _used, _views = (), {}
+                _used, _transport = (), ()
+                _local = tuple(_layout.workspace_wires[:pw])
                 _art = _compile_branch_artifact(br, scope=_branch_scope())
-            _local = tuple(_layout.workspace_wires[:pw]) + tuple(
-                w for b in _used for w in b.wires)
-            _transport = tuple(
-                issue_binding_transport(_b, _views[_b.name], _local,
-                                        f"NPlusMap open branch {i}: ")
-                for _b in _used)
             _prepared.append(BranchInputs(
                 index=i, artifact=_art,
                 uses=tuple(b.owner_id for b in _used),
@@ -3921,7 +3911,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         _ub_bindings,
                         max(_pi.n_qubits, _po.n_qubits), max(k, 1),
                         len(p.new_to_old))
-                _prepared = []
+                _prepared, _pm_param_owners = [], []
                 for _bidx, (branch, pw, ctx_w, anti, st) in enumerate([
                     (t.left, payload_left_w, ctx_left_w, True, t.ty_left),
                     (t.right, payload_right_w, ctx_right_w, False, t.ty_right),
@@ -3929,7 +3919,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     if pw + ctx_w == 0:
                         _prepared.append(None)
                         continue
-                    _used = ()
+                    _used, _views, _transport = (), {}, ()
                     if ctx_w > 0:
                         fv = _ordered_free_vars(branch)
                         sub_env = {}
@@ -3941,6 +3931,20 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         # Recorded ONCE, here: which owned resources this
                         # branch actually binds.
                         _used = _typed_bindings(fv, _ub_scope, env)
+                        # THE HANDOFF, through the same shared localiser the
+                        # n-ary adapter uses. Without it this compilation
+                        # would mint its own owner for a resource it was
+                        # HANDED, and the branch's copy would be a different
+                        # resource that merely has the same type on the same
+                        # wires.
+                        _local_pre = ()
+                        if _ub_layout is not None:
+                            _local_pre = tuple(
+                                _ub_layout.workspace_wires[:pw]) + tuple(
+                                    w for b in _used for w in b.wires)
+                            _views, _transport = localize_bindings(
+                                _used, sub_env, _local_pre,
+                                f"PlusMap open branch {_bidx}: ")
                         branch_to_compile = branch
                         if deferred_fns:
                             for name, ty_fv in fv:
@@ -3965,7 +3969,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                             register_width=pw + ctx_w)
                         _art = _compile_branch_artifact(
                             branch_to_compile, env=sub_env,
-                            scope=_branch_scope(), parameter=_bp)
+                            scope=_branch_scope(), parameter=_bp,
+                            typed_env=_views)
+                        _pm_param_owners.append(_bp.owner_id)
                         ctx_parent_phys = []
                         for name, ty_fv in fv:
                             if name in env:
@@ -3982,13 +3988,15 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         _local = tuple(_ub_layout.workspace_wires[:pw]) + tuple(
                             w for b in _used for w in b.wires)
                     _prepared.append((_art, pw, ctx_w, anti,
-                                      list(ctx_parent_phys), _used, _local))
+                                      list(ctx_parent_phys), _used, _local,
+                                      _transport))
 
                 _bins = tuple(
                     BranchInputs(index=_i, artifact=_pr[0],
                                  uses=tuple(b.owner_id for b in _pr[5]),
                                  bindings=tuple(_pr[5]),
-                                 local_to_ambient=_pr[6])
+                                 local_to_ambient=_pr[6],
+                                 transport=_pr[7])
                     for _i, _pr in enumerate(_prepared) if _pr is not None)
 
                 # COMPLETE each alternative against the context it does NOT
@@ -4012,6 +4020,15 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     # A_post, no payload_base or ctx_parent_phys arithmetic,
                     # and no second pass over the branches. Every block is
                     # validated before the parent gains a command.
+                    #
+                    # Including that the Block's resources ARE this
+                    # occurrence's resources: the carried ones by their
+                    # factors, the ones a branch CONSUMED by their recorded
+                    # handoffs. Ordered-code agreement is about the basis and
+                    # says nothing about identity.
+                    check_block_resource_identity(
+                        _ublock, _ub_bindings, tuple(_pm_param_owners),
+                        "PlusMap open: ")
                     _emit_open_use_block(circ, _ublock)
                     # The occurrence's boundary IS the Block. Without this the
                     # successful artifact would keep the obsolete

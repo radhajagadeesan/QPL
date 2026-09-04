@@ -2788,6 +2788,39 @@ def issue_binding_transport(parent, local_view, local_to_ambient, where=""):
     return t
 
 
+def localize_bindings(parent_bindings, local_wires, local_to_ambient,
+                      where=""):
+    """Relocate owned resources into ONE branch's coordinates, and record it.
+
+    THE single formulation, shared by every open-sum adapter. Only the WIRES
+    change: the owner, the logical type, the introduction cut and the ordered
+    codes stay the parent's, because the resource inside the branch is the
+    resource outside it.
+
+    Two adapters spelling this out separately is exactly how they drift, and
+    the drift is invisible from the outside -- both produce a well-formed
+    chart over the right basis, and only the identities differ.
+
+    Returns `(views, transports)`: the typed views to hand to the nested
+    compilation, and the handoff certificates, each already checked to land
+    on the parent's own placement under `local_to_ambient`.
+    """
+    views, transports = {}, []
+    for b in parent_bindings:
+        if b.name not in local_wires:
+            raise ProvenanceError(
+                f"{where}resource {b.name!r} is used by this branch but was "
+                f"assigned no branch-local wires")
+        view = TypedBinding(name=b.name, logical=b.logical,
+                            wires=tuple(local_wires[b.name]),
+                            owner_id=b.owner_id, intro_cut=b.intro_cut,
+                            codes=tuple(b.codes))
+        views[b.name] = view
+        transports.append(
+            issue_binding_transport(b, view, local_to_ambient, where))
+    return views, tuple(transports)
+
+
 @dataclass(frozen=True, slots=True)
 class CompletedBranch:
     """One alternative of an open sum, completed against its INACTIVE context.
