@@ -58,6 +58,9 @@ from compile.frames import (Frame, Sector, Port, canonical_frame,
                             SelectedBoundary, TenPackSchedule,
                             tenpack, tensor_splice,
                             _matched_factor, check_spine_residual,
+                            complete_branch, plan_use_block,
+                            use_block_layout,
+                            CompletedBranch, OpenUseBlockPlan,
                             frames_agree, semantic_dim,
                             apply_wire_perm, with_spectators,
                             distl_frames, encode_qubit_frames,
@@ -596,6 +599,7 @@ def _as_uniformly_controlled_u2(U):
 # G2 only: lets a test capture the placement of an occurrence whose emission
 # still raises. Successful occurrences carry it on their Artifact instead.
 _PLANNER_OBSERVED = []
+_USE_BLOCK_OBSERVED = []
 _PLANNER_INCOMPLETE = []
 
 
@@ -1934,6 +1938,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
     _shadow_plans = {}
     _boundary_sink = {}
     _placement_sink = {}
+    _use_block_sink = {}
     _planner_observed = _PLANNER_OBSERVED
     _cur_occ = [0]
     circ = Circuit(n)
@@ -2284,6 +2289,32 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                                  tensor_ty)
         return SelectedBoundary(ingress=ing, egress=egr,
                                 origin="letpair:splice", packing=sched)
+
+    def _plan_use_block_from(bins, bindings, layout, label="u"):
+        """Complete each PREPARED alternative, then take their tagged Block.
+
+        PURE and RECORD-DRIVEN. Every input was recorded during the single
+        branch-preparation pass: the exact BranchArtifact objects by identity,
+        each branch's own TypedBindings and owner ids, and its branch-local to
+        register map. Nothing here re-selects the parent frames, re-scans a
+        branch's syntax, or re-derives a layout.
+        """
+        if not bins:
+            return None
+        if not bindings:
+            return None          # closed occurrence: Complete/Block is trivial
+        completed = []
+        for bi in bins:
+            used_ids = tuple(bi.uses)
+            inactive = tuple(b for b in bindings
+                             if b.owner_id not in used_ids)
+            completed.append(complete_branch(
+                index=bi.index, artifact=bi.artifact, uses=used_ids,
+                inactive=inactive,
+                local_to_ambient=bi.local_to_ambient,
+                tag_value=bi.index, ambient_width=layout.ambient_width,
+                label=label))
+        return plan_use_block(completed, layout)
 
     def _par_boundary(children, occ, label):
         """Par of the immediate children's selected boundaries, in order.
@@ -3177,14 +3208,29 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 # or emitting. All of them are prepared even if legacy
                 # emission later fails on an earlier branch, because the
                 # planner needs the complete occurrence.
+                #
+                # The occurrence's Block coordinates are selected ONCE, in the
+                # register the compiler actually allocated -- not in a width
+                # re-derived from the parent frames -- so each branch's
+                # local-to-register map can be RECORDED here rather than
+                # rebuilt later from chart geometry.
+                _ub_scope = _prov.fork()
+                _ub_bindings = _typed_bindings(_fv_uniq, _ub_scope, env)
+                _ub_layout = None
+                if _ub_bindings:
+                    _ub_layout = use_block_layout(
+                        _ub_bindings,
+                        max(_pi.n_qubits, _po.n_qubits), max(k, 1),
+                        len(p.new_to_old))
                 _prepared = []
-                for branch, pw, ctx_w, anti in [
+                for _bidx, (branch, pw, ctx_w, anti) in enumerate([
                     (t.left, payload_left_w, ctx_left_w, True),
                     (t.right, payload_right_w, ctx_right_w, False),
-                ]:
+                ]):
                     if pw + ctx_w == 0:
                         _prepared.append(None)
                         continue
+                    _used = ()
                     if ctx_w > 0:
                         fv = _ordered_free_vars(branch)
                         sub_env = {}
@@ -3193,6 +3239,9 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                             w_fv = width(ty_fv)
                             sub_env[name] = list(range(ctx_pos, ctx_pos + w_fv))
                             ctx_pos += w_fv
+                        # Recorded ONCE, here: which owned resources this
+                        # branch actually binds.
+                        _used = _typed_bindings(fv, _ub_scope, env)
                         branch_to_compile = branch
                         if deferred_fns:
                             for name, ty_fv in fv:
@@ -3211,33 +3260,59 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                             if name in env:
                                 ctx_parent_phys.extend(env[name])
                     else:
+                        # ctx_w == 0 means no free variable of this branch is
+                        # bound in env, so it uses nothing. Recorded, not
+                        # rediscovered by a second scan.
                         _art = _compile_branch_artifact(
                             branch, scope=_branch_scope())
                         ctx_parent_phys = []
+                    _local = ()
+                    if _ub_layout is not None:
+                        _local = tuple(_ub_layout.workspace_wires[:pw]) + tuple(
+                            w for b in _used for w in b.wires)
                     _prepared.append((_art, pw, ctx_w, anti,
-                                      list(ctx_parent_phys)))
+                                      list(ctx_parent_phys), _used, _local))
 
-                # PLAN from those exact artifact objects.
-                try:
-                    _bins = tuple(
-                        BranchInputs(index=_i, artifact=_pr[0])
-                        for _i, _pr in enumerate(_prepared) if _pr is not None)
-                    _sp2 = _plan_open_occurrence_for(
-                        t, _pi, _po, _fv_uniq, max(k, 1), max(k, 1), env,
-                        branches=_bins)
-                    if _sp2 is not None:
-                        _shadow_plans[_cur_occ[0]] = _sp2
-                        _PLANNER_OBSERVED.append(_sp2)
-                except NeedsBranchPreparation as _nb2:
-                    _PLANNER_INCOMPLETE.append(_nb2)
-                except ProvenanceError:
-                    pass
+                _bins = tuple(
+                    BranchInputs(index=_i, artifact=_pr[0],
+                                 uses=tuple(b.owner_id for b in _pr[5]),
+                                 bindings=tuple(_pr[5]),
+                                 local_to_ambient=_pr[6])
+                    for _i, _pr in enumerate(_prepared) if _pr is not None)
+
+                # COMPLETE each alternative against the context it does NOT
+                # use, then Block the results. Once prepared Part-I roots are
+                # present this is OWED: it is not wrapped in a swallowing
+                # handler, so a malformed plan fails here, before any legacy
+                # emission, with the parent circuit untouched.
+                _ublock = (None if _ub_layout is None
+                           else _plan_use_block_from(_bins, _ub_bindings,
+                                                     _ub_layout))
+                if _ublock is not None:
+                    # THE authoritative placement for this occurrence. The
+                    # audit list holds the same object, not a second record.
+                    _shadow_plans[_cur_occ[0]] = _ublock
+                    _USE_BLOCK_OBSERVED.append(_ublock)
+                else:
+                    # Not-yet-migrated path only: no prepared selected roots to
+                    # complete, so the older uniform planner still applies.
+                    try:
+                        _sp2 = _plan_open_occurrence_for(
+                            t, _pi, _po, _fv_uniq, max(k, 1), max(k, 1), env,
+                            branches=_bins)
+                        if _sp2 is not None:
+                            _shadow_plans[_cur_occ[0]] = _sp2
+                            _PLANNER_OBSERVED.append(_sp2)
+                    except NeedsBranchPreparation as _nb2:
+                        _PLANNER_INCOMPLETE.append(_nb2)
+                    except ProvenanceError:
+                        pass
 
                 # EMIT from the SAME artifacts. No branch is compiled again.
                 for _pr in _prepared:
                     if _pr is None:
                         continue
-                    _art, pw, ctx_w, anti, ctx_parent_phys = _pr
+                    _art, pw, ctx_w, anti, ctx_parent_phys = _pr[:5]
                     cmds, _open_phase_ht = _art.cmds, _art.phase
                     if ctx_w > 0:
                         def make_open_wire_map(_pw=pw, _pb=payload_base,

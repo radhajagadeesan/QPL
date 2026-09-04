@@ -2185,7 +2185,11 @@ class BranchInputs:
     """
     index: int
     artifact: object                 # THE BranchArtifact, by identity
-    uses: Tuple[str, ...] = ()       # binding names this branch actually uses
+    uses: Tuple[str, ...] = ()       # OWNER IDS this branch actually binds
+    # Recorded during the ONE preparation pass, so no consumer re-scans the
+    # branch's syntax or re-derives its layout:
+    bindings: Tuple[object, ...] = ()          # the TypedBindings it uses
+    local_to_ambient: Tuple[int, ...] = ()     # branch-local -> register
 
     @property
     def fin(self):
@@ -2354,6 +2358,369 @@ def _lift_branch_residuals(branches, chosen, parent_cut):
                             by_sector=(), owner_id=pt.owner_id,
                             cut_id=parent_cut, origin_cut=origin)
     return tuple(out.values())
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedBranch:
+    """One alternative of an open sum, completed against its INACTIVE context.
+
+    `uses` is the set of owner ids this branch's own derivation actually
+    binds -- recorded provenance, never inferred from a type, a dimension, a
+    name or which bits vary. `inactive` is every other owned resource at this
+    occurrence: the branch does not touch it, so it is carried through
+    unchanged and multiplies the completed dimension exactly once.
+
+        Complete(u_i | Gamma_inactive) = V_{u_i} (x) Y_{Gamma_inactive}
+
+    The branch's OWN selected root is the authority; its Frame is never read
+    when a selected boundary exists, and it is never recompiled.
+    """
+    index: int
+    artifact: object                       # the exact BranchArtifact, by identity
+    uses: Tuple[str, ...]
+    inactive: Tuple["TypedBinding", ...]
+    tag_value: int
+    ingress: BoundaryChart
+    egress: BoundaryChart
+    # The map emission will need. Recorded, so nothing downstream has to
+    # reconstruct it from chart geometry.
+    local_to_ambient: Tuple[int, ...] = ()
+
+    @property
+    def dim(self) -> int:
+        return self.ingress.dim
+
+    def __post_init__(self):
+        if self.ingress.dim != self.egress.dim:
+            raise ProvenanceError(
+                f"branch {self.index}: completed ingress {self.ingress.dim} "
+                f"and egress {self.egress.dim} disagree; the two polarities "
+                f"are completed independently but must balance")
+        for b in self.inactive:
+            if b.owner_id in self.uses:
+                raise ProvenanceError(
+                    f"branch {self.index}: owner {b.owner_id} is recorded as "
+                    f"both used and inactive")
+
+
+@dataclass(frozen=True, slots=True)
+class OpenUseBlockPlan:
+    """The tagged direct sum of the completed alternatives.
+
+        parent = Block(Complete(u_0 | G_0), ..., Complete(u_n | G_n))
+
+    a DIRECT SUM of independently completed blocks -- never the sum of the
+    branch dimensions times one uniform context factor, which is a different
+    claim that can hit the same number.
+    """
+    branches: Tuple[CompletedBranch, ...]
+    ambient_width: int              # the CONTAINING register, len(p.new_to_old)
+    block_width: int                # the wires the Block actually spans
+    tag_wires: Tuple[int, ...]
+    workspace_wires: Tuple[int, ...]
+    block_to_ambient: Tuple[int, ...]   # block-local wire -> register wire
+    ingress: BoundaryChart
+    egress: BoundaryChart
+    support: Tuple[int, ...]
+    spectators: Tuple[int, ...]
+
+    def tag_bit(self, index: int) -> int:
+        """The ambient bit pattern selecting this block's sector."""
+        blk = self.branches[index]
+        bit = 0
+        for i, w in enumerate(self.tag_wires):
+            if (blk.tag_value >> (len(self.tag_wires) - 1 - i)) & 1:
+                bit |= 1 << (self.ambient_width - 1 - w)
+        return bit
+
+    def tagged_codes(self, index: int, side: str) -> Tuple[int, ...]:
+        """The block's completed codes, moved into its own sector."""
+        blk = self.branches[index]
+        chart = blk.ingress if side == "ingress" else blk.egress
+        bit = self.tag_bit(index)
+        for c in chart.codes:
+            if c & bit:
+                raise ProvenanceError(
+                    f"block {index}: its completed chart already occupies the "
+                    f"tag wire; the tag placement is not free")
+        return tuple(c | bit for c in chart.codes)
+
+    def inclusion(self, index: int, side: str) -> Tuple[int, ...]:
+        """J_i^side: the parent positions this block occupies, in order."""
+        parent = self.ingress if side == "ingress" else self.egress
+        pos = {c: j for j, c in enumerate(parent.codes)}
+        try:
+            return tuple(pos[c] for c in self.tagged_codes(index, side))
+        except KeyError as e:
+            raise ProvenanceError(
+                f"block {index} {side}: code {e.args[0]} is not in the parent "
+                f"chart, so the inclusion is not defined")
+
+    def validate(self):
+        """Orthogonality, ordered exhaustion, and the block PREREQUISITES.
+
+        This does not evaluate W_block J^- = J^+ Vhat: no circuit is consulted
+        here. What is checked is everything that equation presupposes --
+        disjoint blocks, ordered exhaustion of the parent, blockwise sparse
+        order, equal inclusion sizes, and one ordered factorisation shared by
+        both polarities.
+        """
+        for side in ("ingress", "egress"):
+            parent = self.ingress if side == "ingress" else self.egress
+            seen, expect = set(), []
+            for blk in self.branches:
+                codes = self.tagged_codes(blk.index, side)
+                if len(set(codes)) != len(codes):
+                    raise ProvenanceError(
+                        f"block {blk.index} {side}: repeats a code")
+                clash = seen & set(codes)
+                if clash:
+                    raise ProvenanceError(
+                        f"block {blk.index} {side}: overlaps an earlier block "
+                        f"on {sorted(clash)[:4]}; the blocks are a DIRECT sum "
+                        f"and must be orthogonal")
+                seen |= set(codes)
+                expect.extend(codes)
+            if tuple(parent.codes) != tuple(expect):
+                raise ProvenanceError(
+                    f"{side}: the parent chart is not the ordered exhaustion "
+                    f"of its blocks")
+            # sparse order is preserved blockwise
+            for blk in self.branches:
+                js = self.inclusion(blk.index, side)
+                if list(js) != sorted(js):
+                    raise ProvenanceError(
+                        f"block {blk.index} {side}: its codes do not appear "
+                        f"in the parent in their own order")
+        # STRUCTURAL PREREQUISITES for W_block J_i^- = J_i^+ Vhat_i, not that
+        # equation: each block must include with the same dimension on both
+        # polarities and carry the same ordered factor list. The operator
+        # equation itself compares a circuit against Vhat and is an EMISSION
+        # gate; nothing here evaluates a unitary.
+        for blk in self.branches:
+            if len(self.inclusion(blk.index, "ingress")) != \
+                    len(self.inclusion(blk.index, "egress")):
+                raise ProvenanceError(
+                    f"block {blk.index}: the two inclusions have different "
+                    f"sizes, so W_block J^- = J^+ Vhat cannot hold")
+            fi = blk.ingress.route.parts if blk.ingress.route else ()
+            fe = blk.egress.route.parts if blk.egress.route else ()
+            if [(f.name, f.role, f.dim) for f in fi] != \
+                    [(f.name, f.role, f.dim) for f in fe]:
+                raise ProvenanceError(
+                    f"block {blk.index}: Vhat's ordered factors differ "
+                    f"between polarities")
+        if self.ingress.dim != self.egress.dim:
+            raise ProvenanceError(
+                f"parent ingress {self.ingress.dim} != egress "
+                f"{self.egress.dim}")
+        if set(self.support) & set(self.spectators):
+            raise ProvenanceError("a wire is both support and spectator")
+        return True
+
+
+def _lift_chart(chart, local_to_ambient, ambient_width, label):
+    """A branch-local scatter chart placed into the occurrence's register."""
+    r = chart.route
+    if r is None:
+        # A branch whose root defaulted to its Frame is ONE factor on its own
+        # local wires, in order. That is a recorded description, not a guess:
+        # the chart's codes and width are the factor, and the occurrence's
+        # local-to-ambient map is where it sits.
+        if chart.n_qubits > len(local_to_ambient):
+            raise ProvenanceError(
+                f"{label}: the branch root spans {chart.n_qubits} wires but "
+                f"the occurrence records a {len(local_to_ambient)}-wire "
+                f"local-to-ambient map")
+        one = ChartFactor(name=chart.label or "u", owner=None,
+                          n_qubits=chart.n_qubits, codes=tuple(chart.codes))
+        rep, places = scatter_repart(
+            (tuple(local_to_ambient[:chart.n_qubits]),), ambient_width)
+        out = par_then_repart((one,), rep, ambient_width, label,
+                              placements=places, kind="scatter")
+        out.validate_joint()
+        return out
+    if not r.reconstructible:
+        raise ProvenanceError(
+            f"{label}: the branch root records a {r.kind!r} Repart, so it "
+            f"cannot be placed in the occurrence register")
+    r.check_schedule()
+    places = []
+    for g in r.placements:
+        out = []
+        for w in g:
+            if w >= len(local_to_ambient):
+                raise ProvenanceError(
+                    f"{label}: branch wire {w} is outside the recorded "
+                    f"local-to-ambient map of {len(local_to_ambient)} wires")
+            out.append(local_to_ambient[w])
+        places.append(tuple(out))
+    rep, places = scatter_repart(places, ambient_width)
+    out = par_then_repart(r.parts, rep, ambient_width, label,
+                          placements=places, kind="scatter")
+    out.validate_joint()
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class UseBlockLayout:
+    """Where an open occurrence's Block sits inside the CONTAINING register.
+
+    `ambient_width` is the occurrence's real register -- what the compiler
+    actually allocated -- and `block_width` is only how much of it the Block
+    spans. Deriving the register as "max parent frame width + owned width"
+    gives the second number and calls it the first, which then makes every
+    chart code wrong by the difference.
+    """
+    ambient_width: int
+    owned_wires: Tuple[int, ...]
+    tag_wires: Tuple[int, ...]
+    workspace_wires: Tuple[int, ...]
+
+    @property
+    def block_to_ambient(self) -> Tuple[int, ...]:
+        return tuple(self.tag_wires) + tuple(self.workspace_wires) \
+            + tuple(self.owned_wires)
+
+    @property
+    def block_width(self) -> int:
+        return len(self.block_to_ambient)
+
+    @property
+    def support(self) -> Tuple[int, ...]:
+        return tuple(sorted(self.block_to_ambient))
+
+    @property
+    def spectators(self) -> Tuple[int, ...]:
+        used = set(self.block_to_ambient)
+        return tuple(w for w in range(self.ambient_width) if w not in used)
+
+
+def use_block_layout(bindings, main_width, tag_width, ambient_width):
+    """Select the Block's coordinates AROUND the owned context.
+
+    Owned wires are preserved exactly as the bindings record them; the tag
+    then the workspace take the remaining coordinates in ascending order.
+    Everything left over is a true spectator of this occurrence.
+    """
+    owned = []
+    for b in bindings:
+        for w in b.wires:
+            if not (0 <= w < ambient_width):
+                raise ProvenanceError(
+                    f"binding {b.name!r} sits on wire {w}, outside a register "
+                    f"of {ambient_width}")
+            if w in owned:
+                raise ProvenanceError(f"wire {w} is owned by two bindings")
+            owned.append(w)
+    free = [w for w in range(ambient_width) if w not in set(owned)]
+    if len(free) < main_width:
+        raise ProvenanceError(
+            f"use-block: {main_width} coordinates are needed for tag and "
+            f"workspace but only {len(free)} are unowned in {ambient_width}")
+    chosen = tuple(free[:main_width])
+    return UseBlockLayout(ambient_width=ambient_width,
+                          owned_wires=tuple(owned),
+                          tag_wires=chosen[:tag_width],
+                          workspace_wires=chosen[tag_width:])
+
+
+def complete_branch(*, index, artifact, uses, inactive, local_to_ambient,
+                    tag_value, ambient_width, label=""):
+    """Complete ONE alternative against the resources it does not use.
+
+    Both polarities are built independently from the branch's own selected
+    root -- never from its Frame, and never by recompiling it.
+    """
+    sb = artifact.selected_boundary
+    if sb is None:
+        raise ProvenanceError(
+            f"branch {index}: no selected boundary was prepared, so it "
+            f"cannot be completed")
+    uses = tuple(uses)
+    inactive = tuple(inactive)
+
+    def side(which):
+        chart = sb.ingress if which == "ingress" else sb.egress
+        base = _lift_chart(chart, local_to_ambient, ambient_width,
+                           f"{label or 'branch'}{index}^{which}")
+        parts = list(base.route.parts)
+        places = list(base.route.placements)
+        for b in inactive:
+            # The inactive resource is carried WHOLE: every assignment to its
+            # own wires, once, in ascending order.
+            parts.append(ChartFactor(
+                name=f"Y_{b.name}", owner=b.owner_id, n_qubits=len(b.wires),
+                codes=tuple(range(1 << len(b.wires))),
+                role="residual", logical=b.logical))
+            places.append(tuple(b.wires))
+        rep, pl = scatter_repart(places, ambient_width)
+        ch = par_then_repart(tuple(parts), rep, ambient_width,
+                             f"{label or 'branch'}{index}^{which}",
+                             placements=pl, kind="scatter")
+        ch.validate_joint()
+        return ch
+
+    return CompletedBranch(index=index, artifact=artifact, uses=uses,
+                           inactive=inactive, tag_value=tag_value,
+                           ingress=side("ingress"), egress=side("egress"),
+                           local_to_ambient=tuple(local_to_ambient))
+
+
+def plan_use_block(completed, layout, label="block"):
+    """Block: the TAGGED direct sum of the completed alternatives.
+
+    Each block is tagged into its own sector, so the parent dimension is the
+    SUM of the completed block dimensions -- 64 (+) 16 = 80 -- and never the
+    sum of the raw branch dimensions times a uniform context factor.
+    """
+    completed = tuple(completed)
+    if not completed:
+        raise ProvenanceError(f"{label}: no completed branches")
+    ambient_width = layout.ambient_width
+    tag_wires = tuple(layout.tag_wires)
+
+    idx = {blk.index: blk for blk in completed}
+    if sorted(idx) != [blk.index for blk in completed]:
+        raise ProvenanceError(f"{label}: block indices are not ordered")
+
+    def _bit(blk):
+        bit = 0
+        for i, w in enumerate(tag_wires):
+            if (blk.tag_value >> (len(tag_wires) - 1 - i)) & 1:
+                bit |= 1 << (ambient_width - 1 - w)
+        return bit
+
+    def tagged(which):
+        codes = []
+        for blk in completed:
+            chart = blk.ingress if which == "ingress" else blk.egress
+            bit = _bit(blk)
+            for c in chart.codes:
+                if c & bit:
+                    raise ProvenanceError(
+                        f"{label}: block {blk.index} already occupies its "
+                        f"tag wire; the tag placement is not free")
+                codes.append(c | bit)
+        if len(set(codes)) != len(codes):
+            raise ProvenanceError(
+                f"{label} {which}: the tagged blocks are not disjoint")
+        return BoundaryChart(n_qubits=ambient_width, codes=tuple(codes),
+                             route=None, label=f"{label}^{which}",
+                             space="ambient")
+
+    ing, egr = tagged("ingress"), tagged("egress")
+    plan = OpenUseBlockPlan(branches=tuple(completed),
+                            ambient_width=ambient_width,
+                            block_width=layout.block_width,
+                            tag_wires=tag_wires,
+                            workspace_wires=tuple(layout.workspace_wires),
+                            block_to_ambient=layout.block_to_ambient,
+                            ingress=ing, egress=egr,
+                            support=layout.support,
+                            spectators=layout.spectators)
+    plan.validate()
+    return plan
 
 
 def plan_open_occurrence(*, parent_in, parent_out, branches, bindings,

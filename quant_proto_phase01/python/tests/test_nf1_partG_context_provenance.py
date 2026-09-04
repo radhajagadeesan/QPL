@@ -693,27 +693,43 @@ def test_G2a_no_partial_artifact_after_a_failed_compile():
         compile_with_artifacts(B_witness(), env={"z": [0]})
 
 
-def test_G2a_ctrl_ho_is_reached_but_explicitly_incomplete():
-    """The planner runs and REFUSES to produce a placement.
+def test_G2a_ctrl_ho_is_completed_blockwise_not_uniformly():
+    """SUPERSEDES the 256 / 64-incomplete assertion.
 
-    ingress 256 = (8+8) x 16_f balances the pin. Egress is 64, short by a
-    factor of 4 -- the h : Q-oQ evaluation residual, which lives inside the
-    ingress summand and must be reclassified at egress. It is not a new
-    resource, and G2b must obtain it from the derivation-selected branch
-    egress cut, NEVER synthesize it from this factor.
+    That gate recorded the OLD uniform-product reading, in which the whole
+    occurrence was completed against one context factor:
+    ingress 256 = (8+8) x 16_f, egress 64, short by 4. Both numbers were
+    artefacts of that model, and the h : Q-oQ residual it went looking for is
+    not a separate resource at all -- it is already the S_h factor inside
+    u1's selected root.
+
+    The completion is now PER BLOCK, against the context each branch does
+    NOT use:
+
+        Complete(u0 | f)     = 4 x 16 = 64
+        Complete(empty | u1) = 1 x 16 = 16
+        Block                = 64 (+) 16 = 80
+
+    The withdrawn 256 and the uniform (4+16) x 16 = 320 are both refused
+    below.
     """
-    TP._PLANNER_OBSERVED.clear()
-    TP._PLANNER_INCOMPLETE.clear()
-    with pytest.raises(UnsupportedFrame):
+    TP._USE_BLOCK_OBSERVED.clear()
+    try:
         compile(D_term())
-    assert TP._PLANNER_INCOMPLETE, "the planner was never reached for ctrl_ho"
-    nb = TP._PLANNER_INCOMPLETE[-1]
-    assert isinstance(nb, NeedsBranchPreparation)
-    assert nb.ingress == 256, f"ingress {nb.ingress}"
-    assert nb.egress == 64, f"egress {nb.egress}"
-    assert nb.missing_factor == 4
-    assert not TP._PLANNER_OBSERVED, (
-        "an unbalanced plan was produced as a valid placement")
+    except Exception:
+        pass                      # controlled emission is a later phase
+    assert TP._USE_BLOCK_OBSERVED, "the use-block planner was never reached"
+    pl = TP._USE_BLOCK_OBSERVED[-1]
+    dims = {b.index: b.dim for b in pl.branches}
+    assert dims == {0: 64, 1: 16}, f"block dims {dims}, want 64 and 16"
+    assert pl.ingress.dim == 80 and pl.egress.dim == 80
+    assert pl.ingress.dim not in (256, 320), (
+        "the withdrawn uniform-product readings must not reappear")
+    assert sum(dims.values()) == pl.ingress.dim, (
+        "the parent is the DIRECT SUM of its blocks")
+    assert (4 + 16) * 16 != pl.ingress.dim, (
+        "a uniform (sum of branch dims) x T_f product gives 320, not 80")
+    assert pl.validate()
 
 
 def test_G2a_unbalanced_plans_are_never_attachable():

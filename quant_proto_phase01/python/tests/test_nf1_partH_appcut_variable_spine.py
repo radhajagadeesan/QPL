@@ -815,28 +815,41 @@ def test_H10_ctrl_ho_use_block_arithmetic():
 
 @pytest.mark.parametrize("materialize", MODES)
 def test_H11_ctrl_ho_selected_boundary_is_80_on_both_sides(materialize):
-    """RED, and deliberately still red. Replaces the withdrawn 256 gate.
+    """80 = 64 (+) 16, on BOTH polarities, as a tagged direct sum.
 
-    ctrl_ho needs the OPEN-occurrence placement to complete; it is the one
-    Part H item the selected-boundary parameter does not reach, and it is
-    carried as the single deferred red rather than weakened.
+    Replaces the withdrawn 256 gate. The blocks are completed against
+    OPPOSITE contexts -- u0 against f, u1 against nothing -- so the parent is
+    a Block of two differently completed charts, never one uniform
+    main-dimension x context-factor product.
     """
     from test_nf1_beta_tensor import _fixture
 
-    TP._PLANNER_OBSERVED.clear()
-    TP._PLANNER_INCOMPLETE.clear()
+    TP._USE_BLOCK_OBSERVED.clear()
     try:
         compile(_fixture("ctrl_ho_closed_plus_map"), materialize=materialize)
     except Exception:
-        pass
-    assert TP._PLANNER_OBSERVED, (
-        "no valid occurrence placement for ctrl_ho; the selected boundary "
-        "cannot be checked")
-    pl = TP._PLANNER_OBSERVED[-1]
-    ing = pl.ingress.completed_dimension(CTRL_HO_LEFT + CTRL_HO_RIGHT)
-    egr = pl.egress.completed_dimension(CTRL_HO_LEFT + CTRL_HO_RIGHT)
-    assert ing == CTRL_HO_PARENT, f"ingress {ing}, want 80"
-    assert egr == CTRL_HO_PARENT, f"egress {egr}, want 80"
+        pass          # controlled emission for the open path is a later phase
+    assert TP._USE_BLOCK_OBSERVED, (
+        "no use-block plan for ctrl_ho; the selected boundary cannot be "
+        "checked")
+    pl = TP._USE_BLOCK_OBSERVED[-1]
+    blocks = {b.index: b for b in pl.branches}
+    assert blocks[0].dim == CTRL_HO_LEFT, (
+        f"left block {blocks[0].dim}, want {CTRL_HO_LEFT} = 4_main x 16_f")
+    assert blocks[1].dim == CTRL_HO_RIGHT, (
+        f"right block {blocks[1].dim}, want {CTRL_HO_RIGHT} = 16_main")
+    assert blocks[0].uses == () and blocks[1].uses != (), (
+        "the recorded branch-use sets are the wrong way round")
+    assert [b.name for b in blocks[0].inactive] == ["f"], (
+        "u0 must be completed against the f it does not use")
+    assert blocks[1].inactive == (), (
+        "u1 uses f, so it must not be completed against it again")
+    assert pl.ingress.dim == CTRL_HO_PARENT, f"ingress {pl.ingress.dim}, want 80"
+    assert pl.egress.dim == CTRL_HO_PARENT, f"egress {pl.egress.dim}, want 80"
+    for side in ("ingress", "egress"):
+        assert len(pl.inclusion(0, side)) == CTRL_HO_LEFT
+        assert len(pl.inclusion(1, side)) == CTRL_HO_RIGHT
+    assert pl.validate()
 
 
 # ---------------------------------------------------------------------------
