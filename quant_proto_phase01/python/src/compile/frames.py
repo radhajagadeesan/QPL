@@ -44,7 +44,7 @@ no phase quotient — ``(iX)(iX) = -I`` must be distinguishable from ``+I``.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, replace as _dataclass_replace, replace
 from typing import Tuple, Optional
 
 import numpy as np
@@ -1343,12 +1343,36 @@ class ChartFactor:
     # sum this factor aggregates. A block is NEITHER an operand nor a
     # source-typed residual, so typed residual matching must skip it.
     descriptor: object = None
+    # THE FACTOR'S OWN IDENTITY, distinct from `owner`.
+    #
+    # `owner` says which RESOURCE this factor carries; two different factors
+    # can carry the same resource, and a frame-default factor carries no
+    # resource at all (owner None, logical None) yet still has to be
+    # nameable. `factor_id` is minted where the factor is ISSUED, is
+    # collision-free among its siblings, and is the same on both polarities
+    # when the two present one factor lineage. It is never derived from a
+    # type, a width, a code, a wire overlap or a Python object identity --
+    # all of which two distinct factors can share.
+    factor_id: str = ""
+    # THE SOURCE OCCURRENCE this factor descends from.
+    #
+    # `owner` names a RESOURCE, `factor_id` names THIS factor, and `source`
+    # names the derivation occurrence the factor's content came from. It is
+    # what makes a factor classifiable: the same emitted factor kind is
+    # payload in one branch and carried context in another, and only its
+    # ancestry says which. Nothing may classify from a name, a role, a type,
+    # a dimension or a placement.
+    source: object = None
 
     @property
     def dim(self) -> int:
         return len(self.codes)
 
     def __post_init__(self):
+        if not self.factor_id:
+            raise ProvenanceError(
+                f"chart factor {self.name!r} was issued without a factor_id; "
+                f"a factor that cannot be named cannot be matched at a cut")
         if self.role not in ("operand", "residual", "block"):
             raise ProvenanceError(
                 f"chart factor {self.name!r} has role {self.role!r}; a spine "
@@ -1588,10 +1612,39 @@ class BoundaryChart:
     label: str = ""
     space: str = "local"     # "local": premise-local addresses; "ambient":
                              # already placed in the compiled register
+    # Every ambient coordinate this COMPLETE chart claims: main/tag/payload,
+    # carried context, residual factors, and constant tag coordinates that
+    # are part of the embedding. Declared spectators are excluded.
+    #
+    # This is NOT the cut-facing interface -- an open sum's completed chart
+    # claims nine coordinates while its typed cut is three of them -- and it
+    # is never `range(register)` for want of a better answer, nor inferred
+    # from which bits happen to vary.
+    support_wires: Optional[Tuple[int, ...]] = None
 
     @property
     def dim(self) -> int:
         return len(self.codes)
+
+    def support(self, where=""):
+        """The recorded support, or the one the route provably determines.
+
+        A scatter route IS a recorded placement schedule, so its union is a
+        record, not a guess. Anything else -- an opaque or correlated ambient
+        chart -- has to carry its support explicitly, because nothing about
+        it says which coordinates it claims.
+        """
+        if self.support_wires is not None:
+            return tuple(self.support_wires)
+        if self.route is not None and self.route.reconstructible:
+            return tuple(sorted({w for pl in self.route.placements
+                                 for w in pl}))
+        if self.space == "local":
+            return tuple(range(self.n_qubits))
+        raise ProvenanceError(
+            f"{where}chart {self.label!r} is an opaque ambient chart with no "
+            f"recorded support, so which coordinates it claims is unknown; "
+            f"the register's width is not an answer")
 
     def isometry(self):
         """The ordered embedding of the chart into the ambient register.
@@ -1614,6 +1667,8 @@ class BoundaryChart:
         """
         if self.route is None or not self.route.parts:
             raise ProvenanceError(f"chart {self.label}: no factor identities")
+        if isinstance(self.route, JoinRoute):
+            return self.route.decode(ambient_code)[0]
         if self.route.reconstructible:
             return self.route.decode_ambient(ambient_code)
         return self.route.decode(self.codes.index(ambient_code))
@@ -1630,6 +1685,34 @@ class BoundaryChart:
         r = self.route
         if r is None or not r.parts:
             raise ProvenanceError(f"chart {self.label}: no factored route")
+        if isinstance(r, JoinRoute):
+            # A RELATION validates row by row: every recorded row rebuilds
+            # its ambient code from the recorded placements, and the chart
+            # carries exactly the relation's codes. No product-dimension
+            # claim applies -- a join is smaller than the product, and
+            # saying otherwise is the degradation this type exists to stop.
+            if r.n_qubits != self.n_qubits:
+                raise ProvenanceError(
+                    f"chart {self.label}: the relation is over {r.n_qubits} "
+                    f"wires but the chart is over {self.n_qubits}")
+            if tuple(r.codes) != tuple(self.codes):
+                raise ProvenanceError(
+                    f"chart {self.label}: the relation's codes do not "
+                    f"reproduce chart.codes")
+            for f, pl in zip(r.parts, r.placements):
+                if len(pl) != f.n_qubits:
+                    raise ProvenanceError(
+                        f"chart {self.label}: factor {f.name!r} spans "
+                        f"{f.n_qubits} wires but is placed on {len(pl)}")
+            for row, c in zip(r.rows, r.codes):
+                v = 0
+                for coord, pl in zip(row, r.placements):
+                    v |= scatter_code(coord, tuple(pl), self.n_qubits)
+                if v != c:
+                    raise ProvenanceError(
+                        f"chart {self.label}: relation row {row} rebuilds to "
+                        f"{v}, not the recorded code {c}")
+            return True
         r.check_schedule()
         want = 1
         for f in r.parts:
@@ -1687,11 +1770,21 @@ class BoundaryChart:
                 f"permutation of {n} wires")
         codes = tuple(permute_index(c, new_to_old, n) for c in self.codes)
         route = self.route
-        if route is not None:
-            route = replace(route, embed=codes, placements=tuple(
-                tuple(new_to_old.index(w) for w in g)
-                for g in route.placements))
-        return replace(self, codes=codes, route=route)
+        places = tuple(tuple(new_to_old.index(w) for w in g)
+                       for g in route.placements) if route is not None else ()
+        if isinstance(route, JoinRoute):
+            # A relation moves with its register: the rows and their source
+            # pairs are unchanged, only where the factors sit and what the
+            # ambient codes are.
+            route = replace(route, codes=codes, placements=places,
+                            support=tuple(sorted(
+                                new_to_old.index(w) for w in self.support())))
+        elif route is not None:
+            route = replace(route, embed=codes, placements=places)
+        sup = self.support_wires
+        if sup is not None:
+            sup = tuple(new_to_old.index(w) for w in sup)
+        return replace(self, codes=codes, route=route, support_wires=sup)
 
     def __post_init__(self):
         if len(set(self.codes)) != len(self.codes):
@@ -1702,6 +1795,27 @@ class BoundaryChart:
                 raise ProvenanceError(
                     f"chart {self.label}: code {c} outside a "
                     f"{self.n_qubits}-qubit register")
+        # ... and the recorded support, in the SAME hook. Two __post_init__
+        # definitions in one class silently keep only the last, which is how
+        # this validator stopped running at all.
+        if self.support_wires is None:
+            return
+        sw = tuple(self.support_wires)
+        if len(set(sw)) != len(sw):
+            raise ProvenanceError(
+                f"chart {self.label}: its support {sw} repeats a wire")
+        for w in sw:
+            if not (0 <= w < self.n_qubits):
+                raise ProvenanceError(
+                    f"chart {self.label}: support wire {w} is outside a "
+                    f"{self.n_qubits}-wire space")
+        if self.route is not None and self.route.reconstructible:
+            sched = {w for pl in self.route.placements for w in pl}
+            if set(sw) != sched:
+                raise ProvenanceError(
+                    f"chart {self.label}: its recorded support {sw} is not "
+                    f"the union of its scatter placements "
+                    f"{tuple(sorted(sched))}")
 
 
 def chart_of_frame(frame: "Frame", space: str = "local") -> "BoundaryChart":
@@ -1713,7 +1827,8 @@ def chart_of_frame(frame: "Frame", space: str = "local") -> "BoundaryChart":
     whole register may assert.
     """
     return BoundaryChart(n_qubits=frame.n_qubits, codes=tuple(frame.codes),
-                         label=f"{frame.label}=frame", space=space)
+                         label=f"{frame.label}=frame", space=space,
+                         support_wires=tuple(range(frame.n_qubits)))
 
 
 def par_then_repart(factors, repart, n_qubits, route_label="",
@@ -1780,6 +1895,18 @@ def localize_scatter(chart):
         raise ProvenanceError(
             f"chart {chart.label}: only an ambient chart is localised, this "
             f"one is {chart.space!r}")
+    if r is not None and isinstance(r, JoinRoute):
+        # A RELATIONAL chart localises to its own recorded rows -- one local
+        # code per surviving state, correlations intact. Nothing is expanded
+        # to a product and nothing is dropped.
+        wires = tuple(w for g in r.placements for w in g)
+        codes = []
+        for row in r.rows:
+            c = 0
+            for f, cd in zip(r.parts, row):
+                c = (c << f.n_qubits) | cd
+            codes.append(c)
+        return len(wires), tuple(codes), wires
     if r is None or not r.reconstructible:
         raise ProvenanceError(
             f"chart {chart.label}: its Repart is "
@@ -1852,12 +1979,11 @@ def tenpack(chart, r_p, theta):
     hands the port over in binder order is unaffected.
     """
     r = chart.route
-    if r is None or not r.reconstructible:
+    if r is None or (not isinstance(r, JoinRoute) and not r.reconstructible):
         raise ProvenanceError(
             f"chart {chart.label}: TenPack needs a recorded scatter schedule "
             f"to re-address, this one is "
             f"{'unrecorded' if r is None else repr(r.kind)}")
-    r.check_schedule()
     r_p = tuple(r_p)
     theta = tuple(theta)
     if sorted(theta) != list(range(len(r_p))):
@@ -1875,6 +2001,17 @@ def tenpack(chart, r_p, theta):
     move = {w: w for w in range(chart.n_qubits)}
     for i, w in enumerate(r_p):
         move[w] = r_p[theta[i]]
+    if isinstance(r, JoinRoute):
+        # A RELATIONAL chart is re-addressed as the relation it is: rows,
+        # source pairs and factor identities untouched, coordinates moved.
+        moved = r.moved(move, chart.n_qubits)
+        packed = BoundaryChart(
+            n_qubits=chart.n_qubits, codes=tuple(moved.codes), route=moved,
+            label=chart.label, space="ambient",
+            support_wires=tuple(moved.support))
+        packed.validate_joint()
+        return packed
+    r.check_schedule()
     places = tuple(tuple(move[w] for w in g) for g in r.placements)
     rep, places = scatter_repart(places, chart.n_qubits)
     packed = par_then_repart(r.parts, rep, chart.n_qubits, r.label,
@@ -1902,14 +2039,16 @@ def check_spine_residual(route, expected_cod, where=""):
     return res
 
 
-def _matched_factor(chart, tensor_ty, where):
+def _matched_factor(chart, tensor_ty, where, port_ref=None):
     """The producer factor the tensor cut consumes.
 
     Identified by RECORDED STRUCTURE -- the unique factor whose role is
-    "residual" and whose logical type is the tensor being eliminated. Never
-    by width, dimension, varying bits, name or position: a producer may carry
-    unmatched operand factors of the same dimension, and in a neutral
-    application it does.
+    "residual" and whose logical type is the tensor being eliminated, and,
+    when the derivation recorded the port's own identity, by that EXACT
+    recorded source ref. Never by width, dimension, varying bits, name or
+    position: a producer may carry unmatched operand factors of the same
+    dimension, and in a neutral application it does. Several candidates
+    with no recorded identity to separate them are refused, not ranked.
     """
     r = chart.route
     if r is None or not r.parts:
@@ -1918,6 +2057,14 @@ def _matched_factor(chart, tensor_ty, where):
             f"tensor port cannot be identified")
     hits = [i for i, f in enumerate(r.parts)
             if f.role == "residual" and f.logical == tensor_ty]
+    if port_ref is not None:
+        hits = [i for i in hits
+                if r.parts[i].source is not None
+                and any(x.ref == port_ref for x in r.parts[i].source.refs)]
+        if not hits:
+            raise ProvenanceError(
+                f"{where}: no producer factor carries the recorded port "
+                f"identity {port_ref!r}")
     if not hits:
         raise ProvenanceError(
             f"{where}: no producer factor is a residual of type "
@@ -1931,7 +2078,8 @@ def _matched_factor(chart, tensor_ty, where):
     return hits[0]
 
 
-def tensor_splice(prod_in, prod_out, body_in, body_out, tensor_ty):
+def tensor_splice(prod_in, prod_out, body_in, body_out, tensor_ty,
+                  port_ref=None):
     """Splice_{A(x)B}( producer , TenPack(body) ).
 
     The producer's boundary is NOT assumed to be the tensor port. Its matched
@@ -1964,8 +2112,10 @@ def tensor_splice(prod_in, prod_out, body_in, body_out, tensor_ty):
             raise ProvenanceError(
                 f"Splice: {nm} spans {ch.n_qubits} wires but the body spans "
                 f"{n}")
-    m = _matched_factor(prod_out, tensor_ty, "Splice egress")
-    m_in = _matched_factor(prod_in, tensor_ty, "Splice ingress")
+    m = _matched_factor(prod_out, tensor_ty, "Splice egress",
+                        port_ref=port_ref)
+    m_in = _matched_factor(prod_in, tensor_ty, "Splice ingress",
+                           port_ref=port_ref)
     if m_in != m:
         raise ProvenanceError(
             f"Splice: the matched tensor factor is at position {m_in} on the "
@@ -1989,7 +2139,7 @@ def tensor_splice(prod_in, prod_out, body_in, body_out, tensor_ty):
 
     codes = []
     pairs = []
-    for bc in body_in.codes:
+    for bi, bc in enumerate(body_in.codes):
         v = _bits_on(bc, port, n)
         ks = by_label.get(v)
         if not ks:
@@ -1997,11 +2147,12 @@ def tensor_splice(prod_in, prod_out, body_in, body_out, tensor_ty):
                 f"Splice: the packed body selects {v} on the A(x)B port, "
                 f"which the producer cannot supply -- its output labels "
                 f"there are {sorted(by_label)}")
-        pairs.append((bc, ks))
+        pairs.append((bi, bc, ks))
     # producer-prefix MAJOR, body minor: the surviving producer factors lead.
     width = len(next(iter(by_label.values())))
+    spl_sources = []
     for j in range(width):
-        for bc, ks in pairs:
+        for bi, bc, ks in pairs:
             if len(ks) != width:
                 raise ProvenanceError(
                     f"Splice: the producer's port projection is uneven "
@@ -2015,6 +2166,7 @@ def tensor_splice(prod_in, prod_out, body_in, body_out, tensor_ty):
                     f"body's non-port selection {rest}; the two premises are "
                     f"not on disjoint resources")
             codes.append(pin | rest)
+            spl_sources.append((ks[j], bi))
     if len(set(codes)) != len(codes):
         raise ProvenanceError(
             f"Splice: the composed ingress is not injective -- "
@@ -2025,23 +2177,58 @@ def tensor_splice(prod_in, prod_out, body_in, body_out, tensor_ty):
     prefix_out = tuple(f for i, f in enumerate(ro.parts) if i != m)
     prefix_out_pl = tuple(pl for i, pl in enumerate(ro.placements) if i != m)
 
-    ingress = _joined_chart(codes, prefix_in + body_in.route.parts,
-                            prefix_in_pl + body_in.route.placements, n,
-                            f"{body_in.route.label}|splice")
+    ingress = _joined_chart(codes, prefix_in + tuple(body_in.route.parts),
+                            prefix_in_pl + tuple(body_in.route.placements),
+                            n, f"{body_in.route.label}|splice",
+                            sources=tuple(spl_sources))
     # The egress keeps the producer's surviving factors beside the body's own
     # output; the matched port was consumed by the cut and exports nothing.
-    egress = _par_of(prefix_out + body_out.route.parts,
-                     prefix_out_pl + body_out.route.placements, n,
-                     f"{body_out.route.label}|splice", body_out)
+    # A RELATIONAL body stays relational: its rows and source pairs survive
+    # beside the prefix rather than being expanded to a product.
+    if isinstance(body_out.route, JoinRoute):
+        br = body_out.route
+        combos = [((), 0)]
+        for f, pl in zip(prefix_out, prefix_out_pl):
+            combos = [(cs + (cd,), amb | scatter_code(cd, tuple(pl), n))
+                      for cs, amb in combos for cd in f.codes]
+        rows_e, codes_e, srcs_e = [], [], []
+        for ci, (cs, amb) in enumerate(combos):
+            for bi2 in range(len(br.rows)):
+                if amb & br.codes[bi2]:
+                    raise ProvenanceError(
+                        f"Splice: a prefix factor overlaps the relational "
+                        f"body's coordinates")
+                rows_e.append(tuple(cs) + tuple(br.rows[bi2]))
+                codes_e.append(amb | br.codes[bi2])
+                srcs_e.append((ci, bi2))
+        jr = JoinRoute(
+            label=f"{br.label}|splice", parts=prefix_out + tuple(br.parts),
+            placements=prefix_out_pl + tuple(br.placements),
+            rows=tuple(rows_e), sources=tuple(srcs_e), codes=tuple(codes_e),
+            support=tuple(sorted(set(w for pl in prefix_out_pl for w in pl)
+                                 | set(br.support))),
+            n_qubits=n, producer_face=br.producer_face,
+            consumer_face=br.consumer_face, transport=br.transport,
+            substitutions=br.substitutions)
+        egress = BoundaryChart(n_qubits=n, codes=tuple(codes_e), route=jr,
+                               label=jr.label, space="ambient",
+                               support_wires=tuple(jr.support))
+        egress.validate_joint()
+    else:
+        egress = _par_of(prefix_out + tuple(body_out.route.parts),
+                         prefix_out_pl + tuple(body_out.route.placements), n,
+                         f"{body_out.route.label}|splice", body_out)
     return ingress, egress
 
 
-def _joined_chart(codes, parts, placements, n, label):
+def _joined_chart(codes, parts, placements, n, label, sources=None):
     """A chart on `codes`, described by `parts` when the schedule rebuilds it.
 
-    A join need not stay a plain scatter of its factors; when it does not, the
-    encoding is recorded as correlated rather than described by a schedule
-    that does not reproduce it.
+    A join need not stay a plain scatter of its factors; when it does not,
+    and the caller recorded which premise-state pair each composite state
+    came from, the encoding is kept as the RELATION it is -- a JoinRoute
+    with every row and source pair -- and never as an opaque embed that
+    pretends nothing was correlated.
     """
     route = ChartRoute(label=label, parts=tuple(parts), embed=tuple(codes),
                        kind="scatter", n_qubits=n,
@@ -2051,8 +2238,29 @@ def _joined_chart(codes, parts, placements, n, label):
     except ProvenanceError:
         ok = False
     if not ok:
-        route = ChartRoute(label=label, parts=tuple(parts),
-                           embed=tuple(codes), kind="opaque", n_qubits=n)
+        route = None
+        if sources is not None:
+            # The relation is recorded ONLY when its rows are true: every
+            # composite state must decompose over the retained factors'
+            # recorded placements into recorded factor states. A splice
+            # whose composition leaves foreign bits on a factor's wires is
+            # not that relation, and stays an opaque embed of exactly the
+            # composed codes rather than a decomposition that lies.
+            try:
+                route = JoinRoute(
+                    label=label, parts=tuple(parts),
+                    placements=tuple(tuple(pl) for pl in placements),
+                    rows=tuple(tuple(gather_code(c, tuple(pl), n)
+                                     for pl in placements) for c in codes),
+                    sources=tuple(sources), codes=tuple(codes),
+                    support=tuple(sorted({w for pl in placements
+                                          for w in pl})),
+                    n_qubits=n)
+            except ProvenanceError:
+                route = None
+        if route is None:
+            route = ChartRoute(label=label, parts=tuple(parts),
+                               embed=tuple(codes), kind="opaque", n_qubits=n)
     ch = BoundaryChart(n_qubits=n, codes=tuple(codes), route=route,
                        label=label, space="ambient")
     ch.validate_joint()
@@ -2151,7 +2359,7 @@ class BlockDescriptor:
         return True
 
 
-def aggregate_block_chart(plan, side, descriptor):
+def aggregate_block_chart(plan, side, descriptor, root=None):
     """The Block as ONE factor over its own direct-sum alphabet.
 
     Repart_{block_to_ambient}( Par( BlockFactor ) )
@@ -2163,6 +2371,13 @@ def aggregate_block_chart(plan, side, descriptor):
     What the aggregate buys is a genuine one-factor SCATTER route, so the
     ordinary TenPack and Splice can compose it without being weakened to
     accept route-less charts.
+
+    `root` is the external semantic root the Block occurrence serves at THIS
+    polarity, read by the ADAPTER from its own handed-down record -- the
+    occurrence was introduced inside the enclosing compilation, so inside a
+    branch it serves that side's issued root, and outside any branch there
+    is none and the factor stays unlinked. This rule records what it is
+    given; it never selects a root itself.
     """
     parent = plan.ingress if side == "ingress" else plan.egress
     b2a = tuple(descriptor.block_to_ambient)
@@ -2188,7 +2403,12 @@ def aggregate_block_chart(plan, side, descriptor):
             f"block aggregate {side}: the pullback is not injective")
     f = ChartFactor(name="B", owner=descriptor.cut_id,
                     n_qubits=descriptor.block_width, codes=tuple(local),
-                    role="block", logical=None, descriptor=descriptor)
+                    role="block", logical=None, descriptor=descriptor,
+                    factor_id=f"block:{descriptor.cut_id}",
+                    source=FactorSource((SourcePortRef(
+                        ref=str(descriptor.cut_id),
+                        origin_cut=descriptor.cut_id,
+                        path=("block", side), root=root),)))
     rep, places = scatter_repart((b2a,), n)
     ch = par_then_repart((f,), rep, n, f"block^{side}", placements=places,
                          kind="scatter")
@@ -2472,11 +2692,65 @@ class SelectedBoundary:
     # Carried so a consumer can see WHICH schedule packed it, rather than
     # having to trust that the two polarities were kept apart.
     packing: object = None
+    # THE PAYLOAD/FIBRE PARTITION, per polarity, as ordered factor_ids.
+    #
+    # The rule that CONSTRUCTS a boundary knows which of its factors present
+    # the payload it was handed and which carry context beside it -- it made
+    # them, from different inputs. Recovering that split afterwards by asking
+    # which placements fall inside the payload wires is geometry choosing,
+    # and two factors of equal width can sit either side of that line.
+    # Recorded placement may VALIDATE this partition; it may not make it.
+    #
+    # Each entry is (presenter_ids, fibre_ids) and must partition every
+    # factor of its polarity exactly once, dimension-one factors included.
+    ingress_partition: object = None
+    egress_partition: object = None
+
+    def partition(self, side):
+        return (self.ingress_partition if side == "ingress"
+                else self.egress_partition)
+
+    def check_partition(self, side, where=""):
+        """The recorded split covers this polarity's factors exactly once."""
+        part = self.partition(side)
+        chart = self.ingress if side == "ingress" else self.egress
+        if part is None:
+            raise ProvenanceError(
+                f"{where}the {side} boundary records no payload/fibre "
+                f"partition, so which factors present its payload would have "
+                f"to be inferred from where they sit")
+        pres, fib = tuple(part[0]), tuple(part[1])
+        if chart.route is None:
+            if fib or len(pres) != 1:
+                raise ProvenanceError(
+                    f"{where}a route-less {side} boundary is one presenter "
+                    f"and no fibre, but {len(pres)}/{len(fib)} are recorded")
+            return True
+        have = [f.factor_id for f in chart.route.parts]
+        both = list(pres) + list(fib)
+        if len(set(both)) != len(both):
+            raise ProvenanceError(
+                f"{where}the {side} partition classifies a factor twice: "
+                f"{both}")
+        if set(both) != set(have):
+            missing = sorted(set(have) - set(both))
+            foreign = sorted(set(both) - set(have))
+            raise ProvenanceError(
+                f"{where}the {side} partition does not cover this boundary "
+                f"exactly once: missing {missing}, foreign {foreign}")
+        return True
 
     @staticmethod
     def from_frames(frame_in, frame_out, origin="frame-default",
                     space="local"):
-        """The explicit default: this occurrence's boundary IS its frames."""
+        """The explicit default: this occurrence's boundary IS its frames.
+
+        It claims NOTHING about payload or fibre. A defaulted boundary may be
+        a branch root presenting a semantic main occurrence, or an ordinary
+        intermediate carrying only context, and only the rule that placed it
+        knows which. An exhaustive projection is supplied by that rule, not
+        assumed here.
+        """
         return SelectedBoundary(ingress=chart_of_frame(frame_in, space),
                                 egress=chart_of_frame(frame_out, space),
                                 origin=origin, authority=FRAME_DEFAULT)
@@ -2567,6 +2841,9 @@ class BranchInputs:
     local_to_ambient: Tuple[int, ...] = ()     # branch-local -> register
     # The recorded handoffs of those bindings into this branch's preparation.
     transport: Tuple["BindingTransport", ...] = ()
+    # The branch's per-polarity BranchMainProjections, issued at preparation
+    # ({"ingress": ..., "egress": ...}), which Complete consumes unchanged.
+    projections: object = None
 
     @property
     def fin(self):
@@ -2788,6 +3065,2057 @@ def issue_binding_transport(parent, local_view, local_to_ambient, where=""):
     return t
 
 
+def gather_code(code, wires, ambient_width):
+    """The sub-code `code` carries on `wires`. Inverse of `scatter_code`."""
+    v = 0
+    k = len(wires)
+    for i, w in enumerate(wires):
+        if not (0 <= w < ambient_width):
+            raise ProvenanceError(
+                f"wire {w} is outside a register of {ambient_width}")
+        if (code >> (ambient_width - 1 - w)) & 1:
+            v |= 1 << (k - 1 - i)
+    return v
+
+
+def replace_code(code, wires, sub, ambient_width):
+    """`code` with the bits at `wires` replaced by the sub-code `sub`."""
+    out = code
+    k = len(wires)
+    for i, w in enumerate(wires):
+        bit = 1 << (ambient_width - 1 - w)
+        out &= ~bit
+        if (sub >> (k - 1 - i)) & 1:
+            out |= bit
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class CutCompletion:
+    """WHY a cut is wider than one of its premises.
+
+    Two recorded interfaces do not establish a common cut merely because one
+    wire set happens to contain the other. When their widths differ, the
+    splice's own typed frame-reconciliation is what decides that the extra
+    coordinate exists and what it is for, and it issues this. Without one,
+    a containment is a coincidence and the cut fails closed.
+
+    `ordered_wires` is the common placement, IN ORDER. Both premise
+    placements must appear inside it in their own recorded order -- turning
+    them into sets would lose exactly the ordering the codes are written in.
+
+    `reason` is DIAGNOSTIC. Nothing branches on its content; it is required to
+    be present so a completion cannot be issued without saying anything, and
+    it is never parsed.
+    """
+    ordered_wires: Tuple[int, ...]
+    ambient_width: int
+    producer_wires: Tuple[int, ...]
+    consumer_wires: Tuple[int, ...]
+    widened: str                       # "producer" | "consumer"
+    from_width: int
+    to_width: int
+    reason: str
+    cut_id: object = None
+    producer_logical: object = None
+    consumer_logical: object = None
+    residual_name: str = ""
+
+    def __post_init__(self):
+        w = self.ordered_wires
+        if len(set(w)) != len(w):
+            raise ProvenanceError(
+                f"cut completion: the common placement {w} repeats a wire")
+        for x in w:
+            if not (0 <= x < self.ambient_width):
+                raise ProvenanceError(
+                    f"cut completion: wire {x} is outside a "
+                    f"{self.ambient_width}-wire register")
+        if self.widened not in ("producer", "consumer"):
+            raise ProvenanceError(
+                f"cut completion: {self.widened!r} is neither premise")
+        if self.to_width != len(w):
+            raise ProvenanceError(
+                f"cut completion: it completes to {self.to_width} but records "
+                f"{len(w)} coordinates")
+        if self.from_width >= self.to_width:
+            raise ProvenanceError(
+                f"cut completion: {self.from_width} -> {self.to_width} does "
+                f"not widen anything")
+        if not self.reason:
+            raise ProvenanceError(
+                "cut completion: no reason recorded for the extra coordinate")
+        for nm, ws in (("producer", self.producer_wires),
+                       ("consumer", self.consumer_wires)):
+            it = iter(w)
+            if not all(x in it for x in ws):
+                raise ProvenanceError(
+                    f"cut completion: the {nm}'s placement {tuple(ws)} is not "
+                    f"inside the common placement {w} in its own order")
+        narrow = (self.producer_wires if self.widened == "producer"
+                  else self.consumer_wires)
+        wide = (self.consumer_wires if self.widened == "producer"
+                else self.producer_wires)
+        if len(narrow) != self.from_width:
+            raise ProvenanceError(
+                f"cut completion: it says the {self.widened} was "
+                f"{self.from_width} wide but its placement has {len(narrow)} "
+                f"coordinates")
+        if len(wide) >= len(narrow) and len(wide) != self.to_width:
+            raise ProvenanceError(
+                f"cut completion: it completes to {self.to_width} but the "
+                f"unwidened premise occupies {len(wide)} coordinates")
+
+    def check_against(self, producer_interface, consumer_interface,
+                      cut_id, widened_frame, where=""):
+        """This certificate is THIS occurrence's, for THESE two interfaces.
+
+        Placement, ordering, logical type, lineage and polarity all have to
+        agree, and the widened premise has to actually carry the typed
+        residual ports the completion claims. Equal geometry from another
+        occurrence is a different completion, not this one.
+        """
+        if self.cut_id != cut_id:
+            raise ProvenanceError(
+                f"{where}the completion was issued at cut {self.cut_id!r} but "
+                f"this occurrence's cut is {cut_id!r}; equal geometry from "
+                f"another occurrence is not this completion")
+        if tuple(self.producer_wires) != tuple(
+                producer_interface.ordered_wires):
+            raise ProvenanceError(
+                f"{where}the completion records the producer on "
+                f"{self.producer_wires} but its interface is on "
+                f"{tuple(producer_interface.ordered_wires)}")
+        if tuple(self.consumer_wires) != tuple(
+                consumer_interface.ordered_wires):
+            raise ProvenanceError(
+                f"{where}the completion records the consumer on "
+                f"{self.consumer_wires} but its interface is on "
+                f"{tuple(consumer_interface.ordered_wires)}")
+        for nm, want, rec in (
+                ("producer", producer_interface.logical, self.producer_logical),
+                ("consumer", consumer_interface.logical, self.consumer_logical)):
+            if rec is not None and rec != want:
+                raise ProvenanceError(
+                    f"{where}the completion types the {nm} "
+                    f"{pretty(rec)} but its interface is "
+                    f"{pretty(want) if want is not None else None}")
+        if producer_interface.polarity != "egress":
+            raise ProvenanceError(
+                f"{where}the producer's interface is recorded at polarity "
+                f"{producer_interface.polarity!r}, not egress")
+        if consumer_interface.polarity != "ingress":
+            raise ProvenanceError(
+                f"{where}the consumer's interface is recorded at polarity "
+                f"{consumer_interface.polarity!r}, not ingress")
+        if self.residual_name:
+            got = [pt.name for pt in getattr(widened_frame, "ports", ())]
+            if self.residual_name not in got:
+                raise ProvenanceError(
+                    f"{where}the completion claims the {self.widened} was "
+                    f"padded with typed {self.residual_name!r} ports, but the "
+                    f"widened frame carries {got}; the evidence is absent")
+        return True
+
+
+@dataclass(frozen=True, slots=True)
+class CutTransport:
+    """THE transport at one Seq cut, recorded once and used twice.
+
+    A Seq splices a producer's output onto a consumer's input, and when the
+    two embeddings disagree it emits a real Align. That Align is a fact about
+    the compiled circuit; the composed selected boundary has to describe the
+    SAME fact. Rebuilding an "equivalent" one later from types, fresh frames
+    or code geometry is how the metadata and the gates come to disagree
+    without anything detecting it, so both the emission and the composition
+    consume this object.
+
+    `forward` is total on the cut's own address space and carries CONSUMER
+    codes onto PRODUCER codes -- the direction of A u_C^- = u_P^+ .
+    """
+    wires: Tuple[int, ...]
+    ambient_width: int
+    consumer_codes: Tuple[int, ...]
+    producer_codes: Tuple[int, ...]
+    forward: Tuple[int, ...]
+    inverse: Tuple[int, ...]
+    kind: str                       # identity | wire-permutation | code-permutation
+    wire_permutation: Optional[Tuple[int, ...]] = None
+    label: str = ""
+    # The two premise placements this transport binds, each in its OWN
+    # recorded order. They are kept apart: a producer that leaves its result
+    # on (2,0,1) and a consumer that receives on (0,1,2) meet at one cut, and
+    # collapsing them into a single tuple would silently reorder the codes.
+    producer_wires: Tuple[int, ...] = ()
+    consumer_wires: Tuple[int, ...] = ()
+    # Present exactly when the two premises did not already describe the same
+    # typed cut and the splice's own reconciliation completed them onto one.
+    completion: Optional["CutCompletion"] = None
+
+    def __post_init__(self):
+        k = len(self.wires)
+        size = 1 << k
+        if len(set(self.wires)) != k:
+            raise ProvenanceError(
+                f"cut transport {self.label}: wires {self.wires} repeat")
+        for w in self.wires:
+            if not (0 <= w < self.ambient_width):
+                raise ProvenanceError(
+                    f"cut transport {self.label}: wire {w} is outside a "
+                    f"{self.ambient_width}-wire register")
+        if len(self.forward) != size or len(self.inverse) != size:
+            raise ProvenanceError(
+                f"cut transport {self.label}: the map is not total on a "
+                f"{k}-wire cut")
+        if sorted(self.forward) != list(range(size)):
+            raise ProvenanceError(
+                f"cut transport {self.label}: the forward map is not a "
+                f"permutation, so the cut correspondence is not injective")
+        for i, j in enumerate(self.forward):
+            if self.inverse[j] != i:
+                raise ProvenanceError(
+                    f"cut transport {self.label}: the inverse disagrees with "
+                    f"the forward map at {i}")
+        if len(self.consumer_codes) != len(self.producer_codes):
+            raise ProvenanceError(
+                f"cut transport {self.label}: {len(self.consumer_codes)} "
+                f"consumer codes against {len(self.producer_codes)} producer "
+                f"codes")
+        for c, pcode in zip(self.consumer_codes, self.producer_codes):
+            if self.forward[c] != pcode:
+                raise ProvenanceError(
+                    f"cut transport {self.label}: it carries consumer code "
+                    f"{c} to {self.forward[c]}, but the selected cut records "
+                    f"{pcode}; this is not the transport that was selected")
+        if self.kind not in ("identity", "wire-permutation",
+                             "code-permutation"):
+            raise ProvenanceError(
+                f"cut transport {self.label}: unknown kind {self.kind!r}")
+        if (self.kind == "identity") != (
+                tuple(self.forward) == tuple(range(size))):
+            raise ProvenanceError(
+                f"cut transport {self.label}: kind {self.kind!r} disagrees "
+                f"with the recorded map")
+        if (self.wire_permutation is not None) != (
+                self.kind == "wire-permutation"):
+            raise ProvenanceError(
+                f"cut transport {self.label}: a wire permutation is recorded "
+                f"iff the kind says so")
+        if self.wire_permutation is not None:
+            wp = tuple(self.wire_permutation)
+            if sorted(wp) != list(range(k)):
+                raise ProvenanceError(
+                    f"cut transport {self.label}: {wp} is not a permutation "
+                    f"of the cut's {k} wires")
+            for i in range(size):
+                if permute_index(i, wp, k) != self.forward[i]:
+                    raise ProvenanceError(
+                        f"cut transport {self.label}: the recorded wire "
+                        f"permutation {wp} does not induce the forward map "
+                        f"at code {i}; the two describe different Aligns")
+        for nm, ws in (("producer", self.producer_wires),
+                       ("consumer", self.consumer_wires)):
+            if not ws:
+                continue
+            if len(set(ws)) != len(ws):
+                raise ProvenanceError(
+                    f"cut transport {self.label}: the {nm}'s placement {ws} "
+                    f"repeats a wire")
+            if set(ws) - set(self.wires):
+                raise ProvenanceError(
+                    f"cut transport {self.label}: the {nm} is placed on "
+                    f"{ws}, which the cut {self.wires} does not cover")
+        if self.completion is not None:
+            c = self.completion
+            if tuple(c.ordered_wires) != tuple(self.wires):
+                raise ProvenanceError(
+                    f"cut transport {self.label}: its completion records the "
+                    f"common placement {c.ordered_wires} but the cut is "
+                    f"{self.wires}")
+            if c.ambient_width != self.ambient_width:
+                raise ProvenanceError(
+                    f"cut transport {self.label}: its completion is over "
+                    f"{c.ambient_width} wires, not {self.ambient_width}")
+        elif self.producer_wires and self.consumer_wires and \
+                set(self.producer_wires) != set(self.consumer_wires):
+            raise ProvenanceError(
+                f"cut transport {self.label}: the producer is placed on "
+                f"{self.producer_wires} and the consumer on "
+                f"{self.consumer_wires}; different placements need a recorded "
+                f"completion saying why, not a containment")
+
+    def apply(self, ambient_code):
+        """Transport one AMBIENT code through the cut."""
+        return replace_code(
+            ambient_code, self.wires,
+            self.forward[gather_code(ambient_code, self.wires,
+                                     self.ambient_width)],
+            self.ambient_width)
+
+    def check_selected(self, consumer_codes, producer_codes, where=""):
+        """This IS the transport the Seq selected -- not one like it."""
+        if (tuple(consumer_codes) != tuple(self.consumer_codes)
+                or tuple(producer_codes) != tuple(self.producer_codes)):
+            raise ProvenanceError(
+                f"{where}the recorded cut transport was built for "
+                f"{self.consumer_codes} -> {self.producer_codes}, but the cut "
+                f"actually selected {tuple(consumer_codes)} -> "
+                f"{tuple(producer_codes)}")
+        return True
+
+
+@dataclass(frozen=True, slots=True)
+class CutFace:
+    """WHICH factor presents the cut, at one polarity, and how its states
+    project onto the cut's semantic labels.
+
+    The projection is MANY-TO-ONE and that is the point: a completed Block of
+    192 states meets a six-state cut, so every cut label has a fibre of 32
+    states behind it and all of them survive the join. A map from cut label
+    to composite state cannot exist, and nothing here pretends otherwise.
+
+    Two forms, and only two:
+
+      * ROUTED -- the premise has a chart route, and the face names the one
+        factor inside it that presents the cut, by `factor_id`.
+      * ATOMIC -- the premise has no route. Then the face must be an
+        EXHAUSTIVE presentation of the whole chart (`whole_chart`), because a
+        route-less premise cannot say what else it carries; a proper subface
+        would leave prefix or context factors unrecorded, and a join must
+        never assume those are absent.
+
+    The factor identity is MINTED from the derivation's provenance scope. It
+    is never synthesized from codes or placement: those are used to VALIDATE
+    the recorded presentation, never to discover it.
+    """
+    factor_ids: Tuple[str, ...]
+    polarity: str
+    cut_id: object
+    origin_cut: object
+    codes: Tuple[int, ...]            # the factor's own ordered coordinates
+    placement: Tuple[int, ...]        # in the CHART's own address space
+    labels: Tuple[int, ...]           # state index -> index into `alphabet`
+    n_labels: int
+    interface_wires: Tuple[int, ...]  # the cut's ambient placement
+    # THE ORDERED SEMANTIC CUT ALPHABET: the cut sub-codes this premise
+    # actually presents, in order. It is NOT the number of parent states --
+    # a two-state face and a two-hundred-state face can present the same
+    # two-label alphabet -- and it is what two premises must agree on,
+    # through the transport, to be at the same cut.
+    alphabet: Tuple[int, ...] = ()
+    fibre_sizes: Tuple[int, ...] = ()
+    role: str = ""
+    logical: object = None
+    descriptor: object = None
+    whole_chart: bool = False
+
+    def __post_init__(self):
+        if self.polarity not in ("ingress", "egress"):
+            raise ProvenanceError(
+                f"cut face: polarity {self.polarity!r} is neither ingress nor "
+                f"egress")
+        if not self.factor_ids:
+            raise ProvenanceError("cut face: it names no factor")
+        if len(set(self.factor_ids)) != len(self.factor_ids):
+            raise ProvenanceError(
+                f"cut face: it names {self.factor_ids} with a repeat")
+        if self.cut_id is None or self.origin_cut is None:
+            raise ProvenanceError(
+                "cut face: it carries no cut identity or origin lineage")
+        if len(self.labels) != len(self.codes):
+            raise ProvenanceError(
+                f"cut face: {len(self.labels)} labels for {len(self.codes)} "
+                f"factor states")
+        if len(set(self.codes)) != len(self.codes):
+            raise ProvenanceError("cut face: a factor state repeats a code")
+        if len(set(self.placement)) != len(self.placement):
+            raise ProvenanceError(
+                f"cut face: its placement {self.placement} repeats a wire")
+        if self.n_labels <= 0:
+            raise ProvenanceError("cut face: it projects onto no labels")
+        if self.alphabet:
+            if len(self.alphabet) != self.n_labels:
+                raise ProvenanceError(
+                    f"cut face: it records {len(self.alphabet)} alphabet "
+                    f"symbols for {self.n_labels} labels")
+            if len(set(self.alphabet)) != len(self.alphabet):
+                raise ProvenanceError(
+                    f"cut face: its alphabet {self.alphabet} repeats a symbol")
+            span = 1 << len(self.interface_wires)
+            for a in self.alphabet:
+                if not (0 <= a < span):
+                    raise ProvenanceError(
+                        f"cut face: alphabet symbol {a} is outside the cut's "
+                        f"own {len(self.interface_wires)}-wire space")
+        for L in self.labels:
+            if not (0 <= L < self.n_labels):
+                raise ProvenanceError(
+                    f"cut face: label {L} is outside the recorded "
+                    f"{self.n_labels}")
+        got = [0] * self.n_labels
+        for L in self.labels:
+            got[L] += 1
+        if any(x == 0 for x in got):
+            raise ProvenanceError(
+                f"cut face: labels {[i for i, x in enumerate(got) if not x]} "
+                f"have no states, so the cut is not covered")
+        if self.fibre_sizes and tuple(self.fibre_sizes) != tuple(got):
+            raise ProvenanceError(
+                f"cut face: it records fibre sizes {tuple(self.fibre_sizes)} "
+                f"but its projection gives {tuple(got)}")
+        if len(self.interface_wires) != len(set(self.interface_wires)):
+            raise ProvenanceError(
+                "cut face: its interface placement repeats a wire")
+
+    def recut(self, cut_id, polarity=None):
+        """The SAME face, read at a new occurrence's cut.
+
+        A relay carries its child's face onward; the origin is preserved so
+        the factor is still traceable to where it was actually presented.
+        """
+        return _dataclass_replace(
+            self, cut_id=cut_id,
+            origin_cut=(self.origin_cut if self.origin_cut is not None
+                        else self.cut_id),
+            polarity=polarity or self.polarity)
+
+    @property
+    def fibres(self):
+        """label -> the ordered factor-state indices behind it."""
+        out = [[] for _ in range(self.n_labels)]
+        for i, L in enumerate(self.labels):
+            out[L].append(i)
+        return tuple(tuple(x) for x in out)
+
+    def check_against(self, chart, cut_id, where=""):
+        """This face IS this chart's, at this occurrence's cut."""
+        if self.cut_id != cut_id:
+            raise ProvenanceError(
+                f"{where}the face was issued at cut {self.cut_id!r} but this "
+                f"occurrence's cut is {cut_id!r}; it is a stale face")
+        if chart.route is None:
+            if not self.whole_chart:
+                raise ProvenanceError(
+                    f"{where}the premise records no route, so only an "
+                    f"EXHAUSTIVE atomic face is acceptable: a proper subface "
+                    f"would leave its prefix and context factors unrecorded, "
+                    f"and a join must not assume they are absent")
+            if len(self.codes) != chart.dim:
+                raise ProvenanceError(
+                    f"{where}the atomic face presents {len(self.codes)} "
+                    f"states but the chart has {chart.dim}; it does not "
+                    f"exhaust the premise")
+            rebuilt = tuple(
+                scatter_code(c, self.placement, chart.n_qubits)
+                for c in self.codes)
+            if rebuilt != tuple(chart.codes):
+                raise ProvenanceError(
+                    f"{where}the atomic face reassembles to {rebuilt[:6]}... "
+                    f"but the chart's codes are {tuple(chart.codes)[:6]}...")
+            sup = tuple(chart.support(where))
+            if tuple(self.placement) != sup:
+                raise ProvenanceError(
+                    f"{where}the atomic face is placed on {self.placement} "
+                    f"but the chart's recorded support is {sup}, in that "
+                    f"order")
+            return True
+        hits = [f for f in chart.route.parts
+                if f.factor_id in set(self.factor_ids)]
+        if len(hits) != len(self.factor_ids):
+            raise ProvenanceError(
+                f"{where}the face names {self.factor_ids} but the route "
+                f"resolves {[f.factor_id for f in hits]}; a face must resolve "
+                f"each of its factors exactly once")
+        if len(self.factor_ids) > 1:
+            # A MULTI-FACTOR presentation: the face's codes are the joint
+            # presenter states, first named factor most significant, and its
+            # placement is the presenters' concatenated placement in the
+            # face's own order. The presenters need not be contiguous.
+            by_id = {f.factor_id: f for f in hits}
+            ordered = [by_id[fid] for fid in self.factor_ids]
+            joint = [()]
+            for g in ordered:
+                joint = [c + (cd,) for c in joint for cd in g.codes]
+            want = []
+            for combo in joint:
+                v = 0
+                for g, cd in zip(ordered, combo):
+                    v = (v << g.n_qubits) | cd
+                want.append(v)
+            if tuple(self.codes) != tuple(want):
+                raise ProvenanceError(
+                    f"{where}the face records {len(self.codes)} joint states "
+                    f"but its presenters' ordered product is {len(want)}"
+                    + ("" if len(self.codes) != len(want) else
+                       " with different codes"))
+            place = []
+            for fid in self.factor_ids:
+                idx = chart.route.parts.index(by_id[fid])
+                place.extend(chart.route.placements[idx]
+                             if chart.route.placements else ())
+            if chart.route.placements and \
+                    tuple(self.placement) != tuple(place):
+                raise ProvenanceError(
+                    f"{where}the face is placed on {self.placement} but its "
+                    f"presenters' concatenated placement is {tuple(place)}")
+            return True
+        f = hits[0]
+        if self.role and f.role != self.role:
+            raise ProvenanceError(
+                f"{where}the face records role {self.role!r} but the factor "
+                f"is {f.role!r}")
+        if self.logical is not None and f.logical != self.logical:
+            raise ProvenanceError(
+                f"{where}the face records type {pretty(self.logical)} but the "
+                f"factor is "
+                f"{pretty(f.logical) if f.logical is not None else None}")
+        if self.descriptor is not None and f.descriptor is not self.descriptor:
+            raise ProvenanceError(
+                f"{where}the face records a different descriptor than the "
+                f"factor it names")
+        if tuple(self.codes) != tuple(f.codes):
+            raise ProvenanceError(
+                f"{where}the face records {len(self.codes)} factor states but "
+                f"the factor has {len(f.codes)}")
+        idx = chart.route.parts.index(f)
+        place = tuple(chart.route.placements[idx]) \
+            if chart.route.placements else ()
+        if place and tuple(self.placement) != place:
+            raise ProvenanceError(
+                f"{where}the face is placed on {self.placement} but the route "
+                f"schedules that factor on {place}")
+        return True
+
+
+def branch_cut_symbols(proj, tag_bit, main_wires, ambient_width, where=""):
+    """ONE completed branch's cut alphabet ON THE MAIN COORDINATES.
+
+    Each symbol of the branch's completed projection, in the projection's
+    OWN recorded order, expressed through the projection's own recorded
+    schedule -- the symbol scattered on its label coordinates, the recorded
+    on-cut padding bits fixed, the branch's sector tag applied -- and read
+    off the cut. Fixed padding is PRESERVED as the fixed bits it is, never
+    promoted to semantic states, and fibre coordinates contribute nothing:
+    a fibre that leaks onto the cut is caught by row validation, not
+    absorbed here.
+
+    Nothing row-shaped participates. This is the DEFINITION the Block's
+    rows are later validated against.
+    """
+    W = tuple(main_wires)
+    n = ambient_width
+    mask = 0
+    for w in W:
+        mask |= 1 << (n - 1 - w)
+    if tag_bit & ~mask:
+        raise ProvenanceError(
+            f"{where}the sector tag lies outside the main coordinates {W}")
+    fixed = 0
+    on_cut = set(W)
+    for w, b in proj.padding:
+        if b and w in on_cut:
+            fixed |= 1 << (n - 1 - w)
+    out = []
+    for sym in proj.alphabet:
+        amb = scatter_code(sym, proj.label_wires, n)
+        if amb & ~mask:
+            raise ProvenanceError(
+                f"{where}projected symbol {sym} lies outside the main "
+                f"coordinates {W}")
+        out.append(gather_code(amb | fixed | tag_bit, W, n))
+    if len(set(out)) != len(out):
+        raise ProvenanceError(
+            f"{where}two projected symbols land on one cut symbol: {out}")
+    return tuple(out)
+
+
+def antecedent_main_alphabet(plan, main_wires, polarity, where=""):
+    """The ordered cut alphabet the completed sum's parent presents.
+
+    Built ANTECEDENTLY from each branch's own completed per-polarity
+    projection -- its recorded alphabet, in its recorded order, expressed on
+    the cut coordinates and tagged into the branch's sector -- concatenated
+    in summand order. The Block's rows may CONFIRM this alphabet; they never
+    define, shrink or reorder it. (Replaces `parent_main_alphabet`, which
+    read whole selected-boundary row images and could not tell the payload
+    from the fibre.)
+    """
+    out = []
+    for blk in plan.branches:
+        proj = (blk.ingress_projection if polarity == "ingress"
+                else blk.egress_projection)
+        if proj is None:
+            raise ProvenanceError(
+                f"{where}branch {blk.index} carries no completed {polarity} "
+                f"projection; the antecedent branch projections define the "
+                f"alphabet and are required")
+        out.extend(branch_cut_symbols(
+            proj, plan.tag_bit(blk.index), main_wires, plan.ambient_width,
+            f"{where}branch {blk.index} {polarity}: "))
+    if len(set(out)) != len(out):
+        raise ProvenanceError(
+            f"{where}two summand states land on one cut symbol: {out}")
+    return tuple(out)
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePortRef:
+    """A displayed semantic port occurrence, by MINTED identity.
+
+    `ref` comes from the derivation's provenance scope; `origin_cut` is where
+    that occurrence was introduced; `path` is the structural route to it
+    inside its premise. None of the three is a type, a width or a placement,
+    because two ports can agree on all of those and still be different ports.
+    """
+    ref: str
+    origin_cut: object
+    path: Tuple[str, ...] = ()
+    # THE RECORDED GRAPH-LINK to the external semantic root this port serves.
+    #
+    # An occurrence minted INSIDE a branch -- an Apply result, a spine
+    # residual -- is meaningless to the enclosing sum on its own: the adapter
+    # knows only "the branch's payload root" and "the binding f", and would
+    # have to guess how an internal Apply identity relates to either. So the
+    # link is recorded when the port is minted, by the rule that knows, and
+    # read afterwards. Classification is then a lookup, never a
+    # reconstruction.
+    root: object = None
+
+    def __post_init__(self):
+        if not self.ref:
+            raise ProvenanceError("source port: no minted identity")
+        if self.origin_cut is None:
+            raise ProvenanceError(
+                f"source port {self.ref!r}: no origin cut, so where it was "
+                f"introduced cannot be recovered")
+
+    def linked_to(self, root):
+        """The same port, with its link to an external root recorded ONCE.
+
+        A link is permanent. A later cut that grafts one premise onto another
+        records a SourceSubstitution beside the ports rather than rewriting
+        them: destructively relinking would erase where the occurrence
+        actually came from, which is the only thing that makes it traceable.
+        """
+        if self.root is not None and self.root != root:
+            raise ProvenanceError(
+                f"source port {self.ref!r} is already linked to {self.root!r}; "
+                f"a link is permanent, and a graft records a substitution "
+                f"instead of relinking to {root!r}")
+        return _dataclass_replace(self, root=root)
+
+    def reaches(self, where=""):
+        """The external root this port serves, or a refusal."""
+        if self.root is None:
+            raise ProvenanceError(
+                f"{where}source port {self.ref!r} records no link to an "
+                f"external semantic root, so which side of this branch it "
+                f"serves cannot be read -- only invented")
+        return self.root
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSubstitution:
+    """A recorded graft: which port a cut replaced with which other port.
+
+    SeqCut removes a matched formal port and puts the producer's in its
+    place. That is a fact ABOUT the composition, not a correction to either
+    premise, so it lives here and both original references survive intact.
+    """
+    replaced: str
+    by: str
+    at_cut: object
+    polarity: str
+
+    def __post_init__(self):
+        if self.polarity not in ("ingress", "egress"):
+            raise ProvenanceError(
+                f"source substitution: polarity {self.polarity!r} is neither "
+                f"ingress nor egress")
+        if self.replaced == self.by:
+            raise ProvenanceError(
+                f"source substitution: {self.replaced!r} replaces itself")
+        if self.at_cut is None:
+            raise ProvenanceError(
+                "source substitution: no cut recorded for the graft")
+
+
+@dataclass(frozen=True, slots=True)
+class FactorSource:
+    """The ordered semantic ports a factor's content descends from.
+
+    Usually one. More than one means a constructor combined ports, and then
+    the constructor owes an explicit row projection: a merged factor cannot
+    be classified after the fact without guessing which port it speaks for.
+    """
+    refs: Tuple[SourcePortRef, ...]
+
+    def __post_init__(self):
+        if not self.refs:
+            raise ProvenanceError("factor source: no source ports recorded")
+        ids = [r.ref for r in self.refs]
+        if len(set(ids)) != len(ids):
+            raise ProvenanceError(
+                f"factor source: it names {ids} with a repeat")
+
+    @property
+    def mixed(self) -> bool:
+        return len(self.refs) > 1
+
+    @property
+    def sole(self) -> "SourcePortRef":
+        if self.mixed:
+            raise ProvenanceError(
+                f"factor source {[r.ref for r in self.refs]} combines several "
+                f"ports; it has no single one")
+        return self.refs[0]
+
+
+@dataclass(frozen=True, slots=True)
+class RowProjection:
+    """THE authority: how one polarity's selected rows meet a semantic port.
+
+    One label and one fibre key per selected row. The label projection is
+    MANY-TO-ONE -- 192 rows over six labels, 32 to a fibre -- so a label
+    alone never identifies a row; `(label, fibre_key)` does, bijectively, and
+    that is checked rather than assumed.
+
+    Ingress and egress are separate objects. A premise may present a
+    different alphabet on each side, and collapsing the two is the mistake
+    this type exists to make impossible.
+
+    Ancestry and any payload/fibre partition SUMMARISE this record. They
+    never produce it: nothing here is decided by a factor's role, type,
+    width or placement.
+    """
+    port: SourcePortRef
+    polarity: str
+    alphabet: Tuple[int, ...]
+    labels: Tuple[int, ...]
+    fibre_keys: Tuple[int, ...]
+    presenters: Tuple[str, ...]
+    support: Tuple[int, ...]
+    rows: Tuple[int, ...] = ()
+    padding: Tuple[Tuple[int, int], ...] = ()
+    # THE ASSEMBLY SCHEDULE, recorded by the constructor: which coordinates
+    # carry the semantic symbol and which carry the fibre key, in the chart's
+    # own address space, plus the width they live in. Reconstruction runs
+    # from THIS, so `check_rows` re-derives each row from an independently
+    # recorded placement instead of looking its own triples back up -- a
+    # dictionary keyed on the very rows it is meant to prove would agree with
+    # itself no matter what.
+    label_wires: Tuple[int, ...] = ()
+    fibre_wires: Tuple[int, ...] = ()
+    row_width: int = 0
+
+    def __post_init__(self):
+        if self.polarity not in ("ingress", "egress"):
+            raise ProvenanceError(
+                f"row projection: polarity {self.polarity!r} is neither "
+                f"ingress nor egress")
+        if not self.presenters:
+            raise ProvenanceError(
+                "row projection: it names no presenting factor")
+        if len(set(self.presenters)) != len(self.presenters):
+            raise ProvenanceError(
+                f"row projection: presenters {self.presenters} repeat")
+        if not self.alphabet:
+            raise ProvenanceError(
+                "row projection: the semantic alphabet is empty")
+        if len(set(self.alphabet)) != len(self.alphabet):
+            raise ProvenanceError(
+                f"row projection: alphabet {self.alphabet} repeats a symbol")
+        n = len(self.labels)
+        if len(self.fibre_keys) != n:
+            raise ProvenanceError(
+                f"row projection: {n} labels against {len(self.fibre_keys)} "
+                f"fibre keys")
+        if self.rows and len(self.rows) != n:
+            raise ProvenanceError(
+                f"row projection: {n} labels against {len(self.rows)} rows")
+        if not n:
+            raise ProvenanceError("row projection: it selects no rows")
+        for L in self.labels:
+            if not (0 <= L < len(self.alphabet)):
+                raise ProvenanceError(
+                    f"row projection: label {L} is outside its own "
+                    f"{len(self.alphabet)}-symbol alphabet")
+        pairs = list(zip(self.labels, self.fibre_keys))
+        if len(set(pairs)) != n:
+            raise ProvenanceError(
+                "row projection: two rows share a (label, fibre_key) pair, so "
+                "the pair does not identify a row")
+        covered = set(self.labels)
+        gaps = [i for i in range(len(self.alphabet)) if i not in covered]
+        if gaps:
+            raise ProvenanceError(
+                f"row projection: symbols {[self.alphabet[i] for i in gaps]} "
+                f"have no rows, so the alphabet is not covered")
+        if len(set(self.support)) != len(self.support):
+            raise ProvenanceError(
+                f"row projection: support {self.support} repeats a wire")
+        if self.row_width:
+            lw, fw = tuple(self.label_wires), tuple(self.fibre_wires)
+            if set(lw) & set(fw):
+                raise ProvenanceError(
+                    f"row projection: {sorted(set(lw) & set(fw))} carries both "
+                    f"the semantic symbol and the fibre key")
+            for w in lw + fw + tuple(w for w, _ in self.padding):
+                if not (0 <= w < self.row_width):
+                    raise ProvenanceError(
+                        f"row projection: coordinate {w} is outside a "
+                        f"{self.row_width}-wire row")
+            for a in self.alphabet:
+                if a >= (1 << len(lw)):
+                    raise ProvenanceError(
+                        f"row projection: symbol {a} does not fit its "
+                        f"{len(lw)} label coordinates")
+            for k in self.fibre_keys:
+                if k >= (1 << len(fw)):
+                    raise ProvenanceError(
+                        f"row projection: fibre key {k} does not fit its "
+                        f"{len(fw)} fibre coordinates")
+
+    @property
+    def fibre_sizes(self):
+        out = [0] * len(self.alphabet)
+        for L in self.labels:
+            out[L] += 1
+        return tuple(out)
+
+    def row_of(self, label, fibre_key):
+        """(label, fibre_key) -> the row it identifies. The projection has no
+        inverse from the label alone, and does not pretend to."""
+        for i, (L, k) in enumerate(zip(self.labels, self.fibre_keys)):
+            if L == label and k == fibre_key:
+                return i
+        raise ProvenanceError(
+            f"row projection: no row carries ({label}, {fibre_key})")
+
+    def assemble(self, label, fibre_key):
+        """Rebuild a row from the RECORDED schedule -- symbol on the label
+        coordinates, fibre key on the fibre coordinates, padding fixed."""
+        if not self.row_width:
+            raise ProvenanceError(
+                "row projection: no assembly schedule was recorded, so a row "
+                "cannot be rebuilt independently of the rows themselves")
+        out = 0
+        for w, b in self.padding:
+            if b:
+                out |= 1 << (self.row_width - 1 - w)
+        out |= scatter_code(self.alphabet[label], self.label_wires,
+                            self.row_width)
+        out |= scatter_code(fibre_key, self.fibre_wires, self.row_width)
+        return out
+
+    def check_rows(self, chart, where=""):
+        """It projects THIS chart, and its schedule REBUILDS every row.
+
+        The reconstruction is independent: it runs from the recorded label
+        and fibre coordinates, not from the (label, fibre_key, row) triples
+        being checked.
+        """
+        if not self.rows:
+            raise ProvenanceError(
+                f"{where}the projection records no rows to check")
+        if tuple(self.rows) != tuple(chart.codes):
+            raise ProvenanceError(
+                f"{where}the projection is over rows {tuple(self.rows)[:6]}... "
+                f"but the chart's are {tuple(chart.codes)[:6]}...")
+        if self.row_width and self.row_width != chart.n_qubits:
+            raise ProvenanceError(
+                f"{where}the projection assembles {self.row_width}-wire rows "
+                f"but the chart is over {chart.n_qubits}")
+        for i, row in enumerate(self.rows):
+            got = self.assemble(self.labels[i], self.fibre_keys[i])
+            if got != row:
+                raise ProvenanceError(
+                    f"{where}row {i} is {row} but its recorded schedule "
+                    f"assembles ({self.labels[i]}, {self.fibre_keys[i]}) to "
+                    f"{got}")
+        return True
+
+
+PAYLOAD = "payload"
+FIBRE = "fibre"
+
+
+@dataclass(frozen=True, slots=True)
+class BranchRoleContext:
+    """Which source occurrences are this branch's payload, at ONE polarity.
+
+    Ingress and egress are separate objects, always. A branch may present its
+    semantic main occurrence on one side and a different one on the other --
+    ctrl_ho's egress alphabet is not its ingress alphabet -- and a single
+    mapping serving both is exactly how a polarity gets collapsed.
+
+    The payload root is issued explicitly, including for a branch that
+    captures nothing: "no context" is not "no payload".
+    """
+    polarity: str
+    payload: Tuple[str, ...]        # source refs that ARE this branch's main
+    fibre: Tuple[str, ...]          # captured bindings and inactive resources
+    branch_index: int = -1
+    cut_id: object = None
+
+    def __post_init__(self):
+        if self.polarity not in ("ingress", "egress"):
+            raise ProvenanceError(
+                f"branch role context: polarity {self.polarity!r} is neither "
+                f"ingress nor egress")
+        if not self.payload:
+            raise ProvenanceError(
+                f"branch role context ({self.polarity}): no payload root was "
+                f"issued; a branch with no captured context still presents a "
+                f"main occurrence")
+        clash = set(self.payload) & set(self.fibre)
+        if clash:
+            raise ProvenanceError(
+                f"branch role context ({self.polarity}): {sorted(clash)} is "
+                f"recorded as both payload and fibre")
+
+    def role_of(self, ref, where=""):
+        if ref in set(self.payload):
+            return PAYLOAD
+        if ref in set(self.fibre):
+            return FIBRE
+        raise ProvenanceError(
+            f"{where}source port {ref!r} has no recorded role at "
+            f"{self.polarity}; this branch's role context names "
+            f"{sorted(set(self.payload) | set(self.fibre))}")
+
+
+@dataclass(frozen=True, slots=True)
+class BranchMainProjection:
+    """One prepared branch root's row projection, at ONE polarity.
+
+    A thin typed use of the kernel: the branch's selected rows, the semantic
+    main alphabet it presents, and the fibre key carrying everything it holds
+    beside that. Completion later extends the fibre; it never touches the
+    alphabet.
+    """
+    branch_index: int
+    polarity: str
+    projection: RowProjection
+    roles: BranchRoleContext
+    source_boundary: object = None
+
+    def __post_init__(self):
+        if self.polarity != self.projection.polarity:
+            raise ProvenanceError(
+                f"branch {self.branch_index}: the projection is "
+                f"{self.projection.polarity} but the record says "
+                f"{self.polarity}")
+        if self.polarity != self.roles.polarity:
+            raise ProvenanceError(
+                f"branch {self.branch_index}: the role context is "
+                f"{self.roles.polarity} but the record says {self.polarity}")
+
+    @property
+    def alphabet(self):
+        return self.projection.alphabet
+
+    @property
+    def fibre_sizes(self):
+        return self.projection.fibre_sizes
+
+
+def project_branch_root(chart, roles, *, branch_index, polarity, port,
+                        where=""):
+    """Issue a branch root's row projection from its RECORDED ancestry.
+
+    Every factor is classified by the role its source occurrence has in this
+    branch, at this polarity. The label coordinates are the payload factors'
+    own recorded placements and the fibre coordinates are the rest -- read
+    off the schedule the chart already carries, not chosen here.
+    """
+    if chart.route is None or not chart.route.parts:
+        raise ProvenanceError(
+            f"{where}the branch root records no factors to project")
+    lab_w, fib_w, pres = [], [], []
+    for f, pl in zip(chart.route.parts, chart.route.placements):
+        if f.source is None:
+            raise ProvenanceError(
+                f"{where}factor {f.name!r} carries no ancestry")
+        if f.source.mixed:
+            raise ProvenanceError(
+                f"{where}factor {f.name!r} combines source ports "
+                f"{[r.ref for r in f.source.refs]}; its constructor must "
+                f"issue a row projection for it rather than leave it to be "
+                f"classified")
+        role = roles.role_of(f.source.sole.reaches(where), where)
+        if role == PAYLOAD:
+            pres.append(f.factor_id)
+            lab_w.extend(pl)
+        else:
+            fib_w.extend(pl)
+    if not pres:
+        raise ProvenanceError(
+            f"{where}no factor descends from this branch's payload root")
+    lab_w, fib_w = tuple(lab_w), tuple(fib_w)
+    n = chart.n_qubits
+    alpha, pos = [], {}
+    labels, keys = [], []
+    for c in chart.codes:
+        a = gather_code(c, lab_w, n)
+        if a not in pos:
+            pos[a] = len(alpha)
+            alpha.append(a)
+        labels.append(pos[a])
+        keys.append(gather_code(c, fib_w, n))
+    fixed = tuple((w, (chart.codes[0] >> (n - 1 - w)) & 1)
+                  for w in range(n)
+                  if w not in set(lab_w) and w not in set(fib_w))
+    proj = RowProjection(
+        port=port, polarity=polarity, alphabet=tuple(alpha),
+        labels=tuple(labels), fibre_keys=tuple(keys), presenters=tuple(pres),
+        support=tuple(sorted(set(lab_w) | set(fib_w))),
+        rows=tuple(chart.codes), padding=fixed,
+        label_wires=lab_w, fibre_wires=fib_w, row_width=n)
+    proj.check_rows(chart, where)
+    return BranchMainProjection(branch_index=branch_index, polarity=polarity,
+                                projection=proj, roles=roles)
+
+
+def derive_partition(chart, roles, where=""):
+    """A DIAGNOSTIC SUMMARY of a chart's factor ancestry -- not an authority.
+
+    The authority is the polarity's RowProjection. This only groups factors
+    by the role their recorded source occurrence has in this branch, so a
+    reader can see the split at a glance and a test can check it agrees with
+    the projection. Nothing in the compiler may take a composition decision
+    from it.
+
+    Historically this read: "the payload/fibre split, from ancestry".
+
+    `roles` maps a source occurrence to PAYLOAD or FIBRE -- the
+    occurrence-relative role context the branch's preparation supplied: the
+    payload/source occurrence is payload, every captured binding and every
+    inactive completion resource is fibre. The split is then a lookup, not a
+    decision: `Y_B` descending from the payload source is a presenter, and
+    `Y_B` descending from a captured context is fibre, with nothing about the
+    two factors themselves distinguishing them.
+
+    The result is a validated CACHE of that ancestry, never an authority in
+    its own right.
+    """
+    if chart.route is None:
+        raise ProvenanceError(
+            f"{where}a route-less chart has no factor ancestry to read")
+    pres, fib = [], []
+    for f in chart.route.parts:
+        if f.source is None:
+            raise ProvenanceError(
+                f"{where}factor {f.name!r} records no source occurrence, so "
+                f"whether it presents the payload cannot be read from its "
+                f"ancestry")
+        if isinstance(f.source, (tuple, list)):
+            got = {roles.get(x) for x in f.source}
+            if len(got) != 1 or None in got:
+                raise ProvenanceError(
+                    f"{where}factor {f.name!r} combines payload and carried "
+                    f"ancestry {tuple(f.source)}; a constructor that merges "
+                    f"them must supply an explicit semantic projection "
+                    f"witness")
+            role = got.pop()
+        else:
+            role = roles.get(f.source)
+        if role is None:
+            raise ProvenanceError(
+                f"{where}factor {f.name!r} descends from {f.source!r}, which "
+                f"this occurrence's role context does not name")
+        (pres if role == PAYLOAD else fib).append(f.factor_id)
+    if not pres:
+        raise ProvenanceError(
+            f"{where}no factor descends from the payload source, so this "
+            f"boundary presents nothing")
+    return tuple(pres), tuple(fib)
+
+
+def restrict_to_cut(frame_or_chart, wires, ambient_width, where=""):
+    """The codes a boundary carries ON the cut coordinates alone.
+
+    A VALIDATOR of an already-recorded placement, never a way to discover
+    one. What a premise says away from the cut must be CONSTANT across its
+    own codes -- otherwise the interface is not cut-local and projecting it
+    would invent an agreement that is not there.
+
+    Returns `(cut_codes, off_cut)` where `off_cut` is the constant the
+    premise carries away from the cut.
+    """
+    codes = tuple(frame_or_chart.codes)
+    n = frame_or_chart.n_qubits
+    W = tuple(wires)
+    if n == len(W):
+        return codes, 0
+    if n != ambient_width:
+        raise ProvenanceError(
+            f"{where}the boundary spans {n} wires, which is neither the cut's "
+            f"{len(W)} nor the register's {ambient_width}")
+    outside = tuple(w for w in range(ambient_width) if w not in set(W))
+    ref, out = None, []
+    for c in codes:
+        rest = gather_code(c, outside, ambient_width)
+        if ref is None:
+            ref = rest
+        elif rest != ref:
+            raise ProvenanceError(
+                f"{where}the boundary varies off the cut {W} (code {c} "
+                f"carries {rest} where an earlier one carried {ref}), so it "
+                f"is not a cut-local interface")
+        out.append(gather_code(c, W, ambient_width))
+    if len(set(out)) != len(out):
+        raise ProvenanceError(
+            f"{where}restricting to the cut {W} collapses two states onto one "
+            f"code, so the cut does not separate them")
+    return tuple(out), (ref or 0)
+
+
+@dataclass(frozen=True, slots=True)
+class InterfaceEmbedding:
+    """WHERE one polarity's effective interface lives, as the derivation says.
+
+    This is the cut-facing interface, recorded independently per polarity: the
+    ordered placement needed to reproduce that occurrence's EFFECTIVE Frame in
+    the ambient register. It is not the completed Block's support, not the set
+    of varying bits, not `Frame.n_qubits`, not a slot width, and not something
+    recovered by trying candidate restrictions until one holds.
+
+    The distinction it exists for: an open sum's effective output Frame spans
+    the whole register while its RESULT lives on three coordinates, and a
+    nested splice's five-wire output genuinely needs all five. Those two are
+    indistinguishable from widths and bit patterns, and telling them apart by
+    experiment is what this record replaces.
+
+    `ordered_wires` selects the support. Codes may VALIDATE the record; they
+    never choose it.
+
+    WHAT RECONSTRUCTION PROVES: the exact typed ordered-code embedding, and
+    only that. It does not reproduce a Frame's ports, sectors, label or
+    expression metadata, and a completion port is never copied into a cut
+    interface -- the cut is the typed interface, not the completed boundary.
+    """
+    ambient_width: int
+    ordered_wires: Tuple[int, ...]
+    local_codes: Tuple[int, ...]
+    frame_width: int
+    complement: int = 0
+    logical: object = None
+    cut_id: object = None            # the CURRENT occurrence's cut
+    origin_cut: object = None        # where this interface was first selected
+    polarity: str = "ingress"
+
+    def __post_init__(self):
+        if self.polarity not in ("ingress", "egress"):
+            raise ProvenanceError(
+                f"interface embedding: polarity {self.polarity!r} is neither "
+                f"ingress nor egress")
+        w = self.ordered_wires
+        if len(set(w)) != len(w):
+            raise ProvenanceError(
+                f"interface embedding: wires {w} repeat a coordinate")
+        for x in w:
+            if not (0 <= x < self.ambient_width):
+                raise ProvenanceError(
+                    f"interface embedding: wire {x} is outside a "
+                    f"{self.ambient_width}-wire register")
+        if len(set(self.local_codes)) != len(self.local_codes):
+            raise ProvenanceError(
+                "interface embedding: its ordered codes repeat")
+        for c in self.local_codes:
+            if not (0 <= c < (1 << len(w))):
+                raise ProvenanceError(
+                    f"interface embedding: code {c} is outside its own "
+                    f"{len(w)}-wire space")
+        if self.frame_width not in (len(w), self.ambient_width):
+            raise ProvenanceError(
+                f"interface embedding: it reconstructs a {self.frame_width}-"
+                f"wire frame, which is neither its own {len(w)} coordinates "
+                f"nor the register's {self.ambient_width}")
+        if self.frame_width == len(w) and self.complement:
+            raise ProvenanceError(
+                "interface embedding: a frame at interface width carries no "
+                "complement, but one is recorded")
+        for x in w:
+            if (self.complement >> (self.ambient_width - 1 - x)) & 1:
+                raise ProvenanceError(
+                    f"interface embedding: the complement claims wire {x}, "
+                    f"which the interface itself occupies; the fixed part and "
+                    f"the interface are disjoint by construction")
+
+    def require_provenance(self, where=""):
+        """A record a production cut consumes carries its own identity.
+
+        A missing cut is not a benign default: it is an interface nobody can
+        say they selected, and composing across one would attribute it to
+        whichever occurrence happened to read it.
+        """
+        if self.cut_id is None or self.cut_id == "":
+            raise ProvenanceError(
+                f"{where}the interface record carries no cut identity")
+        if self.origin_cut is None or self.origin_cut == "":
+            raise ProvenanceError(
+                f"{where}the interface record carries no origin lineage, so "
+                f"where it was first selected cannot be recovered")
+        return True
+
+    def recut(self, cut_id, polarity=None):
+        """The SAME interface, read at a new occurrence's cut.
+
+        The origin is preserved: an interface inherited across a Seq was
+        selected by the child, and presenting it as freshly selected here
+        would lose exactly the lineage a consumer needs.
+        """
+        return _dataclass_replace(
+            self, cut_id=cut_id,
+            origin_cut=(self.origin_cut if self.origin_cut is not None
+                        else self.cut_id),
+            polarity=polarity or self.polarity)
+
+    @property
+    def width(self) -> int:
+        return len(self.ordered_wires)
+
+    def reconstruct(self) -> "Frame":
+        """The effective Frame this record describes -- byte for byte."""
+        if self.frame_width == len(self.ordered_wires):
+            codes = tuple(self.local_codes)
+        else:
+            codes = tuple(
+                scatter_code(c, self.ordered_wires, self.ambient_width)
+                | self.complement for c in self.local_codes)
+        return Frame(logical=self.logical, n_qubits=self.frame_width,
+                     codes=codes, label="interface")
+
+    def check_reconstructs(self, frame, where=""):
+        """It IS this frame -- same TYPE, same codes, same order, same width.
+
+        Equal width and equal codes are not enough: Q(x)Q and Q-oQ are both
+        four states on two wires, and an interface that validated against
+        either would let a cut splice a pair onto a function.
+        """
+        got = self.reconstruct()
+        if self.logical != frame.logical:
+            raise ProvenanceError(
+                f"{where}the interface record is typed "
+                f"{pretty(self.logical) if self.logical is not None else None}"
+                f" but the occurrence's frame is "
+                f"{pretty(frame.logical) if frame.logical is not None else None}")
+        if got.n_qubits != frame.n_qubits:
+            raise ProvenanceError(
+                f"{where}the interface record reconstructs a "
+                f"{got.n_qubits}-wire frame but the occurrence's is "
+                f"{frame.n_qubits}")
+        if tuple(got.codes) != tuple(frame.codes):
+            raise ProvenanceError(
+                f"{where}the interface record reconstructs {tuple(got.codes)} "
+                f"but the occurrence's frame is {tuple(frame.codes)}; the "
+                f"recorded placement does not describe it")
+        return True
+
+    def transported(self, transport, cut_id=None, polarity=None):
+        """This interface carried through THE recorded cut transport.
+
+        A transported interface keeps its origin: it was selected where it
+        was selected, and the transport moved it, it did not re-select it.
+        """
+        if tuple(transport.wires) != tuple(self.ordered_wires):
+            raise ProvenanceError(
+                f"the transport acts on {tuple(transport.wires)} but this "
+                f"interface lives on {tuple(self.ordered_wires)}; they are "
+                f"not the same placement")
+        if transport.ambient_width != self.ambient_width:
+            raise ProvenanceError(
+                f"the transport is over {transport.ambient_width} wires but "
+                f"this interface is over {self.ambient_width}")
+        moved = _dataclass_replace(
+            self, local_codes=tuple(transport.forward[c]
+                                    for c in self.local_codes),
+            polarity=polarity or self.polarity)
+        return moved.recut(cut_id, polarity) if cut_id is not None else moved
+
+
+def interface_from_frame(frame, wires, ambient_width, *, logical=None,
+                         cut_id=None, origin_cut=None, polarity="ingress",
+                         where=""):
+    """Record an interface at an ALREADY-CHOSEN placement.
+
+    The caller supplies the wires because the caller is the rule that placed
+    the interface. This only restricts the frame onto them and checks that
+    what is left over is genuinely fixed. Selecting here IS the origin, so
+    `origin_cut` defaults to this occurrence's own cut.
+    """
+    codes, comp = restrict_to_cut(frame, wires, ambient_width, where)
+    outside = tuple(x for x in range(ambient_width) if x not in set(wires))
+    rec = InterfaceEmbedding(
+        ambient_width=ambient_width, ordered_wires=tuple(wires),
+        local_codes=tuple(codes), frame_width=frame.n_qubits,
+        complement=(scatter_code(comp, outside, ambient_width)
+                    if frame.n_qubits == ambient_width else 0),
+        logical=(logical if logical is not None else frame.logical),
+        cut_id=cut_id,
+        origin_cut=(origin_cut if origin_cut is not None else cut_id),
+        polarity=polarity)
+    rec.check_reconstructs(frame, where)
+    return rec
+
+
+@dataclass(frozen=True, slots=True)
+class JoinRoute:
+    """A CORRELATED relational result, kept as what it is.
+
+    `ChartRoute` means a reconstructible Cartesian Repart(Par(...)) and keeps
+    that meaning. A cut join is not that in general: 192 Block states meet a
+    six-state cut, so the result is a relation with one row per surviving
+    state, not a product that can be rebuilt from per-factor codes.
+
+    Every row records the pair it came from, so nothing is lost and nothing
+    is invented: the producer label, the consumer label, and the ordered
+    factor coordinates the composite state carries.
+    """
+    label: str
+    parts: Tuple[ChartFactor, ...]          # ordered surviving factors
+    placements: Tuple[Tuple[int, ...], ...]
+    rows: Tuple[Tuple[int, ...], ...]       # per state: factor coordinates
+    sources: Tuple[Tuple[int, int], ...]    # per state: (producer, consumer)
+    codes: Tuple[int, ...]                  # per state: the ambient code
+    support: Tuple[int, ...]
+    n_qubits: int
+    producer_face: object = None
+    consumer_face: object = None
+    transport: object = None
+    kind: str = "join"
+    # The recorded GRAFTS this join performed: which formal port each
+    # polarity's cut replaced with which actual one. Both original
+    # SourcePortRefs survive on the retained factors; nothing is relinked.
+    substitutions: Tuple["SourceSubstitution", ...] = ()
+
+    @property
+    def reconstructible(self) -> bool:
+        return False                        # a relation is not a schedule
+
+    def decode(self, ambient_code):
+        """One relation row, EXACTLY: the ordered factor coordinates and the
+        (producer, consumer) source pair behind this ambient code -- or a
+        refusal. Nothing is interpolated: a code the relation does not
+        record has no row."""
+        for i, c in enumerate(self.codes):
+            if c == ambient_code:
+                return self.rows[i], self.sources[i]
+        raise ProvenanceError(
+            f"join route {self.label}: ambient code {ambient_code} is not a "
+            f"state of this relation")
+
+    def moved(self, wire_map, ambient_width, label=None):
+        """The SAME relation, re-addressed wire-by-wire. Rows, source pairs
+        and factor identities are untouched; only where the coordinates sit
+        changes. `wire_map` maps every current support wire."""
+        places = tuple(tuple(wire_map[w] for w in pl)
+                       for pl in self.placements)
+        codes = []
+        for row in self.rows:
+            c = 0
+            for coord, pl in zip(row, places):
+                c |= scatter_code(coord, pl, ambient_width)
+            codes.append(c)
+        if len(set(codes)) != len(codes):
+            raise ProvenanceError(
+                f"join route {self.label}: the re-addressing collapses two "
+                f"states")
+        return _dataclass_replace(
+            self, label=(label or self.label), placements=places,
+            codes=tuple(codes),
+            support=tuple(sorted(wire_map[w] for w in self.support)),
+            n_qubits=ambient_width)
+
+    def __post_init__(self):
+        n = len(self.rows)
+        if len(self.sources) != n or len(self.codes) != n:
+            raise ProvenanceError(
+                f"join route {self.label}: {n} rows against "
+                f"{len(self.sources)} sources and {len(self.codes)} codes")
+        if not n:
+            raise ProvenanceError(
+                f"join route {self.label}: the relation is empty")
+        if len(set(self.codes)) != n:
+            raise ProvenanceError(
+                f"join route {self.label}: two states share an ambient code, "
+                f"so the join is not injective")
+        if len(set(self.sources)) != n:
+            raise ProvenanceError(
+                f"join route {self.label}: two states claim the same "
+                f"(producer, consumer) pair")
+        if len(self.parts) != len(self.placements):
+            raise ProvenanceError(
+                f"join route {self.label}: {len(self.parts)} factors against "
+                f"{len(self.placements)} placements")
+        ids = [f.factor_id for f in self.parts]
+        if len(set(ids)) != len(ids):
+            raise ProvenanceError(
+                f"join route {self.label}: it retains one factor twice {ids}")
+        for r in self.rows:
+            if len(r) != len(self.parts):
+                raise ProvenanceError(
+                    f"join route {self.label}: a row has {len(r)} "
+                    f"coordinates for {len(self.parts)} factors")
+            for j, c in enumerate(r):
+                if c not in self.parts[j].codes:
+                    raise ProvenanceError(
+                        f"join route {self.label}: row coordinate {c} is not "
+                        f"a state of factor {self.parts[j].name!r}")
+
+    def as_chart_route(self):
+        """A ChartRoute ONLY when the rows independently prove a complete
+        Cartesian product and a recorded scatter schedule rebuilds the codes
+        exactly. Otherwise the result stays correlated, and says so."""
+        want = 1
+        for f in self.parts:
+            want *= len(f.codes)
+        if want != len(self.rows) or len(set(self.rows)) != len(self.rows):
+            return None
+        rep, pl = scatter_repart(self.placements, self.n_qubits)
+        try:
+            ch = par_then_repart(self.parts, rep, self.n_qubits, self.label,
+                                 placements=pl, kind="scatter")
+        except ProvenanceError:
+            return None
+        if tuple(ch.codes) != tuple(self.codes):
+            return None
+        return ch.route
+
+
+@dataclass(frozen=True, slots=True)
+class FaceSplit:
+    """ONE premise split at its recorded cut face, at one polarity.
+
+    `presenters` are the EXACT ordered factors the face names, resolved by
+    recorded factor id -- several are allowed, and they need not be
+    contiguous in the route. `rest` is every unmatched factor, in the
+    route's original order, with its placement. `row_labels` is the full
+    parent-state-to-face-label projection, and `joint_place` the
+    concatenated presenter placement the face's codes are written on.
+    Ancestry travels on the factors themselves; nothing here is selected by
+    role, type, dimension, wire containment or varying bits.
+    """
+    presenters: Tuple[ChartFactor, ...]
+    presenter_places: Tuple[Tuple[int, ...], ...]
+    rest: Tuple[ChartFactor, ...]
+    rest_places: Tuple[Tuple[int, ...], ...]
+    row_labels: Tuple[int, ...]
+    joint_place: Tuple[int, ...]
+
+
+def split_at_face(chart, face, n, where=""):
+    """Split one premise chart at its recorded CutFace.
+
+    Every presenter is resolved by its recorded factor id, in the FACE's
+    order; the face's codes are the joint presenter states (first named
+    factor most significant); and each parent state's face label is read by
+    following its joint presenter coordinate into the face's own record.
+    """
+    if chart.route is None:
+        if not face.whole_chart:
+            raise ProvenanceError(
+                f"{where}a route-less premise needs an exhaustive atomic "
+                f"face")
+        if len(face.labels) != len(chart.codes):
+            raise ProvenanceError(
+                f"{where}the atomic face records {len(face.labels)} labels "
+                f"for {len(chart.codes)} premise states")
+        one = ChartFactor(factor_id=face.factor_ids[0],
+                          name=chart.label or "u", owner=None,
+                          n_qubits=len(face.placement),
+                          codes=tuple(face.codes),
+                          role=face.role or "residual", logical=face.logical)
+        return FaceSplit(presenters=(one,),
+                         presenter_places=(tuple(face.placement),),
+                         rest=(), rest_places=(),
+                         row_labels=tuple(face.labels),
+                         joint_place=tuple(face.placement))
+    if face.whole_chart and len(chart.route.parts) == 1:
+        # An EXHAUSTIVE face says the whole premise is one factor, and it was
+        # validated against the premise before it was placed. A lift gives
+        # that same single factor its ambient placement and mints its own id
+        # for it; the face still names the one factor there is, so it is
+        # matched by the recorded exhaustiveness rather than by an id the
+        # lift chose after the face was issued.
+        pres = (chart.route.parts[0],)
+        pres_pl = (tuple(chart.route.placements[0]),)
+    else:
+        by_id = {}
+        for f, pl in zip(chart.route.parts, chart.route.placements):
+            if f.factor_id in by_id:
+                raise ProvenanceError(
+                    f"{where}the route resolves factor id "
+                    f"{f.factor_id!r} twice")
+            by_id[f.factor_id] = (f, tuple(pl))
+        missing = [fid for fid in face.factor_ids if fid not in by_id]
+        if missing:
+            raise ProvenanceError(
+                f"{where}the face names {tuple(face.factor_ids)}, but "
+                f"{missing} is not in this premise's route")
+        pres = tuple(by_id[fid][0] for fid in face.factor_ids)
+        pres_pl = tuple(by_id[fid][1] for fid in face.factor_ids)
+    named = set(face.factor_ids) | {f.factor_id for f in pres}
+    rest, rest_pl = [], []
+    for f, pl in zip(chart.route.parts, chart.route.placements):
+        if f.factor_id not in named:
+            rest.append(f)
+            rest_pl.append(tuple(pl))
+    joint_place = tuple(w for pl in pres_pl for w in pl)
+    # PARENT state -> face label, through the presenters' own recorded
+    # placements and the face's own recorded joint codes. A face records
+    # one label per JOINT presenter state; a parent chart may carry many
+    # parent states per joint state, and every one of them follows its
+    # recorded coordinate -- no scan for which bits vary.
+    at = {c: i for i, c in enumerate(face.codes)}
+    labels = []
+    for c in chart.codes:
+        sub = 0
+        for f, pl in zip(pres, pres_pl):
+            sub = (sub << f.n_qubits) | gather_code(c, pl, n)
+        if sub not in at:
+            raise ProvenanceError(
+                f"{where}a premise state carries {sub} on the face's "
+                f"presenters, which the face does not record as a state")
+        j = at[sub]
+        if j >= len(face.labels):
+            raise ProvenanceError(
+                f"{where}the face records no label for its state {j}")
+        labels.append(face.labels[j])
+    return FaceSplit(presenters=pres, presenter_places=pres_pl,
+                     rest=tuple(rest), rest_places=tuple(rest_pl),
+                     row_labels=tuple(labels), joint_place=joint_place)
+
+
+def seq_cut(producer, consumer, transport, *, producer_support,
+            consumer_support, producer_face, consumer_face,
+            producer_ingress_face=None, consumer_egress_face=None,
+            producer_interface=None, consumer_interface=None,
+            widened_frame=None, where="", label="seq:cut"):
+    """Compose two occurrence boundaries across the cut Seq actually selected.
+
+        physical:   A G A^dagger F          (F, then A^dagger, then G, then A)
+
+    and this describes THAT circuit. It emits nothing.
+
+    THE JOIN IS RELATIONAL, through the two recorded CutFaces. A composite
+    state is a pair of premise states whose recorded cut LABELS the transport
+    relates -- not a pair whose cut bits happen to agree, and not a lookup
+    keyed on a cut label, which cannot work at all: 192 Block states project
+    onto six labels with 32 in every fibre, and all 192 survive.
+
+    Both premises keep everything they brought. The producer's prefix
+    factors, the one shared cut, and the consumer's context factors all
+    appear, in that order, with their identities, owners, roles, types,
+    descriptors and sparse orders intact.
+
+    THE PRODUCER'S ACTION IS NOT COMPOSED INTO THE LAYOUT. A cut composes
+    LAYOUTS: the matched producer-output state at recorded label m contributes
+    the producer-INPUT state at that same label m. Inverting the producer's
+    physical action into the ingress would gauge it away -- an X before a
+    completed identity would compose to a reported identity.
+    """
+    n = transport.ambient_width
+    W = tuple(transport.wires)
+    P_in, P_out = producer.ingress, producer.egress
+    C_in, C_out = consumer.ingress, consumer.egress
+    for nm, ch in (("producer ingress", P_in), ("producer egress", P_out),
+                   ("consumer ingress", C_in), ("consumer egress", C_out)):
+        if ch.space != "ambient":
+            raise ProvenanceError(
+                f"{where}the {nm} chart is {ch.space!r}, not ambient")
+        if ch.n_qubits != n:
+            raise ProvenanceError(
+                f"{where}the {nm} chart spans {ch.n_qubits} wires but the cut "
+                f"is over {n}")
+    if P_in.dim != P_out.dim:
+        raise ProvenanceError(
+            f"{where}the producer's boundary is {P_in.dim} in and "
+            f"{P_out.dim} out; the two polarities do not balance")
+    if C_in.dim != C_out.dim:
+        raise ProvenanceError(
+            f"{where}the consumer's boundary is {C_in.dim} in and "
+            f"{C_out.dim} out")
+    if producer_face is None or consumer_face is None:
+        raise ProvenanceError(
+            f"{where}a cut needs a recorded face on each side; without one "
+            f"the factor presenting the cut would have to be guessed")
+    if producer_face.polarity != "egress":
+        raise ProvenanceError(
+            f"{where}the producer's face is {producer_face.polarity}, not "
+            f"egress")
+    if consumer_face.polarity != "ingress":
+        raise ProvenanceError(
+            f"{where}the consumer's face is {consumer_face.polarity}, not "
+            f"ingress")
+    # NOTE on cut identities: a premise that is itself a composite carries
+    # an ingress face descending from ITS producer and an egress face from
+    # ITS consumer, with different origin cuts -- so the two faces of one
+    # premise are not required to share a cut id. Staleness is caught
+    # structurally instead: every face must present exactly its chart's
+    # recorded factors, codes and placements below.
+    if producer_ingress_face is not None and \
+            producer_ingress_face.polarity != "ingress":
+        raise ProvenanceError(
+            f"{where}the producer's ingress face is recorded at polarity "
+            f"{producer_ingress_face.polarity!r}")
+    if consumer_egress_face is not None and \
+            consumer_egress_face.polarity != "egress":
+        raise ProvenanceError(
+            f"{where}the consumer's egress face is recorded at polarity "
+            f"{consumer_egress_face.polarity!r}")
+    # EXPLICIT, NONEMPTY ORDERED ALPHABETS. An absent alphabet would make
+    # label ordinals the only currency, and matching ordinals is exactly the
+    # positional trap this join exists to close.
+    for nm, f in (("producer", producer_face), ("consumer", consumer_face)):
+        if not f.alphabet:
+            raise ProvenanceError(
+                f"{where}the {nm}'s face records no ordered cut alphabet; "
+                f"the cut cannot be matched by label position")
+    if producer_face.n_labels != consumer_face.n_labels:
+        raise ProvenanceError(
+            f"{where}the producer presents {producer_face.n_labels} cut "
+            f"symbols and the consumer {consumer_face.n_labels}; they are not "
+            f"the same cut")
+    # THE FACES ARE THIS CUT'S. Each validates against the chart it claims
+    # to present -- recorded factor ids, codes and placements, never a guess
+    # -- and against the cut placement the transport actually binds. An
+    # EXHAUSTIVE face over a single-factor route follows the recorded
+    # exhaustiveness convention: a lift mints its own id for the one factor
+    # there is, and the face still names that factor by presenting exactly
+    # its codes on exactly its placement.
+    _p_if0 = producer_ingress_face or producer_face
+    _c_ef0 = consumer_egress_face or consumer_face
+
+    def _check_face(f, ch, nm):
+        if ch.route is not None and f.whole_chart \
+                and len(ch.route.parts) == 1:
+            # The face may have been issued on the premise's own local
+            # coordinates before the lift placed it; the codes are the
+            # identity, and the lift's own recorded placement is where the
+            # one factor now sits.
+            g = ch.route.parts[0]
+            if tuple(f.codes) != tuple(g.codes):
+                raise ProvenanceError(
+                    f"{where}{nm} face: the exhaustive face records "
+                    f"{len(f.codes)} states but the premise's one factor has "
+                    f"{len(g.codes)}, or different codes")
+            return
+        f.check_against(ch, f.cut_id, f"{where}{nm} face: ")
+
+    for nm, f, ch in (("producer egress", producer_face, P_out),
+                      ("producer ingress", _p_if0, P_in),
+                      ("consumer ingress", consumer_face, C_in),
+                      ("consumer egress", _c_ef0, C_out)):
+        _check_face(f, ch, nm)
+    # A premise's face presents the cut either on the completed COMMON
+    # placement or on the premise's OWN recorded placement inside it (the
+    # completion certificate is what relates the two). Anything else is a
+    # face of a different cut. When a face sits on the premise's own
+    # narrower placement, its symbols are EMBEDDED into the common cut
+    # space through that recorded placement -- never through a guess.
+    def _embedding(f, prem_wires, nm):
+        if set(f.interface_wires) == set(W):
+            return None
+        pw = tuple(prem_wires)
+        if pw and tuple(f.interface_wires) == pw:
+            if transport.completion is None:
+                raise ProvenanceError(
+                    f"{where}the {nm}'s face presents the cut on "
+                    f"{tuple(f.interface_wires)}, inside the cut "
+                    f"{tuple(W)}, but no completion records why the two "
+                    f"placements meet at one cut")
+            return pw
+        raise ProvenanceError(
+            f"{where}the {nm}'s face presents the cut on "
+            f"{tuple(f.interface_wires)} but the transport binds "
+            f"{tuple(W)} (premise placement {pw or tuple(W)}); it is a "
+            f"face of a different cut")
+
+    p_emb = _embedding(producer_face, transport.producer_wires, "producer")
+    c_emb = _embedding(consumer_face, transport.consumer_wires, "consumer")
+    _w_mask = 0
+    for w in W:
+        _w_mask |= 1 << (n - 1 - w)
+
+    def _embed_sym(sym, emb, nm):
+        if emb is None:
+            return sym
+        amb = scatter_code(sym, emb, n)
+        if amb & ~_w_mask:
+            raise ProvenanceError(
+                f"{where}the {nm}'s cut symbol {sym} lies outside the "
+                f"completed cut {tuple(W)}")
+        return gather_code(amb, W, n)
+
+    p_alpha = tuple(_embed_sym(a, p_emb, "producer")
+                    for a in producer_face.alphabet)
+    c_alpha = tuple(_embed_sym(a, c_emb, "consumer")
+                    for a in consumer_face.alphabet)
+    for nm, alpha in (("producer", p_alpha), ("consumer", c_alpha)):
+        if len(set(alpha)) != len(alpha):
+            raise ProvenanceError(
+                f"{where}two of the {nm}'s cut symbols embed onto one code")
+        for a in alpha:
+            if not (0 <= a < len(transport.forward)):
+                raise ProvenanceError(
+                    f"{where}the {nm}'s cut symbol {a} is outside the "
+                    f"transport's own {len(transport.forward)}-code space")
+    # THE TRANSPORT IS THE SELECTED ONE: built for exactly the cut codes the
+    # consumer's face presents, in their recorded order, and its producer
+    # side must present exactly the codes the transport was selected onto.
+    transport.check_selected(
+        c_alpha, tuple(transport.forward[a] for a in c_alpha), where)
+    if set(p_alpha) != set(transport.producer_codes):
+        raise ProvenanceError(
+            f"{where}the producer's face presents {p_alpha} but the "
+            f"selected transport records {tuple(transport.producer_codes)}; "
+            f"they are not the same cut")
+    # A COMPLETION travels with its transport, and is re-validated HERE
+    # against the two recorded interfaces and the widened frame -- a caller
+    # may prevalidate, but this join must be independently safe.
+    if transport.completion is not None:
+        if producer_interface is None or consumer_interface is None or \
+                widened_frame is None:
+            raise ProvenanceError(
+                f"{where}the transport carries a cut completion, but the two "
+                f"interface embeddings and the widened frame were not "
+                f"supplied, so it cannot be validated here")
+        transport.completion.check_against(
+            producer_interface, consumer_interface,
+            transport.completion.cut_id, widened_frame, where)
+
+    def _pair(x, nm):
+        if isinstance(x, tuple) and len(x) == 2 and \
+                all(isinstance(y, tuple) for y in x):
+            return tuple(x[0]), tuple(x[1])
+        raise ProvenanceError(
+            f"{where}the {nm} support must be recorded per polarity as "
+            f"(ingress, egress); got {x!r}")
+    p_in_sup, p_out_sup = _pair(producer_support, "producer")
+    c_in_sup, c_out_sup = _pair(consumer_support, "consumer")
+    for nm, sup, ch in (("producer ingress", p_in_sup, P_in),
+                        ("producer egress", p_out_sup, P_out),
+                        ("consumer ingress", c_in_sup, C_in),
+                        ("consumer egress", c_out_sup, C_out)):
+        own = ch.support(f"{where}{nm}: ")
+        if set(sup) != set(own):
+            raise ProvenanceError(
+                f"{where}the supplied {nm} support {tuple(sorted(sup))} is "
+                f"not the chart's own recorded {tuple(sorted(own))}")
+
+    # THE CORRESPONDENCE, SYMBOL BY SYMBOL through the transport. A consumer
+    # label presenting symbol c meets the producer label presenting
+    # forward[c] -- wherever in the producer's recorded order that symbol
+    # sits. Label ordinal i is NEVER equated with label ordinal i: sparse
+    # and reordered alphabets are the ordinary case, not an exception.
+    # Symbols compare in the CUT's own space, each side embedded through its
+    # recorded placement when a completion widened the cut.
+    p_at = {a: i for i, a in enumerate(p_alpha)}
+    lab_of_consumer = {}
+    for i, c in enumerate(c_alpha):
+        moved = transport.forward[c]
+        if moved not in p_at:
+            raise ProvenanceError(
+                f"{where}the transport carries the consumer's cut symbol {c} "
+                f"to {moved}, which the producer's alphabet "
+                f"{p_alpha} does not present")
+        lab_of_consumer[i] = p_at[moved]
+
+    # Each polarity is split by ITS OWN recorded face. The two share one
+    # factor lineage but their codes and placements are recorded
+    # independently, so using the egress face on the ingress chart would ask
+    # one polarity to answer for the other.
+    p_if = producer_ingress_face or producer_face
+    c_ef = consumer_egress_face or consumer_face
+    p_in_sp = split_at_face(P_in, p_if, n, f"{where}producer ingress: ")
+    p_out_sp = split_at_face(P_out, producer_face, n,
+                             f"{where}producer egress: ")
+    c_in_sp = split_at_face(C_in, consumer_face, n,
+                            f"{where}consumer ingress: ")
+    c_out_sp = split_at_face(C_out, c_ef, n, f"{where}consumer egress: ")
+
+    p_proj = p_out_sp.row_labels
+    c_proj = c_in_sp.row_labels
+
+    def _lineage(f):
+        if f.source is None:
+            return None
+        return tuple((r.ref, r.origin_cut, r.root) for r in f.source.refs)
+
+    def _coequalize(p_parts, p_places, c_rest, c_rest_pl, pol_nm):
+        """A GENUINELY shared non-cut resource appears exactly once.
+
+        Named by recorded owner on both premises, and kept only under EXACT
+        agreement -- owner, logical type, ordered codes, placement, and the
+        full recorded source lineage. Anything less is two different
+        resources wearing one owner, and the overlap is refused rather than
+        silently overwritten.
+        """
+        p_by_owner = {}
+        for f, pl in zip(p_parts, p_places):
+            if f.owner is not None:
+                p_by_owner.setdefault(f.owner, []).append((f, tuple(pl)))
+        keep, keep_pl, coeq = [], [], set()
+        for f, pl in zip(c_rest, c_rest_pl):
+            hits = p_by_owner.get(f.owner) if f.owner is not None else None
+            if not hits:
+                keep.append(f)
+                keep_pl.append(tuple(pl))
+                continue
+            if len(hits) > 1:
+                raise ProvenanceError(
+                    f"{where}the producer carries owner {f.owner!r} twice at "
+                    f"{pol_nm}; which copy the consumer's shares is not "
+                    f"derivable")
+            pf, ppl = hits[0]
+            if not (pf.logical == f.logical
+                    and tuple(pf.codes) == tuple(f.codes)
+                    and ppl == tuple(pl)
+                    and _lineage(pf) == _lineage(f)):
+                raise ProvenanceError(
+                    f"{where}both premises carry owner {f.owner!r} at "
+                    f"{pol_nm} but the two records disagree on type, codes, "
+                    f"placement or source lineage; a shared resource is one "
+                    f"resource, and this overlap is refused rather than "
+                    f"overwritten")
+            coeq |= set(pl)
+        return tuple(keep), tuple(keep_pl), coeq
+
+    _p_retained_in = tuple(p_in_sp.rest) + tuple(p_in_sp.presenters)
+    _p_retained_in_pl = tuple(p_in_sp.rest_places) \
+        + tuple(p_in_sp.presenter_places)
+    c_ctx_in, c_ctx_in_pl, coeq_in = _coequalize(
+        _p_retained_in, _p_retained_in_pl,
+        c_in_sp.rest, c_in_sp.rest_places, "ingress")
+    _p_rest_out = tuple(p_out_sp.rest)
+    _p_rest_out_pl = tuple(p_out_sp.rest_places)
+    c_ctx_out, c_ctx_out_pl, coeq_out = _coequalize(
+        _p_rest_out, _p_rest_out_pl,
+        c_out_sp.rest, c_out_sp.rest_places, "egress")
+
+    # SUPPORT OVERLAP IS NEVER OVERWRITTEN SILENTLY. The premises may share
+    # coordinates only where the cut substitutes the formal port, or where a
+    # coequalized shared resource sits -- anywhere else, two premises are
+    # claiming one wire for two different resources.
+    _over_in = set(p_in_sup) & set(c_in_sup)
+    _ok_in = set(c_in_sp.joint_place) | coeq_in
+    if not _over_in <= _ok_in:
+        raise ProvenanceError(
+            f"{where}the two premises' ingress supports overlap on "
+            f"{sorted(_over_in - _ok_in)}, which is neither the cut nor a "
+            f"recorded shared resource; refusing to overwrite it silently")
+    _over_out = set(p_out_sup) & set(c_out_sup)
+    _ok_out = set(p_out_sp.joint_place) | coeq_out
+    if not _over_out <= _ok_out:
+        raise ProvenanceError(
+            f"{where}the two premises' egress supports overlap on "
+            f"{sorted(_over_out - _ok_out)}, which is neither the cut nor a "
+            f"recorded shared resource; refusing to overwrite it silently")
+
+    ing, egr, sources = [], [], []
+    for p_lab in range(len(P_out.codes)):
+        p_face_lab = p_proj[p_lab]
+        for c_lab in range(len(C_in.codes)):
+            if lab_of_consumer[c_proj[c_lab]] != p_face_lab:
+                continue
+            pc_in, cc_in = P_in.codes[p_lab], C_in.codes[c_lab]
+            pc_out = P_out.codes[p_lab]
+            cc_out = transport.apply(C_out.codes[c_lab])
+            # A coequalized resource is ONE resource, so it is a further
+            # JOIN CONDITION: a premise pair holding it in two different
+            # states is not a state of the composition and is excluded --
+            # the relation keeps exactly the rows where the one resource is
+            # in one state.
+            if any(gather_code(pc_in, (w,), n) != gather_code(cc_in, (w,), n)
+                   for w in coeq_in):
+                continue
+            if any(gather_code(pc_out, (w,), n) !=
+                   gather_code(cc_out, (w,), n) for w in coeq_out):
+                continue
+            k_in = cc_in
+            for w in p_in_sup:
+                k_in = replace_code(k_in, (w,), gather_code(pc_in, (w,), n), n)
+            k_out = pc_out
+            for w in c_out_sup:
+                k_out = replace_code(k_out, (w,),
+                                     gather_code(cc_out, (w,), n), n)
+            ing.append(k_in)
+            egr.append(k_out)
+            sources.append((p_lab, c_lab))
+    if not sources:
+        raise ProvenanceError(
+            f"{where}no producer state meets any consumer state at the cut")
+    for nm, codes in (("ingress", ing), ("egress", egr)):
+        if len(set(codes)) != len(codes):
+            raise ProvenanceError(
+                f"{where}the composed {nm} repeats a code, so the recorded "
+                f"cut correspondence is ambiguous")
+
+    comp_in_sup = tuple(sorted(set(p_in_sup) | set(c_in_sup)))
+    comp_out_sup = tuple(sorted(set(p_out_sup) | set(c_out_sup)))
+
+    _identity_tr = tuple(transport.forward) == \
+        tuple(range(len(transport.forward)))
+
+    def _moved(f, place):
+        """A retained factor carried through the cut transport.
+
+        The egress side keeps the CONSUMER's presenter, and the physical
+        Align moved it, so the factor's own codes move with it. Its identity
+        does not: the same factor_id, the same owner, role, type and
+        descriptor -- one lineage, re-expressed. A factor holding only a
+        SLICE of a non-identity cut cannot be moved factor-by-factor, and
+        says so rather than staying silently unmoved.
+        """
+        if f is None or not place or _identity_tr:
+            return f
+        inner = tuple(place.index(w) for w in W if w in place)
+        if not inner:
+            return f                     # entirely off the cut
+        if len(inner) != len(W):
+            raise ProvenanceError(
+                f"{where}factor {f.name!r} holds only part of a "
+                f"non-identity cut; its states cannot be transported "
+                f"factor-by-factor")
+        moved = []
+        for c in f.codes:
+            sub = gather_code(c, inner, f.n_qubits)
+            moved.append(replace_code(c, inner, transport.forward[sub],
+                                      f.n_qubits))
+        if len(set(moved)) != len(moved):
+            raise ProvenanceError(
+                f"{where}transporting {f.name!r} through the cut collapses "
+                f"two of its states")
+        return _dataclass_replace(f, codes=tuple(moved))
+
+    # RETAINED, per polarity: producer prefix, the shared cut presenters,
+    # consumer context. The ingress reads its cut from the producer
+    # (upstream side), the egress from the transported consumer (downstream
+    # side). Only the matched formal occurrence is removed.
+    parts_in = tuple(p_in_sp.rest) + tuple(p_in_sp.presenters) + c_ctx_in
+    places_in = tuple(p_in_sp.rest_places) \
+        + tuple(p_in_sp.presenter_places) + c_ctx_in_pl
+    _c_pres_o_moved = tuple(_moved(f, pl) for f, pl in
+                            zip(c_out_sp.presenters,
+                                c_out_sp.presenter_places))
+    parts_out = _p_rest_out + _c_pres_o_moved + c_ctx_out
+    places_out = _p_rest_out_pl + tuple(c_out_sp.presenter_places) \
+        + c_ctx_out_pl
+    for nm, parts in (("ingress", parts_in), ("egress", parts_out)):
+        ids = [f.factor_id for f in parts]
+        if len(set(ids)) != len(ids):
+            raise ProvenanceError(
+                f"{where}the {nm} join retains one factor twice: {ids}")
+
+    # THE GRAFTS, RECORDED: each polarity's cut replaced a formal port with
+    # an actual one. Both original SourcePortRefs stay on their factors,
+    # untouched -- a substitution is a fact about the composition, never a
+    # relink of either premise.
+    def _refs_of(f):
+        return tuple(f.source.refs) if f is not None and f.source is not None \
+            else ()
+    substitutions = []
+    for pol_nm, replaced_fs, by_fs in (
+            ("ingress", c_in_sp.presenters, p_in_sp.presenters),
+            ("egress", p_out_sp.presenters, c_out_sp.presenters)):
+        for rf, bf in zip(replaced_fs, by_fs):
+            rr, br = _refs_of(rf), _refs_of(bf)
+            if rr and br and rr[0].ref != br[0].ref:
+                substitutions.append(SourceSubstitution(
+                    replaced=rr[0].ref, by=br[0].ref,
+                    at_cut=consumer_face.cut_id, polarity=pol_nm))
+    substitutions = tuple(substitutions)
+
+    def _rows(codes, parts, places):
+        out = []
+        for c in codes:
+            out.append(tuple(gather_code(c, pl, n) for pl in places))
+        return tuple(out)
+
+    def _build(codes, parts, places, side, sup):
+        # A joined chart ALWAYS carries its relation. An empty factor list or
+        # a relation that will not validate is an error here, not a reason to
+        # hand back a route-less chart: falling back would erase exactly the
+        # rows and source pairs a downstream cut needs.
+        if not parts:
+            raise ProvenanceError(
+                f"{where}the composed {side} retains no factor, so the join "
+                f"has nothing to present at a further cut")
+        jr = JoinRoute(
+            label=f"{label}^{side}", parts=tuple(parts),
+            placements=tuple(places), rows=_rows(codes, parts, places),
+            sources=tuple(sources), codes=tuple(codes),
+            support=tuple(sup), n_qubits=n,
+            producer_face=producer_face, consumer_face=consumer_face,
+            transport=transport, substitutions=substitutions)
+        # A Cartesian result may return to a ChartRoute -- but only when its
+        # own rows prove it and a recorded schedule rebuilds the codes. A
+        # correlated one STAYS a JoinRoute, rows and sources intact.
+        return BoundaryChart(
+            n_qubits=n, codes=tuple(codes),
+            route=(jr.as_chart_route() or jr),
+            label=f"{label}^{side}", space="ambient",
+            support_wires=tuple(sup))
+
+    authority = DERIVED if DERIVED in (producer.authority,
+                                       consumer.authority) else FRAME_DEFAULT
+    _ci = _build(ing, parts_in, places_in, "ingress", comp_in_sup)
+    _ce = _build(egr, parts_out, places_out, "egress", comp_out_sup)
+
+    # THE COMPOSITE'S OWN FACES, so a second Seq can consume this result.
+    # Each DESCENDS from the surviving premise's external authority: the
+    # ingress is the producer's own ingress face, the egress the consumer's
+    # own egress face carried through the same transport the gates used.
+    # Their recorded row projections, alphabets and source lineage are
+    # TRANSPORTED, never rebuilt from a row image or a first-appearance
+    # gather, and each is validated against the chart it is attached to.
+    def _out_face(src_face, split, chart, pol, transported):
+        if src_face is None or not split.presenters:
+            return None
+        face = src_face
+        if transported and not _identity_tr:
+            iface = tuple(src_face.interface_wires)
+            if tuple(iface) != tuple(W):
+                return None    # not expressible on this cut's own order
+            if len(split.presenters) != 1:
+                return None    # a sliced non-identity move was refused above
+            moved_f = _moved(split.presenters[0],
+                             split.presenter_places[0])
+            face = _dataclass_replace(
+                src_face, codes=tuple(moved_f.codes),
+                alphabet=tuple(transport.forward[a]
+                               for a in src_face.alphabet))
+        # RE-EXPRESSED against the factors the join actually retained: the
+        # same row projection, alphabet and source lineage, now naming the
+        # retained presenters by THEIR recorded identities and placements --
+        # a lift or an atomic mint gave the one factor its own id after the
+        # face was issued, and the face follows the factor, never a bit
+        # image of the composite's rows.
+        retained = (tuple(_moved(f, pl) for f, pl in
+                          zip(split.presenters, split.presenter_places))
+                    if transported else tuple(split.presenters))
+        face = _dataclass_replace(
+            face,
+            factor_ids=tuple(f.factor_id for f in retained),
+            placement=tuple(w for pl in split.presenter_places for w in pl),
+            role=(retained[0].role if len(retained) == 1 else ""),
+            logical=(retained[0].logical if len(retained) == 1 else None),
+            descriptor=(retained[0].descriptor if len(retained) == 1
+                        else None),
+            whole_chart=False)
+        if chart.route is None:
+            return None
+        face.check_against(chart, face.cut_id, f"{where}composite {pol}: ")
+        return face
+
+    return (SelectedBoundary(ingress=_ci, egress=_ce, origin=label,
+                             authority=authority),
+            _out_face(p_if, p_in_sp, _ci, "ingress", False),
+            _out_face(c_ef, c_out_sp, _ce, "egress", True))
+
+
 def localize_bindings(parent_bindings, local_wires, local_to_ambient,
                       where=""):
     """Relocate owned resources into ONE branch's coordinates, and record it.
@@ -2858,6 +5186,12 @@ class CompletedBranch:
     # are what prove the nested derivation used the parent's resource, which
     # `used_bindings` -- the parent's intention -- cannot say on its own.
     binding_transport: Tuple["BindingTransport", ...] = ()
+    # The COMPLETED per-polarity row projections: the branch's own
+    # projections transported through the lift with the inactive resources
+    # appended to the fibre. Main alphabet and labels are the branch's own,
+    # unchanged. These are what the Block's cut face consumes.
+    ingress_projection: object = None
+    egress_projection: object = None
 
     @property
     def dim(self) -> int:
@@ -3012,8 +5346,15 @@ class OpenUseBlockPlan:
         return True
 
 
-def _lift_chart(chart, local_to_ambient, ambient_width, label):
-    """A branch-local scatter chart placed into the occurrence's register."""
+def _lift_chart(chart, local_to_ambient, ambient_width, label, port=None):
+    """A branch-local scatter chart placed into the occurrence's register.
+
+    `port` is the branch projection's own recorded port, when the caller
+    holds one: a ROUTE-LESS lift then TRANSPORTS that existing occurrence
+    instead of minting a fresh unlinked one -- a lift re-presents what the
+    branch already displays, and must never infer or mint a replacement
+    root for it.
+    """
     r = chart.route
     if r is None:
         # A branch whose root defaulted to its Frame is ONE factor on its own
@@ -3025,12 +5366,42 @@ def _lift_chart(chart, local_to_ambient, ambient_width, label):
                 f"{label}: the branch root spans {chart.n_qubits} wires but "
                 f"the occurrence records a {len(local_to_ambient)}-wire "
                 f"local-to-ambient map")
-        one = ChartFactor(name=chart.label or "u", owner=None,
+        src = (FactorSource((port,)) if port is not None
+               else FactorSource((SourcePortRef(
+                   ref=f"lift:{label}", origin_cut=label,
+                   path=("lift",)),)))
+        one = ChartFactor(factor_id=f"lift:{label}", source=src,
+                          name=chart.label or "u", owner=None,
                           n_qubits=chart.n_qubits, codes=tuple(chart.codes))
         rep, places = scatter_repart(
             (tuple(local_to_ambient[:chart.n_qubits]),), ambient_width)
         out = par_then_repart((one,), rep, ambient_width, label,
                               placements=places, kind="scatter")
+        out.validate_joint()
+        return out
+    if isinstance(r, JoinRoute):
+        # A RELATIONAL branch root lifts as the relation it is: every row
+        # and source pair kept, coordinates mapped through the occurrence's
+        # own recorded local-to-ambient map.
+        for pl in r.placements:
+            for w in pl:
+                if w >= len(local_to_ambient):
+                    raise ProvenanceError(
+                        f"{label}: branch wire {w} is outside the recorded "
+                        f"local-to-ambient map of {len(local_to_ambient)} "
+                        f"wires")
+        wm = {w: local_to_ambient[w] for pl in r.placements for w in pl}
+        for w in r.support:
+            if w >= len(local_to_ambient):
+                raise ProvenanceError(
+                    f"{label}: support wire {w} is outside the recorded "
+                    f"local-to-ambient map")
+            wm.setdefault(w, local_to_ambient[w])
+        moved = r.moved(wm, ambient_width, label=label)
+        out = BoundaryChart(n_qubits=ambient_width,
+                            codes=tuple(moved.codes), route=moved,
+                            label=label, space="ambient",
+                            support_wires=tuple(moved.support))
         out.validate_joint()
         return out
     if not r.reconstructible:
@@ -3118,13 +5489,66 @@ def use_block_layout(bindings, main_width, tag_width, ambient_width):
                           workspace_wires=chosen[tag_width:])
 
 
+def complete_projection(bp, *, local_to_ambient, ambient_width, inactive,
+                        completed_chart, where=""):
+    """The completed branch's row projection, at ONE polarity.
+
+    The branch's own BranchMainProjection is consumed UNCHANGED: the main
+    alphabet, its order and every row's label are the branch's own. The
+    schedule is TRANSPORTED through the recorded local-to-ambient map, and
+    each inactive resource is appended exactly once -- to the FIBRE only.
+    Labels extend by the recorded product schedule (branch rows major, the
+    inactive codes minor, in appended order); nothing here reads a row image
+    to decide anything, and `check_rows` then re-derives every completed row
+    from the transported schedule independently.
+    """
+    p = bp.projection
+    l2a = tuple(local_to_ambient)
+
+    def _amb(w):
+        if w >= len(l2a):
+            raise ProvenanceError(
+                f"{where}projection coordinate {w} is outside the recorded "
+                f"{len(l2a)}-wire local-to-ambient map")
+        return l2a[w]
+
+    lab_w = tuple(_amb(w) for w in p.label_wires)
+    fib_w = tuple(_amb(w) for w in p.fibre_wires)
+    pad = tuple((_amb(w), b) for w, b in p.padding)
+    m = 1
+    for b in inactive:
+        fib_w = fib_w + tuple(b.wires)
+        m *= len(b.codes)
+    rows = tuple(completed_chart.codes)
+    nb = len(p.labels)
+    if len(rows) != nb * m:
+        raise ProvenanceError(
+            f"{where}the completed chart has {len(rows)} rows, not the "
+            f"{nb} branch rows times the {m} inactive assignments; an "
+            f"inactive resource was dropped or duplicated")
+    labels = tuple(p.labels[k] for k in range(nb) for _ in range(m))
+    keys = tuple(gather_code(r, fib_w, completed_chart.n_qubits)
+                 for r in rows)
+    out = RowProjection(
+        port=p.port, polarity=p.polarity, alphabet=tuple(p.alphabet),
+        labels=labels, fibre_keys=keys, presenters=tuple(p.presenters),
+        support=tuple(sorted(set(lab_w) | set(fib_w))),
+        rows=rows, padding=pad, label_wires=lab_w, fibre_wires=fib_w,
+        row_width=completed_chart.n_qubits)
+    out.check_rows(completed_chart, where)
+    return out
+
+
 def complete_branch(*, index, artifact, uses, inactive, local_to_ambient,
                     tag_value, ambient_width, label="", used_bindings=(),
-                    binding_transport=()):
+                    binding_transport=(), projections=None):
     """Complete ONE alternative against the resources it does not use.
 
     Both polarities are built independently from the branch's own selected
-    root -- never from its Frame, and never by recompiling it.
+    root -- never from its Frame, and never by recompiling it. When the
+    preparation issued per-polarity BranchMainProjections, they are consumed
+    unchanged: the completed projection keeps the branch's main alphabet and
+    labels and appends each inactive resource exactly once to the fibre.
     """
     sb = artifact.selected_boundary
     if sb is None:
@@ -3133,23 +5557,42 @@ def complete_branch(*, index, artifact, uses, inactive, local_to_ambient,
             f"cannot be completed")
     uses = tuple(uses)
     inactive = tuple(inactive)
+    # One owner contributes exactly once however often it is named; two
+    # distinct owners of the same type are two resources. Deduplicated ONCE,
+    # so the chart and the completed projection see the same list.
+    _uniq, _seen_owners = [], set()
+    for b in inactive:
+        if b.owner_id in _seen_owners:
+            continue
+        _seen_owners.add(b.owner_id)
+        _uniq.append(b)
 
     def side(which):
         chart = sb.ingress if which == "ingress" else sb.egress
+        bp = projections.get(which) if projections else None
+        if bp is not None and bp.polarity != which:
+            raise ProvenanceError(
+                f"branch {index}: the {which} completion was handed the "
+                f"{bp.polarity} projection; the two polarities are completed "
+                f"independently and must not be swapped")
         base = _lift_chart(chart, local_to_ambient, ambient_width,
-                           f"{label or 'branch'}{index}^{which}")
+                           f"{label or 'branch'}{index}^{which}",
+                           port=(bp.projection.port if bp is not None
+                                 else None))
         parts = list(base.route.parts)
         places = list(base.route.placements)
-        seen_owners = set()
-        for b in inactive:
+        for b in _uniq:
             # The inactive resource is carried as the binding RECORDED it --
             # its own ordered codes, never all 2^k assignments to its wires.
-            # One owner contributes exactly once however often it is named;
-            # two distinct owners of the same type are two resources.
-            if b.owner_id in seen_owners:
-                continue
-            seen_owners.add(b.owner_id)
             parts.append(ChartFactor(
+                factor_id=f"inactive:{b.owner_id}",
+                # The inactive resource IS the captured binding's occurrence,
+                # so its link is that binding's own owner -- the identity the
+                # adapter's role context records as fibre. Same rule as a
+                # routed binding's carrier factor.
+                source=FactorSource((SourcePortRef(
+                    ref=b.owner_id, origin_cut=b.intro_cut,
+                    path=("inactive", b.name), root=b.owner_id),)),
                 name=f"Y_{b.name}", owner=b.owner_id, n_qubits=len(b.wires),
                 codes=tuple(b.codes),
                 role="residual", logical=b.logical))
@@ -3159,14 +5602,25 @@ def complete_branch(*, index, artifact, uses, inactive, local_to_ambient,
                              f"{label or 'branch'}{index}^{which}",
                              placements=pl, kind="scatter")
         ch.validate_joint()
-        return ch
+        proj = None
+        if bp is not None:
+            proj = complete_projection(
+                bp, local_to_ambient=local_to_ambient,
+                ambient_width=ambient_width, inactive=tuple(_uniq),
+                completed_chart=ch,
+                where=f"branch {index} {which} completion: ")
+        return ch, proj
 
+    ch_in, proj_in = side("ingress")
+    ch_out, proj_out = side("egress")
     return CompletedBranch(index=index, artifact=artifact, uses=uses,
                            inactive=inactive, tag_value=tag_value,
-                           ingress=side("ingress"), egress=side("egress"),
+                           ingress=ch_in, egress=ch_out,
                            local_to_ambient=tuple(local_to_ambient),
                            used_bindings=tuple(used_bindings),
-                           binding_transport=tuple(binding_transport))
+                           binding_transport=tuple(binding_transport),
+                           ingress_projection=proj_in,
+                           egress_projection=proj_out)
 
 
 def plan_use_block(completed, layout, label="block"):
@@ -3207,9 +5661,12 @@ def plan_use_block(completed, layout, label="block"):
         if len(set(codes)) != len(codes):
             raise ProvenanceError(
                 f"{label} {which}: the tagged blocks are not disjoint")
+        # The Block's support is the layout's, not the register's: the
+        # spectators it declares are genuinely outside the chart.
         return BoundaryChart(n_qubits=ambient_width, codes=tuple(codes),
                              route=None, label=f"{label}^{which}",
-                             space="ambient")
+                             space="ambient",
+                             support_wires=tuple(layout.support))
 
     ing, egr = tagged("ingress"), tagged("egress")
     plan = OpenUseBlockPlan(branches=tuple(completed),

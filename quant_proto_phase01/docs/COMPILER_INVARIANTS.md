@@ -290,6 +290,57 @@ reproduce their committed `.output` byte-for-byte.
 
 ---
 
+## Invariant S — one relational SeqCut authority
+
+**Status:** implemented 2026-09-05 (checkpoint `semantic-seqcut-20260905`,
+Milestones 1–4 of the proof-directed semantic SeqCut plan).
+
+Every `Seq` cut — identity, wire-permutation and code-permutation alike —
+selects ONE `CutTransport` (`_pick_cut` → `make_cut_transport` →
+`check_selected`) and composes through the ONE relational join
+`compile.frames.seq_cut`, differing only in physical lowering. The
+composition is TRANSACTIONAL: the consumer and any Align are staged into a
+scratch circuit and the parent commits only after the composition
+validates. Relays (certified-identity legs, routing handoffs) keep strict
+precedence; when none applies the cut composes — it never refuses a
+well-formed derivation and never silently replaces a derived boundary with
+a frame default.
+
+Supporting structure, each with its own enforcement point:
+
+* **Source links (M1).** Every factor consumed by a prepared branch
+  projection reaches a derivation-issued external semantic root through
+  recorded `SourcePortRef` links; classification is a lookup
+  (`project_branch_root`), never a reconstruction. Gates: Part P.
+* **Complete/Block from projections (M2).** Complete consumes the branch's
+  per-polarity `BranchMainProjection` unchanged (`complete_projection`);
+  the Block cut face is DEFINED by the antecedent branch projections
+  through the module-level `_issue_block_face` shared by both open-sum
+  adapters; rows only validate, bidirectionally. First-appearance
+  alphabets do not exist. Gates: Part Q.
+* **Relational join (M3).** `seq_cut` validates its own inputs; cut
+  symbols match SEMANTICALLY through the transport (sparse and reordered
+  alphabets); presenters resolve by recorded factor ids via
+  `split_at_face` (multi-factor, noncontiguous); unmatched factors and
+  every `(producer, consumer)` source pair survive on a `JoinRoute` that
+  never degrades to `route=None` or a pretended Cartesian product; grafts
+  are recorded as `SourceSubstitution`s; shared non-cut resources
+  coequalize exactly once under exact lineage agreement. Composite faces
+  descend from the surviving premises' own authorities. Gates: Part R.
+* **General composition (M4).** A premise that recorded no face at the cut
+  presents it from records only (`_whole_premise_face`: a spine presents
+  its recorded terminal residual; any other route presents all factors
+  jointly, against its recorded interface embedding). A completion
+  certificate relates a premise's narrower recorded placement to the
+  completed common cut, and face symbols embed through it. Gates: the
+  Part-L positive gates (L4, L4b, L4d, L5, L6, L7, L10).
+
+**Deferred red set:** exactly the two `C` witnesses
+(`test_C_noncontiguous_beta_ingress_and_action[False]/[True]`) — the
+Milestone-5 beta-boundary repair. Nothing else is red.
+
+---
+
 ## Cross-cutting: identity transport
 
 Three separate mechanisms are the same concept and must share vocabulary in

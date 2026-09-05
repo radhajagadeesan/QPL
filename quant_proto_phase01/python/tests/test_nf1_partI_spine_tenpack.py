@@ -268,8 +268,8 @@ def test_I6_pair_factor_order_is_fst_then_snd():
 
 def test_I7_two_child_local_wire_zero_addresses_stay_distinct():
     """Both children may address their own local wire 0."""
-    a = ChartFactor(name="fst", owner="cut:a", n_qubits=1, codes=(0, 1))
-    b = ChartFactor(name="snd", owner="cut:b", n_qubits=1, codes=(0, 1),
+    a = ChartFactor(factor_id="tnpack0", name="fst", owner="cut:a", n_qubits=1, codes=(0, 1))
+    b = ChartFactor(factor_id="tnpack1", name="snd", owner="cut:b", n_qubits=1, codes=(0, 1),
                     role="residual", logical=q)
     assert a.codes == b.codes and a.n_qubits == b.n_qubits
     rep, places = scatter_repart(((1,), (2,)), 3)
@@ -440,7 +440,7 @@ def test_I17b_an_unclassifiable_producer_fails_closed():
     """No matched factor, or two of them, must raise rather than guess."""
     from compile.frames import _matched_factor
     tt = Ten(q, q)
-    op = ChartFactor(name="S", owner="cut:a", n_qubits=2, codes=(0, 1, 2, 3),
+    op = ChartFactor(factor_id="tnpack2", name="S", owner="cut:a", n_qubits=2, codes=(0, 1, 2, 3),
                      role="operand", logical=tt)
     rep, pl = scatter_repart(((0, 1),), 2)
     only_operand = par_then_repart((op,), rep, 2, "x", placements=pl,
@@ -449,9 +449,9 @@ def test_I17b_an_unclassifiable_producer_fails_closed():
         _matched_factor(only_operand, tt, "test")
     assert "no producer factor" in str(e.value)
 
-    r1 = ChartFactor(name="Y1", owner="cut:a", n_qubits=1, codes=(0, 1),
+    r1 = ChartFactor(factor_id="tnpack3", name="Y1", owner="cut:a", n_qubits=1, codes=(0, 1),
                      role="residual", logical=tt)
-    r2 = ChartFactor(name="Y2", owner="cut:b", n_qubits=1, codes=(0, 1),
+    r2 = ChartFactor(factor_id="tnpack4", name="Y2", owner="cut:b", n_qubits=1, codes=(0, 1),
                      role="residual", logical=tt)
     rep2, pl2 = scatter_repart(((0,), (1,)), 2)
     two = par_then_repart((r1, r2), rep2, 2, "x", placements=pl2,
@@ -628,8 +628,8 @@ def test_I23_tenpack_with_a_nontrivial_theta_moves_the_codes():
     against: with r_p = (0,1) and theta swapping the two binder slots, the
     packed codes must be the transposed ones.
     """
-    a = ChartFactor(name="A", owner="cut:a", n_qubits=1, codes=(0, 1))
-    b = ChartFactor(name="B", owner="cut:b", n_qubits=1, codes=(0, 1),
+    a = ChartFactor(factor_id="tnpack5", name="A", owner="cut:a", n_qubits=1, codes=(0, 1))
+    b = ChartFactor(factor_id="tnpack6", name="B", owner="cut:b", n_qubits=1, codes=(0, 1),
                     role="residual", logical=q)
     ch = _chart(None, ((0,), (1,)), (a, b))
     assert ch.codes == (0, 2, 4, 6)          # wire 0 weight 4, wire 1 weight 2
@@ -649,8 +649,8 @@ def test_I23_tenpack_with_a_nontrivial_theta_moves_the_codes():
 
 
 def test_I24_tenpack_leaves_non_binder_wires_alone():
-    a = ChartFactor(name="A", owner="cut:a", n_qubits=1, codes=(0, 1))
-    b = ChartFactor(name="B", owner="cut:b", n_qubits=1, codes=(0, 1),
+    a = ChartFactor(factor_id="tnpack7", name="A", owner="cut:a", n_qubits=1, codes=(0, 1))
+    b = ChartFactor(factor_id="tnpack8", name="B", owner="cut:b", n_qubits=1, codes=(0, 1),
                     role="residual", logical=q)
     ch = _chart(None, ((0,), (2,)), (a, b))
     packed = tenpack(ch, r_p=(0, 1), theta=(1, 0))
@@ -660,8 +660,8 @@ def test_I24_tenpack_leaves_non_binder_wires_alone():
 
 def test_I25_tenpack_polarities_are_independent():
     """theta^- must touch only the negative chart, theta^+ only the positive."""
-    a = ChartFactor(name="A", owner="cut:a", n_qubits=1, codes=(0, 1))
-    b = ChartFactor(name="B", owner="cut:b", n_qubits=1, codes=(0, 1),
+    a = ChartFactor(factor_id="tnpack9", name="A", owner="cut:a", n_qubits=1, codes=(0, 1))
+    b = ChartFactor(factor_id="tnpack10", name="B", owner="cut:b", n_qubits=1, codes=(0, 1),
                     role="residual", logical=q)
     ing = _chart(None, ((0,), (1,)), (a, b))
     egr = _chart(None, ((0,), (1,)), (a, b))
@@ -681,16 +681,16 @@ def test_I26_splice_uses_the_producers_selected_ingress():
     """
     port = (0, 1)
     tt = Ten(q, q)
-    a = ChartFactor(name="A", owner="cut:a", n_qubits=2, codes=(0, 1, 2, 3),
+    a = ChartFactor(factor_id="tnpack11", name="A", owner="cut:a", n_qubits=2, codes=(0, 1, 2, 3),
                     role="residual", logical=tt)
     # producer: output code i corresponds to input code REVERSED
     prod_out = _chart(None, (port,), (a,))
-    a_rev = ChartFactor(name="A", owner="cut:a", n_qubits=2,
+    a_rev = ChartFactor(factor_id="tnpack12", name="A", owner="cut:a", n_qubits=2,
                         codes=(3, 2, 1, 0), role="residual", logical=tt)
     prod_in = _chart(None, (port,), (a_rev,))
     assert prod_in.codes != prod_out.codes
 
-    body_f = ChartFactor(name="S", owner="cut:b", n_qubits=2, codes=(0, 2))
+    body_f = ChartFactor(factor_id="tnpack13", name="S", owner="cut:b", n_qubits=2, codes=(0, 2))
     body_in = _chart(None, (port,), (body_f,))
     body_out = _chart(None, (port,), (body_f,))
 
@@ -708,11 +708,11 @@ def test_I26_splice_uses_the_producers_selected_ingress():
 def test_I27_splice_refuses_a_body_code_the_producer_cannot_supply():
     port = (0, 1)
     tt = Ten(q, q)
-    a = ChartFactor(name="A", owner="cut:a", n_qubits=2, codes=(0, 1),
+    a = ChartFactor(factor_id="tnpack14", name="A", owner="cut:a", n_qubits=2, codes=(0, 1),
                     role="residual", logical=tt)
     prod_in = _chart(None, (port,), (a,))
     prod_out = _chart(None, (port,), (a,))
-    unreachable = ChartFactor(name="S", owner="cut:b", n_qubits=2,
+    unreachable = ChartFactor(factor_id="tnpack15", name="S", owner="cut:b", n_qubits=2,
                               codes=(0, 3))
     body = _chart(None, (port,), (unreachable,))
     with pytest.raises(ProvenanceError) as e:
@@ -991,11 +991,11 @@ def test_I38_a_mistyped_terminal_residual_is_not_replaced():
     unkillable mutation.
     """
     from compile.frames import check_spine_residual
-    op = ChartFactor(name="S_h", owner="cut:h", n_qubits=2, codes=(0, 1, 2, 3),
+    op = ChartFactor(factor_id="tnpack16", name="S_h", owner="cut:h", n_qubits=2, codes=(0, 1, 2, 3),
                      role="operand", logical=q)
-    good = ChartFactor(name="Y", owner="cut:y", n_qubits=1, codes=(0, 1),
+    good = ChartFactor(factor_id="tnpack17", name="Y", owner="cut:y", n_qubits=1, codes=(0, 1),
                        role="residual", logical=q)
-    bad = ChartFactor(name="Y", owner="cut:y", n_qubits=1, codes=(0, 1),
+    bad = ChartFactor(factor_id="tnpack18", name="Y", owner="cut:y", n_qubits=1, codes=(0, 1),
                       role="residual", logical=endo)     # SAME dimension
     assert good.dim == bad.dim, "the two residuals must be indistinguishable "\
                                 "by dimension, or the guard is untestable"
@@ -1090,11 +1090,11 @@ def test_I41_splice_preserves_an_unmatched_producer_factor():
     Y label occurs once for each S_a label. A first-match `.index` lookup
     keeps one of the two and silently halves the chart."""
     n = 3
-    S_a = ChartFactor(name="S_a", owner="cut:a", n_qubits=1, codes=(0, 1),
+    S_a = ChartFactor(factor_id="tnpack19", name="S_a", owner="cut:a", n_qubits=1, codes=(0, 1),
                       role="operand", logical=q)
-    S_a_in = ChartFactor(name="S_a", owner="cut:a", n_qubits=1, codes=(1, 0),
+    S_a_in = ChartFactor(factor_id="tnpack20", name="S_a", owner="cut:a", n_qubits=1, codes=(1, 0),
                          role="operand", logical=q)
-    Y = ChartFactor(name="Y", owner="cut:y", n_qubits=2, codes=(0, 1, 2, 3),
+    Y = ChartFactor(factor_id="tnpack21", name="Y", owner="cut:y", n_qubits=2, codes=(0, 1, 2, 3),
                     role="residual", logical=Ten(q, q))
     port = (1, 2)
     rep, pl = scatter_repart(((0,), port), n)
@@ -1104,7 +1104,7 @@ def test_I41_splice_preserves_an_unmatched_producer_factor():
                               kind="scatter")
     assert prod_out.dim == 8
 
-    B = ChartFactor(name="B", owner="cut:b", n_qubits=2, codes=(0, 1, 2, 3),
+    B = ChartFactor(factor_id="tnpack22", name="B", owner="cut:b", n_qubits=2, codes=(0, 1, 2, 3),
                     role="operand", logical=Ten(q, q))
     rep2, pl2 = scatter_repart((port,), n)
     body = par_then_repart((B,), rep2, n, "b", placements=pl2, kind="scatter")

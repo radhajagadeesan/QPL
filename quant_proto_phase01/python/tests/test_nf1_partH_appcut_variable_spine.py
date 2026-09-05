@@ -331,9 +331,9 @@ def test_H9_egress_separates_the_live_operand_from_true_complement():
 def test_H12_two_premise_local_wire_zeros_give_four_distinct_labels():
     """Both factors address their own local wire 0. That is two namespaces,
     not a collision, and the product must carry four distinct labels."""
-    head = ChartFactor(name="S_y", owner="cut:operand", n_qubits=1,
+    head = ChartFactor(factor_id="tspine0", name="S_y", owner="cut:operand", n_qubits=1,
                        codes=(0, 1))
-    tail = ChartFactor(name="Y_B", owner="cut:application", n_qubits=1,
+    tail = ChartFactor(factor_id="tspine1", name="Y_B", owner="cut:application", n_qubits=1,
                        codes=(0, 1), role="residual", logical=q)
     assert head.codes == tail.codes and head.n_qubits == tail.n_qubits
     rep, places = scatter_repart(((2,), (1,)), 3)
@@ -349,8 +349,8 @@ def test_H12b_a_genuinely_colliding_repart_is_refused():
     """The namespacing is not a licence to ignore a real ambient collision:
     a repart that lands two ordered pairs on one code must be rejected, not
     silently truncated to a smaller chart."""
-    head = ChartFactor(name="S_y", owner="cut:a", n_qubits=1, codes=(0, 1))
-    tail = ChartFactor(name="Y_B", owner="cut:b", n_qubits=1,
+    head = ChartFactor(factor_id="tspine2", name="S_y", owner="cut:a", n_qubits=1, codes=(0, 1))
+    tail = ChartFactor(factor_id="tspine3", name="Y_B", owner="cut:b", n_qubits=1,
                        codes=(0, 1), role="residual", logical=q)
     rep, places = scatter_repart(((2,), (2,)), 3)     # SAME ambient wire
     with pytest.raises(ProvenanceError) as e:
@@ -366,16 +366,16 @@ def test_H12b_a_genuinely_colliding_repart_is_refused():
 def test_H13_sparse_child_order_is_preserved():
     """The child is consumed as its ACTUAL ordered codes -- never replaced by
     all 2^k assignments to its wires, and never sorted."""
-    sparse = ChartFactor(name="S_y", owner="cut:operand", n_qubits=3,
+    sparse = ChartFactor(factor_id="tspine4", name="S_y", owner="cut:operand", n_qubits=3,
                          codes=(5, 0, 3))
-    tail = ChartFactor(name="Y_B", owner="cut:application", n_qubits=1,
+    tail = ChartFactor(factor_id="tspine5", name="Y_B", owner="cut:application", n_qubits=1,
                        codes=(0, 1), role="residual", logical=q)
     rep, places = scatter_repart(((0, 1, 2), (3,)), 4)
     ch = par_then_repart((sparse, tail), rep, 4, "r", placements=places,
                          kind="scatter")
     assert ch.codes == (10, 11, 0, 1, 6, 7), (
         f"the child's order (5,0,3) was not preserved: {ch.codes}")
-    reordered = ChartFactor(name="S_y", owner="cut:operand", n_qubits=3,
+    reordered = ChartFactor(factor_id="tspine6", name="S_y", owner="cut:operand", n_qubits=3,
                             codes=(0, 3, 5))
     other = par_then_repart((reordered, tail), rep, 4, "r",
                             placements=places, kind="scatter")

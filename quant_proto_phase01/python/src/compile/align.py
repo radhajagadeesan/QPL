@@ -174,6 +174,58 @@ def emit_align(circ, wires, src: Frame, dst: Frame, *, inverse: bool = False):
     return True
 
 
+def make_cut_transport(consumer_in: Frame, producer_out: Frame, wires,
+                       ambient_width: int, label: str = "",
+                       producer_wires=(), consumer_wires=(), completion=None):
+    """Select the cut transport ONCE, from the frames the splice actually has.
+
+    Everything downstream -- the two physical Aligns and the composed
+    selected boundary -- consumes the returned object, so there is no second
+    map to drift from this one.
+    """
+    from compile.frames import CutTransport
+    fwd = align_permutation(consumer_in, producer_out)
+    inv = [0] * len(fwd)
+    for i, j in enumerate(fwd):
+        inv[j] = i
+    wp = align_as_wire_permutation(consumer_in, producer_out)
+    if align_is_identity(consumer_in, producer_out):
+        kind, wp = "identity", None
+    elif wp is not None:
+        kind = "wire-permutation"
+    else:
+        kind, wp = "code-permutation", None
+    return CutTransport(
+        wires=tuple(wires), ambient_width=ambient_width,
+        consumer_codes=tuple(consumer_in.codes),
+        producer_codes=tuple(producer_out.codes),
+        forward=tuple(fwd), inverse=tuple(inv), kind=kind,
+        wire_permutation=wp, label=label,
+        producer_wires=tuple(producer_wires),
+        consumer_wires=tuple(consumer_wires), completion=completion)
+
+
+def emit_align_transport(circ, transport, *, inverse: bool = False):
+    """Emit the physical Align from THE recorded transport.
+
+    Same object as the metadata composition consumes, so the gates and the
+    boundary cannot describe different permutations.
+    """
+    if transport.kind != "code-permutation":
+        return False                   # identity and wire perms emit nothing
+    from pytket.circuit import ToffoliBox
+    perm = transport.inverse if inverse else transport.forward
+    n = len(transport.wires)
+
+    def bits(v):
+        return tuple(bool((v >> (n - 1 - b)) & 1) for b in range(n))
+
+    circ.add_toffolibox(ToffoliBox({bits(s): bits(d)
+                                    for s, d in enumerate(perm)}),
+                        list(transport.wires))
+    return True
+
+
 def transported_frame(A: np.ndarray, frame: Frame, label: str = "") -> Frame:
     """The frame `A u` -- the consumer's output carried into the producer's
     frame. This is the effective output of the spliced pair and must be

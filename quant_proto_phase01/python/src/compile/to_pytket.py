@@ -63,6 +63,15 @@ from compile.frames import (Frame, Sector, Port, canonical_frame,
                             FACTORIZED, BLOCK_ONLY, FactorizationCertificate,
                             BindingTransport, issue_binding_transport,
                             check_block_resource_identity, localize_bindings,
+                            CutTransport, CutCompletion, seq_cut, JoinRoute,
+                            gather_code,
+                            replace_code, _lift_chart, semantic_action,
+                            SourcePortRef, FactorSource, RowProjection,
+                            BranchRoleContext, BranchMainProjection,
+                            project_branch_root,
+                            restrict_to_cut, InterfaceEmbedding,
+                            interface_from_frame, CutFace,
+                            antecedent_main_alphabet, branch_cut_symbols,
                             tenpack, tensor_splice,
                             _matched_factor, check_spine_residual,
                             complete_branch, plan_use_block,
@@ -75,7 +84,8 @@ from compile.frames import (Frame, Sector, Port, canonical_frame,
                             UnsupportedFrame, embeddings_agree)
 from compile.align import (emit_align, align_as_wire_permutation,
                            align_is_identity, align_permutation,
-                           build_align, transported_frame, AlignError)
+                           build_align, transported_frame, AlignError,
+                           make_cut_transport, emit_align_transport)
 
 # Type alias for compilation environment
 # Maps variable names to (start, width) wire ranges in the logical layout
@@ -132,6 +142,18 @@ class Artifact:
     # A RoutingOnly certificate, when the emitter issued one. Never derived
     # by a consumer from this artifact's other fields.
     routing: object = None
+    # WHERE this occurrence's effective interface lives, recorded
+    # independently per polarity. Distinct from ingress_wires/egress_wires,
+    # which say where the RESULT SLOT arrives and leaves: an open sum's
+    # effective output Frame spans the register while its result occupies
+    # three coordinates, and only this record can say which.
+    ingress_interface: object = None
+    egress_interface: object = None
+    # WHICH factor presents this occurrence's cut, per polarity, and how its
+    # states project onto the cut's semantic labels. Route-less premises
+    # carry an exhaustive atomic face; routed ones name a factor by id.
+    ingress_face: object = None
+    egress_face: object = None
     # (ingress, egress) FactorizationCertificates, when this occurrence's
     # complete cut is a Block. Each says POSITIVELY whether the Frame beside
     # it is able to present that cut as main (x) unconditional context, or
@@ -1257,6 +1279,12 @@ class BranchArtifact(NamedTuple):
     selected_boundary: object = None
     # the nested compilation's ROOT occurrence cut -- a real identity
     cut_id: object = None
+    # the root occurrence's recorded per-polarity cut faces, carried so a
+    # branch whose root is itself a Block presents its OWN issued projection
+    # of that Block -- main labels apart from carried fibres -- rather than
+    # one opaque merged factor
+    ingress_face: object = None
+    egress_face: object = None
 
     @property
     def unitary(self):
@@ -1275,7 +1303,8 @@ class BranchArtifact(NamedTuple):
 
 
 def _compile_branch_artifact(branch, *, env=None, scope=None,
-                             parameter=None, typed_env=None):
+                             parameter=None, typed_env=None,
+                             port_roots=None):
     """Prepare ONE branch. `scope` parents its provenance to the enclosing
     occurrence; without it the branch would mint its own root.
 
@@ -1290,10 +1319,11 @@ def _compile_branch_artifact(branch, *, env=None, scope=None,
     _sink = {}
     sub = compile(branch, materialize=True, env=env, _prov_scope=scope,
                   _branch_parameter=parameter, _artifact_sink=_sink,
-                  _typed_env=typed_env) \
+                  _typed_env=typed_env, _port_roots=port_roots) \
         if env is not None \
         else compile(branch, materialize=True, _prov_scope=scope,
-                     _branch_parameter=parameter, _artifact_sink=_sink)
+                     _branch_parameter=parameter, _artifact_sink=_sink,
+                     _port_roots=port_roots)
     _root = next((a for a in _sink.get("artifacts", ())
                   if a.occurrence == 0), None)
     if _root is None:
@@ -1303,7 +1333,9 @@ def _compile_branch_artifact(branch, *, env=None, scope=None,
     return BranchArtifact(_get_sub_cmds(sub.circuit), float(sub.circuit.phase),
                           _root.input_frame, _root.output_frame, sub.circuit,
                           selected_boundary=sub.selected_boundary,
-                          cut_id=sub.root_cut_id)
+                          cut_id=sub.root_cut_id,
+                          ingress_face=_root.ingress_face,
+                          egress_face=_root.egress_face)
 
 
 def _discharge_branch_phase(circ, tag_qubits, tag_values, phase_ht):
@@ -1763,11 +1795,16 @@ def _is_neutral_spine(t: Term) -> bool:
     return isinstance(t, Var)
 
 
-def _ambient_chart(chart, wires, n, logical=None):
+def _ambient_chart(chart, wires, n, logical=None, root=None):
     """A premise-local chart lifted onto its OWN recorded ambient wires.
 
     A chart that is already ambient is returned as it stands. Nothing is
     inferred: the placement is the artifact's own record for that polarity.
+
+    TRANSPORT first, then whatever the CALLER supplied: a chart that already
+    records its factors' link carries it forward, and only a route-less
+    premise takes the derivation-selected `root` its consumer read from its
+    own record. This rule never chooses between roots itself.
     """
     if chart.space == "ambient":
         if chart.n_qubits != n:
@@ -1779,7 +1816,16 @@ def _ambient_chart(chart, wires, n, logical=None):
         raise TypeCheckError(
             f"the chart is {chart.n_qubits} qubits but its recorded "
             f"placement names {len(wires)} wires {wires}")
-    f = ChartFactor(name=chart.label or "port", owner=None,
+    _r = _recorded_root(chart)
+    if _r is None:
+        _r = root
+    f = ChartFactor(factor_id=f"port:{chart.label or 'port'}",
+                    source=FactorSource((SourcePortRef(
+                        ref=f"port:{chart.label or 'port'}",
+                        origin_cut=(chart.label or "port"),
+                        path=("port",),
+                        root=_r),)),
+                    name=chart.label or "port", owner=None,
                     n_qubits=chart.n_qubits, codes=tuple(chart.codes),
                     role="residual", logical=logical)
     rep, places = scatter_repart((wires,), n)
@@ -1787,7 +1833,30 @@ def _ambient_chart(chart, wires, n, logical=None):
                            placements=places, kind="scatter")
 
 
-def _child_factor(chart, wires, name, owner, logical, side, role="operand"):
+def _child_root(art, side):
+    """The external root an immediate child ALREADY serves.
+
+    A child that is a bound variable merely ROUTED a binding into this slot,
+    and its RoutingOnly certificate names that binding: the occurrence it
+    serves is the one it brought, not whichever root its consumer happens to
+    have in scope. A child with its own chart already carries its link, and a
+    nested spine's factors carry theirs. When nothing records one, this
+    returns None -- a child outside any branch has no external root, and
+    inventing one would put an unrelated occurrence on a branch's payload.
+    """
+    sb = getattr(art, "selected_boundary", None)
+    if sb is not None and not isinstance(sb, str):
+        r = _recorded_root(sb.ingress if side == "ingress" else sb.egress)
+        if r is not None:
+            return r
+    cert = getattr(art, "routing", None)
+    if cert is not None and cert.owner_id is not None:
+        return cert.owner_id
+    return None
+
+
+def _child_factor(chart, wires, name, owner, logical, side, role="operand",
+                  root=None):
     """One immediate child's selected chart, as ONE ordered factor.
 
     A premise-local chart sits at the child artifact's own recorded placement
@@ -1805,8 +1874,46 @@ def _child_factor(chart, wires, name, owner, logical, side, role="operand"):
                 f"its recorded {side} placement names {len(wires)} wires "
                 f"{tuple(wires)}")
         nq, codes, w = chart.n_qubits, tuple(chart.codes), tuple(wires)
-    return ChartFactor(name=name, owner=owner, n_qubits=nq, codes=codes,
+    # TRANSPORT first, then whatever the CALLER supplied. A child outside any
+    # branch has no external branch root and records none: that is not an
+    # error here, it is simply nothing to link to, and `reaches()` refuses
+    # later if someone tries to classify it inside a branch anyway. What is
+    # never done is picking a root because one happens to be in scope.
+    _r = _recorded_root(chart)
+    if _r is None:
+        _r = root
+    return ChartFactor(factor_id=f"operand:{owner}:{name}",
+                       source=FactorSource((SourcePortRef(
+                           ref=str(owner), origin_cut=owner,
+                           path=("operand", name, side), root=_r),)),
+                       name=name, owner=owner, n_qubits=nq, codes=codes,
                        role=role, logical=logical), w
+
+
+def _recorded_root(chart):
+    """The external root a chart's own factors already record, or None.
+
+    TRANSPORT ONLY. A lift or an operand pullback re-presents an existing
+    semantic occurrence, so it carries that occurrence's link forward. When
+    the chart records none -- a route-less atomic child -- this returns None
+    and the CALLER must supply the derivation-selected root. No helper picks
+    between a branch's source and target roots merely because one is in
+    scope: they are different occurrences, and "whichever is available" is
+    not a derivation.
+    """
+    if chart is None or getattr(chart, "route", None) is None:
+        return None
+    seen = {r.root for f in chart.route.parts if f.source is not None
+            for r in f.source.refs}
+    seen.discard(None)
+    if len(seen) == 1:
+        return seen.pop()
+    if len(seen) > 1:
+        raise TypeCheckError(
+            f"chart {getattr(chart, 'label', '?')!r} records factors linked "
+            f"to several roots {sorted(map(str, seen))}; a pullback cannot "
+            f"choose between them")
+    return None
 
 
 def _slot_wires(perm, offset, w):
@@ -1819,6 +1926,175 @@ def _slot_wires(perm, offset, w):
     if w < 0 or offset < 0 or offset + w > len(perm):
         return ()
     return tuple(perm[offset + i] for i in range(w))
+
+
+def _whole_premise_face(chart, iface_rec, cut, pol, where=""):
+    """A cut face for a routed premise that recorded none.
+
+    The presenters come from the route's own DERIVATION-LEVEL records: a
+    canonical variable spine presents the cut with its recorded terminal
+    residual -- the same rule the tensor splice matches by -- and every
+    other route presents it with all of its factors jointly. Nothing is
+    selected by width, dimension, wire containment or varying bits. The
+    ALPHABET is the premise's recorded interface embedding, and the joint
+    presenter states must cover it bidirectionally. A premise whose records
+    cannot describe this cut gets NO face -- the composition then fails
+    closed rather than receive a face built from a row image.
+    """
+    if chart is None or iface_rec is None:
+        return None
+    r = chart.route
+    if r is None or isinstance(r, JoinRoute) or not r.reconstructible:
+        return None
+    wires = tuple(iface_rec.ordered_wires)
+    alpha = tuple(iface_rec.local_codes)
+    if not alpha or len(set(alpha)) != len(alpha):
+        return None
+    n = chart.n_qubits
+    if r.is_spine():
+        res = r.residual
+        idx = r.parts.index(res)
+        pres = [(res, tuple(r.placements[idx]))]
+    else:
+        pres = [(f, tuple(pl)) for f, pl in zip(r.parts, r.placements)
+                if pl]
+    if not pres:
+        return None
+    # joint presenter states, first named factor most significant, each
+    # projected onto the interface's recorded coordinates
+    joint = [(0, ())]
+    for f, pl in pres:
+        joint = [(amb | scatter_code(cd, pl, n), cs + (cd,))
+                 for amb, cs in joint for cd in f.codes]
+    pos = {a: i for i, a in enumerate(alpha)}
+    codes, labels = [], []
+    for amb, cs in joint:
+        sym = gather_code(amb, wires, n)
+        if sym not in pos:
+            return None                    # the record does not present it
+        v = 0
+        for (f, _pl), cd in zip(pres, cs):
+            v = (v << f.n_qubits) | cd
+        codes.append(v)
+        labels.append(pos[sym])
+    if set(labels) != set(range(len(alpha))):
+        return None                        # the record is wider than the rows
+    if len(set(codes)) != len(codes):
+        return None
+    sizes = [0] * len(alpha)
+    for L in labels:
+        sizes[L] += 1
+    return CutFace(
+        factor_ids=tuple(f.factor_id for f, _ in pres), polarity=pol,
+        cut_id=cut, origin_cut=cut, codes=tuple(codes),
+        placement=tuple(w for _, pl in pres for w in pl),
+        labels=tuple(labels), n_labels=len(alpha), alphabet=alpha,
+        interface_wires=wires, fibre_sizes=tuple(sizes),
+        whole_chart=False)
+
+
+def _issue_block_face(chart, plan, main_codes, main_in_block, main_wires,
+                      cut, pol):
+    """THE Block cut face, from the ANTECEDENT branch projections.
+
+    One rule for both open-sum adapters, at module level so neither can
+    diverge from it. Each completed branch's per-polarity projection DEFINES
+    its cut alphabet -- its recorded symbols, in its recorded order,
+    expressed on the cut coordinates through its own recorded schedule --
+    and the branch alphabets are tagged into their sectors and concatenated
+    in summand order. The completed Block's rows only VALIDATE bidirectional
+    coverage: every row must present exactly the symbol its recorded label
+    projects to, and every projected symbol is backed by rows because the
+    projection covers its own alphabet. Rows never define, shrink or reorder
+    the alphabet, and nothing here searches for the presenting factor by
+    overlap or by which bits vary.
+
+    `main_codes` is the occurrence-recorded antecedent main interface, and
+    it is REQUIRED: a face issued against nothing would leave a parent label
+    with no Block state behind it undetectable.
+    """
+    if main_codes is None:
+        raise UnsupportedFrame(
+            f"open sum {pol}: no antecedent main interface was recorded; a "
+            f"Block face is validated against the occurrence's own recorded "
+            f"interface, never against the rows' first-appearance image")
+    f = chart.route.parts[0]
+    # THE DEFINED ALPHABET, branch by branch, in summand order.
+    alpha, offsets = [], {}
+    for blk in plan.branches:
+        proj = (blk.ingress_projection if pol == "ingress"
+                else blk.egress_projection)
+        if proj is None:
+            raise UnsupportedFrame(
+                f"open sum {pol}: branch {blk.index} carries no completed "
+                f"{pol} projection; the antecedent branch projections define "
+                f"the alphabet and are required")
+        if proj.polarity != pol:
+            raise UnsupportedFrame(
+                f"open sum {pol}: branch {blk.index} was handed its "
+                f"{proj.polarity} projection; the two polarities are "
+                f"constructed independently and must not be swapped")
+        offsets[blk.index] = len(alpha)
+        alpha.extend(branch_cut_symbols(
+            proj, plan.tag_bit(blk.index), main_wires, plan.ambient_width,
+            f"open sum {pol}, branch {blk.index}: "))
+    if len(set(alpha)) != len(alpha):
+        raise UnsupportedFrame(
+            f"open sum {pol}: two branches present one cut symbol; the "
+            f"tagged branch alphabets are not disjoint")
+    # THE ROWS VALIDATE. Every Block state must carry exactly the symbol its
+    # branch projection recorded for its label -- a row presenting anything
+    # else means the fibre leaked onto the cut or the projection lied.
+    labels = [None] * len(f.codes)
+    for blk in plan.branches:
+        proj = (blk.ingress_projection if pol == "ingress"
+                else blk.egress_projection)
+        incl = plan.inclusion(blk.index, pol)
+        if len(incl) != len(proj.labels):
+            raise UnsupportedFrame(
+                f"open sum {pol}: branch {blk.index} includes {len(incl)} "
+                f"states but its completed projection records "
+                f"{len(proj.labels)} rows")
+        for k, p_pos in enumerate(incl):
+            sub = gather_code(f.codes[p_pos], main_in_block, f.n_qubits)
+            L = offsets[blk.index] + proj.labels[k]
+            if sub != alpha[L]:
+                raise UnsupportedFrame(
+                    f"open sum {pol}: branch {blk.index} state {k} presents "
+                    f"cut symbol {sub} but its recorded label projects to "
+                    f"{alpha[L]}; the rows must confirm the projected "
+                    f"alphabet, never redefine it")
+            labels[p_pos] = L
+    if any(L is None for L in labels):
+        raise UnsupportedFrame(
+            f"open sum {pol}: a Block state belongs to no branch inclusion; "
+            f"the parent is not the ordered exhaustion of its blocks")
+    # COVERAGE, against the antecedent main interface. A parent label with
+    # no Block state behind it is a hole in the sum, and shrinking the
+    # alphabet to fit would hide exactly that.
+    missing = [c for c in main_codes if c not in set(alpha)]
+    if missing:
+        raise UnsupportedFrame(
+            f"open sum {pol}: the occurrence-selected parent presents cut "
+            f"symbols {tuple(main_codes)} but the Block covers none of "
+            f"{missing}; the alphabet is not shrunk to fit")
+    extra = [c for c in alpha if c not in set(main_codes)]
+    if extra:
+        raise UnsupportedFrame(
+            f"open sum {pol}: the Block presents {extra}, which the "
+            f"occurrence-selected parent does not record")
+    sizes = [0] * len(alpha)
+    for L in labels:
+        sizes[L] += 1
+    return CutFace(
+        factor_ids=(f.factor_id,), polarity=pol, cut_id=cut,
+        origin_cut=cut, codes=tuple(f.codes),
+        placement=tuple(chart.route.placements[0]),
+        labels=tuple(labels), n_labels=len(alpha),
+        alphabet=tuple(alpha),
+        interface_wires=tuple(main_wires), fibre_sizes=tuple(sizes),
+        role=f.role, logical=f.logical, descriptor=f.descriptor,
+        whole_chart=False)
 
 
 def _preflight_open_use_block(plan, ambient_width):
@@ -1970,7 +2246,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             env: Env = None, _artifact_sink=None,
             _prov_scope: "ProvenanceScope" = None,
             _branch_parameter: "BranchParameter" = None,
-            _typed_env: dict = None) -> Compiled:
+            _typed_env: dict = None,
+            _port_roots: dict = None) -> Compiled:
     """`_prov_scope` is INTERNAL. A public compile mints exactly one
     ProvenanceScope root; nested branch preparation passes a child of the
     enclosing occurrence's scope so its identities are transitive descendants
@@ -2129,11 +2406,95 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         # that slot -- those emitters record their own and the default is
         # used otherwise.
         _exit = tuple(p.new_to_old)
-        _egr_w = _slot_wires(_exit, offset, fout.n_qubits)
+        # The slot an occurrence LEAVES its result on. An emitter that knows
+        # better records it: an open sum's result sits on its main
+        # coordinates, and the context beside it was carried, not produced.
+        _egr_w = _egress_sink.pop(occ, None)
+        if _egr_w is None:
+            _egr_w = _slot_wires(_exit, offset, fout.n_qubits)
         _ing_w = _placement_sink.pop(occ, None)
         if _ing_w is None:
             _ing_w = _slot_wires(entry, offset, fin.n_qubits)
+        # THE interface records. An emitter that transported or re-placed its
+        # effective Frame issues them; otherwise the occurrence's interface is
+        # its own selected slot, which is a recorded placement too.
+        # The emitter records WHICH COORDINATES its interface occupies; the
+        # codes come from the occurrence's own effective frame. Separating
+        # the two is what keeps the record from having to agree with a frame
+        # it was not built from.
+        # Each entry is (ordered wires, inherited record or None). The wires
+        # are the placement the emitter selected; the inherited record, when
+        # present, is the child interface this one continues, and its origin
+        # is carried forward so a transported interface never looks freshly
+        # selected here.
+        _sink_in, _sink_out = _interface_sink.pop(occ,
+                                                  ((None, None), (None, None)))
+        _reg_now = len(p.new_to_old)
+
+        def _iface(frame, ws, pol, inherited=None):
+            if ws is None or frame.n_qubits not in (len(ws), _reg_now):
+                return None
+            return interface_from_frame(
+                frame, ws, _reg_now, cut_id=_cut_ids[occ], polarity=pol,
+                origin_cut=(inherited.origin_cut if inherited is not None
+                            else None),
+                where=f"occurrence {occ} {pol}: ")
+
+        _w_in, _inh_in = _sink_in
+        _w_out, _inh_out = _sink_out
+        _ifc_in = _iface(fin, _w_in if _w_in is not None else _ing_w,
+                         "ingress", _inh_in)
+        _ifc_out = _iface(fout, _w_out if _w_out is not None else _egr_w,
+                          "egress", _inh_out)
+        # A ROUTE-LESS premise gets an exhaustive atomic face, minted here
+        # from the compilation's own provenance scope. Its codes and its
+        # placement are then used to VALIDATE that presentation, never to
+        # discover it.
+        _face_in, _face_out = _face_sink.pop(occ, (None, None))
+
+        def _atomic(chart, rec, pol, given):
+            if given is not None:
+                given.check_against(chart, _cut_ids[occ],
+                                    f"occurrence {occ} {pol}: ")
+                return given
+            if chart is None or chart.route is not None or rec is None:
+                return None
+            if chart.dim != len(rec.local_codes):
+                return None          # not an identity projection; not ours
+            # The alphabet is this premise's OWN ordered cut sub-codes --
+            # read off the interface it recorded, not invented as 0..dim.
+            alpha = tuple(rec.local_codes)
+            pos = {a: i for i, a in enumerate(alpha)}
+            if len(pos) != len(alpha) or len(alpha) != chart.dim:
+                return None
+            return CutFace(
+                factor_ids=(_prov.fork().owner(),), polarity=pol,
+                cut_id=_cut_ids[occ], origin_cut=_cut_ids[occ],
+                codes=tuple(chart.codes),
+                placement=tuple(chart.support(f"occurrence {occ} {pol}: ")),
+                labels=tuple(pos[a] for a in alpha), n_labels=len(alpha),
+                alphabet=alpha,
+                interface_wires=tuple(rec.ordered_wires),
+                fibre_sizes=tuple([1] * len(alpha)),
+                role="residual", whole_chart=True)
+
+        # An atomic face is issued only when BOTH polarities are route-less:
+        # that is the frame-default premise the atomic form exists for. A
+        # premise with a route on either side needs its own issuer, and
+        # minting an atomic face for the other polarity would name a factor
+        # the routed side does not contain.
+        if _sb is not None and not isinstance(_sb, str):
+            if _sb.ingress.route is None and _sb.egress.route is None:
+                _face_in = _atomic(_sb.ingress, _ifc_in, "ingress", _face_in)
+                _face_out = _atomic(_sb.egress, _ifc_out, "egress", _face_out)
+            for _f, _ch, _pol in ((_face_in, _sb.ingress, "ingress"),
+                                  (_face_out, _sb.egress, "egress")):
+                if _f is not None:
+                    _f.check_against(_ch, _cut_ids[occ],
+                                     f"occurrence {occ} {_pol}: ")
         art = Artifact(term=t, occurrence=occ, offset=offset,
+                       ingress_face=_face_in, egress_face=_face_out,
+                       ingress_interface=_ifc_in, egress_interface=_ifc_out,
                        input_frame=fin, output_frame=fout,
                        perm_at_entry=entry, perm_at_exit=tuple(p.new_to_old),
                        plan=_plan_sink.pop(occ, None),
@@ -2156,9 +2517,16 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
     _cut_ids = {}
     _prov = _prov_scope if _prov_scope is not None else ProvenanceScope()
     _binding_cache = {}
+    # THE EXTERNAL SEMANTIC ROOTS this compilation serves, per polarity,
+    # supplied by the derivation that prepared it. A port minted inside here
+    # records its link to one of them AT MINT TIME.
+    _roots = dict(_port_roots or {})
     _placement_plans = {}
     _boundary_sink = {}
     _placement_sink = {}
+    _egress_sink = {}
+    _interface_sink = {}
+    _face_sink = {}
     _use_block_sink = {}
     _routing_sink = {}
     # name -> the identity minted where that name was BOUND.
@@ -2436,6 +2804,29 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             if k > 0 and tp != tuple(range(n_summands)):
                 _emit_tag_perm_unitary(circ, p, tp, k, offset, explain, log)
 
+    def _link(owner, side):
+        """Map a recorded occurrence onto the root it serves HERE.
+
+        The enclosing derivation handed down which occurrences it captured.
+        A binder among them is context this branch carries; a binder that is
+        not was introduced inside the branch and is part of what the branch
+        computes. Both readings come from the handed-down record, never from
+        inspecting a finished factor -- and outside a branch there is no such
+        record, so the link stays absent rather than being invented.
+
+        An occurrence that IS already one of the issued roots is returned
+        unchanged: it has arrived, and re-mapping it would move it.
+        """
+        if owner is None:
+            return None
+        if owner in set(_roots.values()):
+            return owner
+        if ("fibre", owner) in _roots:
+            return _roots[("fibre", owner)]
+        if not _roots:
+            return None
+        return _roots.get(("payload", side))
+
     def _branch_scope():
         """A child of THIS compilation's scope for one branch preparation.
 
@@ -2518,12 +2909,33 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         # boundary S_a (x) Y_{A(x)B}, and only Y is consumed. The factor is
         # located by recorded role and logical type, and its own recorded
         # placement is the port.
+        # Each premise resolves through ITS OWN recorded link map, by the
+        # same rule Par children use: transported record first, else the
+        # premise's own minted occurrence read through the handed-down
+        # record. Nothing is classified payload merely for being here. An
+        # AMBIENT chart's factors already carry their own per-factor links
+        # -- possibly to several roots, which is not one root to resolve --
+        # and `_ambient_chart` returns it untouched, so no root is read.
+        def _premise_root(art, chart, side):
+            if chart.space == "ambient":
+                return None
+            _cr = _child_root(art, side)
+            return _link(_cr if _cr is not None else art.cut_id, side)
+
         prod_in = _ambient_chart(pair_art.selected_boundary.ingress,
                                  pair_art.ingress_wires, reg,
-                                 logical=pair_art.input_frame.logical)
+                                 logical=pair_art.input_frame.logical,
+                                 root=_premise_root(
+                                     pair_art,
+                                     pair_art.selected_boundary.ingress,
+                                     "ingress"))
         prod_out = _ambient_chart(pair_art.selected_boundary.egress,
                                   pair_art.egress_wires, reg,
-                                  logical=pair_art.output_frame.logical)
+                                  logical=pair_art.output_frame.logical,
+                                  root=_premise_root(
+                                      pair_art,
+                                      pair_art.selected_boundary.egress,
+                                      "egress"))
         _mi = _matched_factor(prod_out, tensor_ty, "LetPair")
         matched = tuple(prod_out.route.placements[_mi])
         r_p_in = sched.r_p("ingress")
@@ -2541,8 +2953,12 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         # through the body artifact's OWN recorded placement for each
         # polarity -- not through the other polarity's, and not through a
         # width guess.
-        body_in = _ambient_chart(body_sb.ingress, body_art.ingress_wires, reg)
-        body_out = _ambient_chart(body_sb.egress, body_art.egress_wires, reg)
+        body_in = _ambient_chart(
+            body_sb.ingress, body_art.ingress_wires, reg,
+            root=_premise_root(body_art, body_sb.ingress, "ingress"))
+        body_out = _ambient_chart(
+            body_sb.egress, body_art.egress_wires, reg,
+            root=_premise_root(body_art, body_sb.egress, "egress"))
 
         # TenPack: re-address each polarity through its OWN theta. Gate-free.
         packed_in = tenpack(body_in, r_p_in, theta_in)
@@ -2557,6 +2973,97 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         return SelectedBoundary(ingress=ing, egress=egr,
                                 origin="letpair:splice", packing=sched,
                                 authority=DERIVED)
+
+    def _branch_projections(art, roots, root_in, root_out, captured, index):
+        """This branch's ingress and egress row projections, INDEPENDENTLY.
+
+        Each polarity gets its own role context -- the payload root issued
+        for that side, and every captured binding as fibre -- and its own
+        projection over the branch's own selected rows. The two are never one
+        object: ctrl_ho's branch presents eight symbols on the way in and two
+        on the way out, and a shared context would have to lie about one.
+        """
+        sb = art.selected_boundary
+        if sb is None or isinstance(sb, str):
+            return None
+        out = {}
+        for pol, root in (("ingress", root_in), ("egress", root_out)):
+            ch = sb.ingress if pol == "ingress" else sb.egress
+            port = SourcePortRef(ref=str(art.cut_id),
+                                 origin_cut=art.cut_id,
+                                 path=("branch", str(index), pol),
+                                 root=root)
+            roles = BranchRoleContext(
+                polarity=pol, payload=(root,), fibre=tuple(captured),
+                branch_index=index, cut_id=art.cut_id)
+            if ch.route is None:
+                # A ROUTE-LESS branch root -- a frame-default boundary -- is
+                # ONE atomic presentation of the branch's payload, and this
+                # preparation is what put that payload in its slot, so it is
+                # what issues the projection: the chart's own ordered codes
+                # as the alphabet, every coordinate a label coordinate, an
+                # empty fibre, linked to the payload root this adapter
+                # minted. A captured binding NEVER sits in a route-less
+                # chart -- context enters a boundary only through a routed
+                # factor -- so the atomic presentation is pure payload even
+                # for a branch that captured context (a substituted branch
+                # whose binding stays on its own wires, outside this chart).
+                n = ch.n_qubits
+                proj = RowProjection(
+                    port=port, polarity=pol, alphabet=tuple(ch.codes),
+                    labels=tuple(range(ch.dim)),
+                    fibre_keys=(0,) * ch.dim,
+                    presenters=(str(art.cut_id),),
+                    support=tuple(range(n)), rows=tuple(ch.codes),
+                    padding=(), label_wires=tuple(range(n)),
+                    fibre_wires=(), row_width=n)
+                proj.check_rows(ch, f"branch {index} {pol}: ")
+                out[pol] = BranchMainProjection(
+                    branch_index=index, polarity=pol, projection=proj,
+                    roles=roles)
+                continue
+            if len(ch.route.parts) == 1 and ch.route.parts[0].role == "block":
+                # A branch ROOTED AT A BLOCK: one merged factor whose states
+                # combine the inner sum's main occurrence with the context it
+                # carries. A merged factor is never classified after the
+                # fact; its constructor owes a row projection, and the inner
+                # occurrence ISSUED one -- its recorded cut face, relayed to
+                # this root. Labels and alphabet are that face's own; the
+                # factor's remaining coordinates are the carried fibre.
+                f0 = ch.route.parts[0]
+                r0 = f0.source.sole.reaches(f"branch {index} {pol}: ")
+                if roles.role_of(r0, f"branch {index} {pol}: ") != "payload":
+                    raise ProvenanceError(
+                        f"branch {index} {pol}: the Block factor descends "
+                        f"from {r0!r}, which is not this branch's payload "
+                        f"root")
+                face = (art.ingress_face if pol == "ingress"
+                        else art.egress_face)
+                if face is None:
+                    return None      # no issued projection: fail closed later
+                pl0 = tuple(ch.route.placements[0])
+                iw = tuple(face.interface_wires)
+                fib = tuple(w for w in pl0 if w not in set(iw))
+                n = ch.n_qubits
+                proj = RowProjection(
+                    port=port, polarity=pol,
+                    alphabet=tuple(face.alphabet),
+                    labels=tuple(face.labels),
+                    fibre_keys=tuple(gather_code(r, fib, n)
+                                     for r in ch.codes),
+                    presenters=(f0.factor_id,),
+                    support=tuple(sorted(set(iw) | set(fib))),
+                    rows=tuple(ch.codes), padding=(),
+                    label_wires=iw, fibre_wires=fib, row_width=n)
+                proj.check_rows(ch, f"branch {index} {pol}: ")
+                out[pol] = BranchMainProjection(
+                    branch_index=index, polarity=pol, projection=proj,
+                    roles=roles)
+                continue
+            out[pol] = project_branch_root(
+                ch, roles, branch_index=index, polarity=pol, port=port,
+                where=f"branch {index} {pol}: ")
+        return out
 
     def _plan_use_block_from(bins, bindings, layout, label="u"):
         """Complete each PREPARED alternative, then take their tagged Block.
@@ -2586,7 +3093,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 binding_transport=tuple(bi.transport),
                 local_to_ambient=bi.local_to_ambient,
                 tag_value=bi.index, ambient_width=layout.ambient_width,
-                label=label))
+                label=label, projections=bi.projections))
         return plan_use_block(completed, layout)
 
     def _emit_open_nplusmap(t, k, offset, env, parent_in, parent_out):
@@ -2627,7 +3134,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         _layout = use_block_layout(_bindings, _main_w, k, n_amb)
 
         # -- PREPARE every alternative EXACTLY once -------------------------
-        _prepared, _param_owners = [], []
+        _prepared, _param_owners, _np_proj = [], [], {}
         for i, (st, br) in enumerate(zip(t.summand_types, t.branches)):
             pw = width(st)
             fv = _ordered_free_vars(br)
@@ -2668,21 +3175,47 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     codes=tuple(canonical_frame(st).codes),
                     ingress_placement=tuple(range(pw)),
                     register_width=ctx_pos)
+                # THE BRANCH'S EXTERNAL ROOTS, issued before it compiles.
+                _r_in = _roots.get(("payload", "ingress")) \
+                    or _prov.fork().owner()
+                _r_out = _roots.get(("payload", "egress")) \
+                    or _prov.fork().owner()
+                _broots = {("payload", "ingress"): _r_in,
+                           ("payload", "egress"): _r_out}
+                _broots.update({k: v for k, v in _roots.items()
+                                if k[0] == "fibre"})
+                for _b in _used:
+                    _broots[("fibre", _b.owner_id)] = _b.owner_id
                 _art = _compile_branch_artifact(
                     _to_compile, env=sub_env, scope=_branch_scope(),
-                    parameter=_bp, typed_env=_views)
+                    parameter=_bp, typed_env=_views, port_roots=_broots)
                 _param_owners.append(_bp.owner_id)
+                _np_proj[i] = _branch_projections(
+                    _art, _broots, _r_in, _r_out,
+                    tuple(b.owner_id for b in _used), i)
             else:
                 # No free variable at all: this alternative uses nothing.
                 # Recorded, not rediscovered later by a second scan.
+                # A context-free branch still presents a main occurrence.
                 _used, _transport = (), ()
                 _local = tuple(_layout.workspace_wires[:pw])
-                _art = _compile_branch_artifact(br, scope=_branch_scope())
+                _r_in = _roots.get(("payload", "ingress")) \
+                    or _prov.fork().owner()
+                _r_out = _roots.get(("payload", "egress")) \
+                    or _prov.fork().owner()
+                _broots = {("payload", "ingress"): _r_in,
+                           ("payload", "egress"): _r_out}
+                _broots.update({k: v for k, v in _roots.items()
+                                if k[0] == "fibre"})
+                _art = _compile_branch_artifact(br, scope=_branch_scope(),
+                                                port_roots=_broots)
+                _np_proj[i] = _branch_projections(
+                    _art, _broots, _r_in, _r_out, (), i)
             _prepared.append(BranchInputs(
                 index=i, artifact=_art,
                 uses=tuple(b.owner_id for b in _used),
                 bindings=tuple(_used), local_to_ambient=_local,
-                transport=_transport))
+                transport=_transport, projections=_np_proj.get(i)))
 
         # COMPLETE each alternative against the context it does NOT use, then
         # Block the results. The plan holds the prepared artifacts themselves.
@@ -2739,8 +3272,14 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             block_width=_ublock.block_width,
             ambient_width=_ublock.ambient_width)
         _bdesc.check_against(_ublock)
-        _agg_in = aggregate_block_chart(_ublock, "ingress", _bdesc)
-        _agg_out = aggregate_block_chart(_ublock, "egress", _bdesc)
+        # The Block occurrence was introduced HERE, inside this compilation,
+        # so per polarity it serves whatever root the handed-down record
+        # issues for what this compilation computes -- and records none at
+        # all outside any branch. Read through `_link`, never chosen.
+        _agg_in = aggregate_block_chart(_ublock, "ingress", _bdesc,
+                                        root=_link(_cut, "ingress"))
+        _agg_out = aggregate_block_chart(_ublock, "egress", _bdesc,
+                                         root=_link(_cut, "egress"))
 
         # EVERY gate runs before the parent gains a command: the plan's own
         # validation and preflight, then the agreement between the completed
@@ -2770,6 +3309,10 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             main_wires=_main_wires, where="NPlusMap open egress: ")
         _fin_b = _dc_replace(_fin_main, ports=_pin_ports)
         _fout_b = _dc_replace(_fout_main, ports=_pout_ports)
+        _ifc_main_in = restrict_to_cut(_fin_b, _main_wires, n_amb,
+                                       "NPlusMap open ingress: ")[0]
+        _ifc_main_out = restrict_to_cut(_fout_b, _main_wires, n_amb,
+                                        "NPlusMap open egress: ")[0]
 
         _emit_open_use_block(circ, _ublock)
         _frame_in_override[occ] = _fin_b
@@ -2780,6 +3323,30 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         # named by the context ports and by the Block, not by the slot. Taken
         # from the recorded layout, so nothing reads it back off a frame width.
         _placement_sink[occ] = _main_wires
+        _egress_sink[occ] = _main_wires
+
+        # THE BLOCK'S CUT FACE, issued from the plan's own recorded layout.
+        # The cut sits at the tag and workspace coordinates the layout
+        # selected; every one of the Block's states carries one of the main
+        # interface's labels there, and the projection is many-to-one by
+        # construction -- 192 states over six labels, 32 in each fibre. All
+        # of them survive; a map from label back to state cannot exist.
+        _b2a = tuple(_ublock.block_to_ambient)
+        _main_in_block = tuple(_b2a.index(w) for w in _main_wires)
+
+        def _block_face(chart, main_codes, pol):
+            return _issue_block_face(chart, _ublock, main_codes,
+                                     _main_in_block, _main_wires, _cut, pol)
+
+        # The alphabet comes from the plan's rows; the recorded main
+        # interface is passed only so a disagreement is caught here.
+        _face_sink[occ] = (
+            _block_face(_agg_in, tuple(_ifc_main_in), "ingress"),
+            _block_face(_agg_out, tuple(_ifc_main_out), "egress"))
+        # The RESULT coordinates, from the layout the plan already selected.
+        # The owned context beside them is completion, not interface: it is
+        # carried, not produced, and it must not enlarge an enclosing cut.
+        _interface_sink[occ] = ((_main_wires, None), (_main_wires, None))
         _factorization_sink[occ] = (_cert_in, _cert_out)
         _boundary_sink[occ] = SelectedBoundary(
             ingress=_agg_in, egress=_agg_out,
@@ -2809,7 +3376,72 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         sb = a.selected_boundary
         return tuple(sb.ingress.codes) == tuple(sb.egress.codes)
 
-    def _seq_boundary(a_f, a_g, strict_identity_cut, cut_kind):
+    def _transport_frame(frame, tr, reg, where):
+        """Carry a frame through THE recorded cut transport.
+
+        The same object the gates were emitted from, applied at whichever
+        width the frame is actually expressed in -- a cut-local frame through
+        the map itself, an ambient one on the cut coordinates it occupies.
+        """
+        if frame.n_qubits == len(tr.wires):
+            codes = tuple(tr.forward[c] for c in frame.codes)
+        elif frame.n_qubits == reg:
+            codes = tuple(tr.apply(c) for c in frame.codes)
+        else:
+            raise UnsupportedFrame(
+                f"{where}spans {frame.n_qubits} wires, which is neither the "
+                f"cut's {len(tr.wires)} nor the register's {reg}")
+        if len(set(codes)) != len(codes):
+            raise UnsupportedFrame(
+                f"{where}is not injective after the cut transport")
+        return Frame(logical=frame.logical, n_qubits=frame.n_qubits,
+                     codes=codes,
+                     label=f"{frame.label}@cut", sectors=(),
+                     ports=frame.ports)
+
+    def _lift_premise(sb, wires, reg, where):
+        """A premise's boundary in the AMBIENT register, with its support.
+
+        A premise-local chart is placed on the coordinates the cut actually
+        occupies; one already ambient is used as it stands. Nothing is
+        widened silently: the support says exactly which coordinates the
+        premise constrains, and the composition reads it rather than assuming
+        the whole register.
+        """
+        if sb is None:
+            raise UnsupportedFrame(
+                f"{where}has no selected boundary, so there is nothing to "
+                f"compose at this cut")
+        if sb.ingress.space == "ambient" and sb.egress.space == "ambient":
+            if sb.ingress.n_qubits != reg or sb.egress.n_qubits != reg:
+                raise UnsupportedFrame(
+                    f"{where}claims ambient space but spans "
+                    f"{sb.ingress.n_qubits}/{sb.egress.n_qubits} of a {reg}-"
+                    f"wire register")
+            # The support is READ, per polarity. `range(reg)` was never an
+            # answer -- it says the chart claims every coordinate, which for
+            # a completed Block with declared spectators is false.
+            return sb, (sb.ingress.support(where), sb.egress.support(where))
+        if sb.ingress.space != "local" or sb.egress.space != "local":
+            raise UnsupportedFrame(
+                f"{where}mixes {sb.ingress.space!r} and {sb.egress.space!r} "
+                f"charts; a cut composes one space at a time")
+        if sb.ingress.n_qubits != len(wires) or \
+                sb.egress.n_qubits != len(wires):
+            raise UnsupportedFrame(
+                f"{where}is a {sb.ingress.n_qubits}/{sb.egress.n_qubits}-wire "
+                f"local chart but the cut occupies {len(wires)} wires")
+        return _dc_replace(
+            sb,
+            ingress=_lift_chart(sb.ingress, wires, reg,
+                                f"{sb.ingress.label}@cut"),
+            egress=_lift_chart(sb.egress, wires, reg,
+                               f"{sb.egress.label}@cut")), (tuple(wires),
+                                                            tuple(wires))
+
+    def _seq_boundary(a_f, a_g, strict_identity_cut, cut_kind,
+                      transport=None, cut_wires=None, interfaces=None,
+                      cut_error=None):
         """The ONE narrow Seq rule: relay a derived boundary across an
         identity leg.
 
@@ -2824,6 +3456,28 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         general SeqCut transport, which this phase does not implement.
         """
         occ = _cur_occ[0]
+        def _relay_faces(child, chart_in, chart_out, why):
+            """Carry a relayed child's faces onto this occurrence.
+
+            A relay hands on the child's boundary UNCHANGED, so the face is
+            recut, not re-issued: the factor was presented by the child and
+            stays traceable to it. If the chart it describes moved, the face
+            is not this chart's and must not be attached -- the relay only
+            claims what it actually relayed, and each face is validated
+            against the resulting chart before it goes on.
+            """
+            out = []
+            for f, ch, pol in ((child.ingress_face, chart_in, "ingress"),
+                               (child.egress_face, chart_out, "egress")):
+                if f is None:
+                    out.append(None)
+                    continue
+                moved = f.recut(_cut_ids[occ], pol)
+                moved.check_against(ch, _cut_ids[occ],
+                                    f"Seq {why} {pol} relay: ")
+                out.append(moved)
+            return tuple(out)
+
         f_der = a_f is not None and a_f.selected_boundary is not None \
             and a_f.selected_boundary.authority == DERIVED
         g_der = a_g is not None and a_g.selected_boundary is not None \
@@ -2867,6 +3521,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         f"Seq: the routing handoff is {_cert.egress_wires} "
                         f"but the consumer receives on {a_g.ingress_wires}; "
                         f"they are not the same resource")
+                _face_sink[occ] = _relay_faces(a_g, _rb.ingress, _rb.egress,
+                                               "routing")
                 _boundary_sink[occ] = _dc_replace(
                     _rb, origin=f"seq:routing-relay<-{_rb.origin}")
                 return
@@ -2880,47 +3536,89 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             _a_ok = f_der and _certified_identity(a_g)
             _b_ok = g_der and _certified_identity(a_f)
             if _a_ok and _b_ok:
-                raise UnsupportedFrame(
-                    f"Seq: both legs carry a derived boundary AND both are "
-                    f"certified identities, so which one the cut relays is "
-                    f"ambiguous. That is general SeqCut transport, which is "
-                    f"not implemented.")
+                # Both legs derived AND both certified identities: which one
+                # a relay would carry is not determined, so NOTHING is
+                # relayed -- the two boundaries are COMPOSED through the
+                # cut's own transport below, which needs no such choice.
+                _a_ok = _b_ok = False
             if _a_ok:
+                _sbf = a_f.selected_boundary
+                _face_sink[occ] = _relay_faces(a_f, _sbf.ingress, _sbf.egress,
+                                               "left")
                 _boundary_sink[occ] = _dc_replace(
-                    a_f.selected_boundary,
-                    origin=f"seq:relay-left<-{a_f.selected_boundary.origin}")
+                    _sbf, origin=f"seq:relay-left<-{_sbf.origin}")
                 return
             if _b_ok:
+                _sbg = a_g.selected_boundary
+                _face_sink[occ] = _relay_faces(a_g, _sbg.ingress, _sbg.egress,
+                                               "right")
                 _boundary_sink[occ] = _dc_replace(
-                    a_g.selected_boundary,
-                    origin=f"seq:relay-right<-{a_g.selected_boundary.origin}")
+                    _sbg, origin=f"seq:relay-right<-{_sbg.origin}")
                 return
-        _why = []
-        if f_der and g_der:
-            _why.append("both legs carry derived boundaries")
-        if not strict_identity_cut:
-            _why.append(f"the cut is {cut_kind}, not a strict identity")
-        for _nm, _a, _o in (("left", a_f, f_der), ("right", a_g, g_der)):
-            if _o or _a is None:
-                continue
-            if not _certified_identity(_a):
-                _r = "no artifact"
-                if _a is not None:
-                    if _a.n_cmds:
-                        _r = f"it emitted {_a.n_cmds} command(s)"
-                    elif abs(_a.phase_delta) > 1e-12:
-                        _r = f"it carries phase {_a.phase_delta}"
-                    elif tuple(_a.perm_at_entry) != tuple(_a.perm_at_exit):
-                        _r = "it permutes"
-                    elif _a.selected_boundary is None:
-                        _r = "it records no boundary"
-                    else:
-                        _r = "its ingress and egress charts differ"
-                _why.append(f"the {_nm} leg is not a certified identity: {_r}")
-        raise UnsupportedFrame(
-            f"Seq: general SeqCut transport is not implemented -- "
-            f"{'; '.join(_why)}. Refusing to replace a derived selected "
-            f"boundary with a frame default.")
+        # GENERAL SeqCut. Nothing is relayed: the two boundaries are
+        # COMPOSED through the transport the cut actually selected. A frame
+        # default is an explicit selected boundary for its own charts here,
+        # not an absence of information.
+        if transport is None or cut_wires is None:
+            raise UnsupportedFrame(
+                f"Seq: the cut is {cut_kind} and no relay applies, but no "
+                f"cut transport could be selected, so the two boundaries "
+                f"cannot be composed"
+                + (f": {cut_error}" if cut_error else "."))
+        _reg = len(p.new_to_old)
+        # Each premise lifts onto ITS OWN recorded placement inside the cut
+        # -- the completion certificate is what relates the two when they
+        # differ -- never onto the whole completed cut by fiat.
+        _p_own_w = tuple(transport.producer_wires or cut_wires)
+        _c_own_w = tuple(transport.consumer_wires or cut_wires)
+        _pb, _psup = _lift_premise(a_f.selected_boundary if a_f else None,
+                                   _p_own_w, _reg, "Seq: the producer ")
+        _cb, _csup = _lift_premise(a_g.selected_boundary if a_g else None,
+                                   _c_own_w, _reg, "Seq: the consumer ")
+        # No action is consulted here. The composition joins the two
+        # LAYOUTS at the cut; what the producer does stays in the composed
+        # morphism. Deriving a layout by inverting the producer's physical
+        # action would gauge it away.
+        # Ingress and egress supports are independent: a premise may claim
+        # different coordinates on its two polarities, and collapsing them
+        # would make one polarity answer for the other.
+        _p_ifc, _c_ifc, _wid_fr = interfaces or (None, None, None)
+
+        # A premise that recorded no face at this cut presents it with its
+        # WHOLE boundary: every route factor, against the premise's own
+        # recorded interface embedding -- issued here, from records, never
+        # from a row image.
+        def _face_or_whole(art, chart, rec, pol):
+            f = (getattr(art, f"{pol}_face", None)
+                 if art is not None else None)
+            if f is not None:
+                return f
+            if art is None:
+                return None
+            if rec is None:
+                rec = getattr(art, f"{pol}_interface", None)
+            return _whole_premise_face(chart, rec, _cut_ids[occ], pol,
+                                       f"Seq {pol} face: ")
+
+        _pf_e = _face_or_whole(a_f, _pb.egress, _p_ifc, "egress")
+        _pf_i = _face_or_whole(a_f, _pb.ingress, None, "ingress")
+        _cf_i = _face_or_whole(a_g, _cb.ingress, _c_ifc, "ingress")
+        _cf_e = _face_or_whole(a_g, _cb.egress, None, "egress")
+        _sb_out, _f_in, _f_out = seq_cut(
+            _pb, _cb, transport,
+            producer_support=_psup, consumer_support=_csup,
+            producer_face=_pf_e, consumer_face=_cf_i,
+            producer_ingress_face=_pf_i, consumer_egress_face=_cf_e,
+            producer_interface=_p_ifc, consumer_interface=_c_ifc,
+            widened_frame=_wid_fr,
+            where="Seq: ", label=f"seq:cut<-{_pb.origin}+{_cb.origin}")
+        _boundary_sink[occ] = _sb_out
+        # The composite's faces are read at THIS occurrence's cut; each keeps
+        # the origin of the premise that actually presented the factor.
+        _face_sink[occ] = (
+            None if _f_in is None else _f_in.recut(_cut_ids[occ], "ingress"),
+            None if _f_out is None else _f_out.recut(_cut_ids[occ], "egress"))
+        return
 
     def _var_boundary(t, cert, param, entry, exit_, offset, cut, reg):
         """A bound variable's selected boundary WHEN the derivation has said
@@ -2971,24 +3669,57 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 f"entry slot is {slot_in}")
         param.check_against(cert, reg, f"bound Var {t.name!r}: ")
 
-        S = ChartFactor(name="S", owner=cut, n_qubits=w,
-                        codes=tuple(param.codes), role="residual",
-                        logical=t.ty)
-        Y = ChartFactor(name=f"Y_{cert.name}", owner=cert.owner_id,
+        # ONE slot lineage, TWO polarity presentations. The slot receives the
+        # branch parameter and leaves carrying the routed result, so its
+        # factor_id is the same on both sides -- one factor lineage -- but
+        # each polarity gets its OWN SourcePortRef linked to ITS OWN issued
+        # payload root. A single instance linked from ("payload","ingress")
+        # would leave the egress presenter serving the ingress occurrence,
+        # and the egress role context could not name it.
+        def _S(pol):
+            return ChartFactor(factor_id=f"param:{param.owner_id}",
+                               source=FactorSource((SourcePortRef(
+                                   ref=param.owner_id,
+                                   origin_cut=param.intro_cut,
+                                   path=("branch-parameter", pol),
+                                   root=_roots.get(("payload", pol),
+                                                   param.owner_id)),)),
+                               name="S", owner=cut, n_qubits=w,
+                               codes=tuple(param.codes), role="residual",
+                               logical=t.ty)
+
+        S_in, S_out = _S("ingress"), _S("egress")
+        Y = ChartFactor(factor_id=f"binding:{cert.owner_id}",
+                        source=FactorSource((SourcePortRef(
+                            ref=cert.owner_id, origin_cut=cut,
+                            path=("binding", cert.name),
+                            root=_roots.get(("fibre", cert.owner_id),
+                                            cert.owner_id)),)),
+                        name=f"Y_{cert.name}", owner=cert.owner_id,
                         n_qubits=w, codes=tuple(canonical_frame(t.ty).codes),
                         role="operand", logical=t.ty)
 
-        def side(places):
+        def side(S, places):
             rep, pl = scatter_repart(places, reg)
             ch = par_then_repart((S, Y), rep, reg, f"var:{t.name}",
                                  placements=pl, kind="scatter")
             ch.validate_joint()
             return ch
 
-        return SelectedBoundary(ingress=side((slot_in, bind)),
-                                egress=side((slot_out, slot_in)),
-                                origin=f"var:branch-parameter({cert.name})",
-                                authority=DERIVED)
+        # THE RULE CLASSIFIES ITS OWN FACTORS. S is the live summand payload
+        # this derivation was HANDED; Y is the binding it carries beside it.
+        # They come from different inputs -- the BranchParameter and the
+        # RoutingOnly certificate -- so the split is stated here, not
+        # recovered later from where the two happen to sit.
+        _part = ((S_in.factor_id,), (Y.factor_id,))
+        _sb = SelectedBoundary(ingress=side(S_in, (slot_in, bind)),
+                               egress=side(S_out, (slot_out, slot_in)),
+                               origin=f"var:branch-parameter({cert.name})",
+                               authority=DERIVED,
+                               ingress_partition=_part, egress_partition=_part)
+        for _pol in ("ingress", "egress"):
+            _sb.check_partition(_pol, f"bound Var {t.name!r}: ")
+        return _sb
 
     def _par_boundary(children, occ, label):
         """Par of the immediate children's selected boundaries, in order.
@@ -3024,12 +3755,24 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     factors.extend(ch.route.parts)
                     places.extend(ch.route.placements)
                     continue
+                # THE CHILD'S RECORDED OCCURRENCE, mapped by the handed-down
+                # record. A child that records no external occurrence -- a
+                # frame-default boundary, e.g. a beta-reduced Apply whose cut
+                # was eliminated -- displays its OWN minted occurrence, which
+                # was introduced inside this compilation; `_link` then reads
+                # the enclosing record: a captured binding is fibre, an
+                # occurrence introduced inside is what the branch computes,
+                # and outside any branch there is no record and the link
+                # stays absent. This is the same rule the spine's argument
+                # uses; nothing here picks a root because one is in scope.
+                _cr = _child_root(a, which)
                 f, w = _child_factor(
                     ch, wires, name=f"S_{type(a.term).__name__}",
                     owner=a.cut_id, logical=(a.input_frame.logical
                                              if which == "ingress"
                                              else a.output_frame.logical),
-                    side=which)
+                    side=which,
+                    root=_link(_cr if _cr is not None else a.cut_id, which))
                 factors.append(f)
                 places.append(w)
             rep, places = scatter_repart(places, reg)
@@ -3205,7 +3948,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
         """
         if env is None:
             env = {}
-        nonlocal p
+        nonlocal p, circ
         if isinstance(t, Id):
             if explain:
                 log.append(f"Id (offset={offset})")
@@ -3265,10 +4008,30 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             # from type_of.  A u_C^- = u_P^+ , so A carries CONSUMER codes
             # onto PRODUCER codes.
             prod_out, cons_in = a_f.output_frame, g_in
+            # The consumer's OWN ingress width, before any common-ambient
+            # widening below. That width is the cut: widening pads a frame
+            # with spectators to make an Align expressible, and taking the
+            # padded width would put the cut on the whole register.
+            _cons_own = g_in
+            _cons_own_w = g_in.n_qubits
+            _prod_own = a_f.output_frame
             # Unequal registers need an explicitly selected common ambient
             # frame with typed residual ports -- Align never widens silently.
+            # THIS is the step that knows why an extra coordinate exists, so
+            # it is the step that records it: the cut selection below consumes
+            # the certificate and never infers a common placement from one
+            # wire set containing another.
+            _cut_completion_reason = None
             if prod_out.n_qubits != cons_in.n_qubits:
                 _amb = max(prod_out.n_qubits, cons_in.n_qubits)
+                _cut_completion_reason = (
+                    "the two premises meet at registers of "
+                    f"{prod_out.n_qubits} and {cons_in.n_qubits} wires; the "
+                    f"splice selects a common {_amb}-wire frame with typed "
+                    f"splice_pad residual ports")
+                _widened_side = ("producer" if prod_out.n_qubits < _amb
+                                 else "consumer")
+                _widened_from = min(prod_out.n_qubits, cons_in.n_qubits)
                 if prod_out.n_qubits < _amb:
                     prod_out = with_spectators(prod_out, _amb,
                                                residual_name="splice_pad")
@@ -3278,29 +4041,217 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                     g_out = with_spectators(g_out, _amb,
                                             residual_name="splice_pad")
             _strict_identity_cut = align_is_identity(cons_in, prod_out)
+
+            def _pick_cut():
+                """THE cut, selected ONCE from the two recorded interfaces.
+
+                Every kind of Seq cut -- identity, wire-permutation and
+                code-permutation -- consumes this one selection: the same
+                CutTransport reaches the physical lowering and the
+                relational composition, so the gates and the metadata
+                cannot describe different cuts. Nothing here derives a
+                width from a frame's n_qubits, a slot, a bit pattern, or a
+                restriction that happened to succeed.
+
+                Returns (transport, wires, p_if, c_if, widened_frame).
+                """
+                _reg_w = len(p.new_to_old)
+                _p_if = a_f.egress_interface
+                if _p_if is None:
+                    raise UnsupportedFrame(
+                        f"Seq: the producer records no egress interface, so "
+                        f"where its result meets this cut is unknown; it "
+                        f"cannot be selected from the frame's shape")
+                _c_if = interface_from_frame(
+                    _cons_own,
+                    _slot_wires(tuple(p.new_to_old), offset, _cons_own_w),
+                    _reg_w, polarity="ingress",
+                    where="Seq: the consumer's ingress ")
+                if _p_if.ambient_width != _reg_w or \
+                        _c_if.ambient_width != _reg_w:
+                    raise UnsupportedFrame(
+                        f"Seq: an interface record is over "
+                        f"{_p_if.ambient_width}/{_c_if.ambient_width} wires "
+                        f"but the register is {_reg_w}")
+                # THE TWO ORDERED PLACEMENTS BIND THE CUT. If they already
+                # describe the same typed cut, that IS the cut, and each
+                # premise keeps its own order. If they differ, only the
+                # splice's own recorded reconciliation may complete them onto
+                # a common one -- a wire set containing another is a
+                # coincidence, not a derivation, and comparing them as sets
+                # would throw away the order the codes are written in.
+                _pwires = tuple(_p_if.ordered_wires)
+                _cwires = tuple(_c_if.ordered_wires)
+                _completion = None
+                if set(_pwires) == set(_cwires):
+                    wires = list(_cwires)
+                elif _cut_completion_reason is None:
+                    raise UnsupportedFrame(
+                        f"Seq: the producer leaves its result on {_pwires} "
+                        f"and the consumer receives on {_cwires}. Those are "
+                        f"different cuts, and no frame reconciliation "
+                        f"recorded why they should be completed onto one; a "
+                        f"containment between them is not a derivation.")
+                else:
+                    _common = list(_pwires) + [w for w in _cwires
+                                               if w not in set(_pwires)]
+                    _completion = CutCompletion(
+                        ordered_wires=tuple(_common), ambient_width=_reg_w,
+                        producer_wires=_pwires, consumer_wires=_cwires,
+                        widened=_widened_side, from_width=_widened_from,
+                        to_width=len(_common),
+                        reason=_cut_completion_reason,
+                        cut_id=_cut_ids[_cur_occ[0]],
+                        producer_logical=_p_if.logical,
+                        consumer_logical=_c_if.logical,
+                        residual_name="splice_pad")
+                    _completion.check_against(
+                        _p_if, _c_if, _cut_ids[_cur_occ[0]],
+                        prod_out if _widened_side == "producer" else cons_in,
+                        "Seq: ")
+                    wires = list(_completion.ordered_wires)
+                # Each premise is read at the width the CUT is, from its
+                # own frame when that already matches and from the explicitly
+                # padded one otherwise. Padding enumerates its spectators, so
+                # a padded frame is only ever restricted at its own width.
+                # A cut-width frame's codes are its own local expression; the
+                # same wire set in two recorded orders is ONE cut, and any
+                # ordering difference is already absorbed in the frames and
+                # the running permutation, never re-derived here.
+                def _at_cut(own, padded, nm):
+                    for f in (own, padded):
+                        if f.n_qubits in (len(wires), _reg_w):
+                            return restrict_to_cut(f, wires, _reg_w, nm)
+                    raise UnsupportedFrame(
+                        f"{nm}spans {own.n_qubits}/{padded.n_qubits} wires, "
+                        f"neither the cut's {len(wires)} nor the register's "
+                        f"{_reg_w}")
+                _pc, _ = _at_cut(_prod_own, prod_out,
+                                 "Seq: the producer's egress ")
+                _cc, _ = _at_cut(_cons_own, cons_in,
+                                 "Seq: the consumer's ingress ")
+                _cut_in = Frame(logical=cons_in.logical,
+                                n_qubits=len(wires), codes=_cc, label="cut^-")
+                _cut_out = Frame(logical=prod_out.logical,
+                                 n_qubits=len(wires), codes=_pc,
+                                 label="cut^+")
+                # THE transport, selected once. The physical lowering and
+                # the composed boundary all consume this object, so the
+                # gates and the metadata cannot describe different
+                # permutations.
+                _tr = make_cut_transport(_cut_in, _cut_out, wires, _reg_w,
+                                         label=f"seq{_cur_occ[0]}",
+                                         producer_wires=_pwires,
+                                         consumer_wires=_cwires,
+                                         completion=_completion)
+                _tr.check_selected(_cc, _pc, "Seq: ")
+                _wid = (None if _completion is None else
+                        (prod_out if _widened_side == "producer"
+                         else cons_in))
+                return _tr, list(wires), _p_if, _c_if, _wid
+
+            def _staged_consumer(tr):
+                """G_C' = A G_C A^dagger, emitted chronologically as
+                A^dagger ; G_C ; A -- STAGED, so a refused composition
+                leaves the parent exactly as it was. Identity and
+                wire-permutation transports emit nothing physical; the one
+                staging discipline covers all three kinds."""
+                nonlocal circ
+                _outer_circ = circ
+                circ = Circuit(_outer_circ.n_qubits)
+                try:
+                    if tr is not None:
+                        emit_align_transport(circ, tr, inverse=True)
+                    _a = go(t.g, offset, env)
+                    if tr is not None:
+                        emit_align_transport(circ, tr, inverse=False)
+                    _st = circ
+                finally:
+                    circ = _outer_circ
+                return _a, _st
+
             if not _strict_identity_cut:
                 wp = align_as_wire_permutation(cons_in, prod_out)
                 if wp is not None:
-                    # Fast path: a pure wire permutation folds into WirePerm.
+                    # A pure wire permutation folds into the frames -- its
+                    # physical lowering emits nothing -- but its BOUNDARY
+                    # flows through the same transport + seq_cut authority
+                    # as every other cut kind.
                     _frame_override[_cur_occ[0]] = transported_frame(
                         build_align(cons_in, prod_out), g_out)
-                    _a_g = go(t.g, offset, env)
-                    _seq_boundary(a_f, _a_g, False, "wire-permutation align")
+                    _cut_err = None
+                    try:
+                        _tr, wires, _p_if, _c_if, _wid = _pick_cut()
+                    except UnsupportedFrame as _ce:
+                        _tr = wires = _p_if = _c_if = _wid = None
+                        _cut_err = str(_ce)
+                    _a_g, _staged = _staged_consumer(_tr)
+                    _seq_boundary(a_f, _a_g, False, "wire-permutation align",
+                                  transport=_tr, cut_wires=wires,
+                                  interfaces=(_p_if, _c_if, _wid),
+                                  cut_error=_cut_err)
+                    circ.append(_staged)
                     return
-                wires = [p.apply_new_to_old(offset + i)
-                         for i in range(prod_out.n_qubits)]
-                A = build_align(cons_in, prod_out)
-                # G_C' = A G_C A^dagger, emitted chronologically as
-                # A^dagger ; G_C ; A.
-                emit_align(circ, wires, prod_out, cons_in)     # A^dagger
-                _a_g = go(t.g, offset, env)                     # G_C
-                emit_align(circ, wires, cons_in, prod_out)      # A
-                # The effective output is A u_C^+ ; propagate it onward.
-                _frame_override[_cur_occ[0]] = transported_frame(A, g_out)
-                _seq_boundary(a_f, _a_g, False, "a real Align")
+                _tr, wires, _p_if, _c_if, _wid = _pick_cut()
+                _reg_w = len(p.new_to_old)
+                _a_g, _staged = _staged_consumer(_tr)
+                # The effective output is A u_C^+ , where u_C^+ is what the
+                # consumer ACTUALLY returned -- not the frame preselected
+                # before it was compiled. An emitter may report a different
+                # effective output (an open sum reports its Block, a Seq its
+                # own transported one), and transporting the stale
+                # preselection instead is a silent 5.66 leak.
+                _eff_out = _a_g.output_frame
+                # THE Seq's OWN records: its ingress is the producer's, its
+                # egress is the consumer's returned effective interface
+                # carried through the same transport the gates used.
+                if _a_g.egress_interface is None:
+                    raise UnsupportedFrame(
+                        "Seq: the consumer records no egress interface, so "
+                        "the composite's cannot be carried through the cut")
+                if not set(_a_g.egress_interface.ordered_wires) <= set(wires):
+                    raise UnsupportedFrame(
+                        f"Seq: the consumer leaves its result on "
+                        f"{tuple(_a_g.egress_interface.ordered_wires)}, which "
+                        f"the cut {wires} does not cover")
+                # Ingress from the producer's recorded placement; egress on
+                # the cut, which is where the closing Align left the result.
+                _interface_sink[_cur_occ[0]] = (
+                    (tuple(_p_if.ordered_wires), _p_if),
+                    (tuple(wires), _a_g.egress_interface))
+                # A Seq leaves its result where its consumer left it. An
+                # ambient frame legitimately spans the register while its
+                # result occupies a narrower recorded slot; that is the same
+                # situation an open sum is in, and the placement is what says
+                # so.
+                _egress_sink[_cur_occ[0]] = _a_g.egress_wires
+                if _eff_out.n_qubits < len(wires):
+                    # Explicitly padded to the cut, exactly as the ingress
+                    # side was above -- never silently.
+                    _eff_out = with_spectators(_eff_out, len(wires),
+                                               residual_name="splice_pad")
+                _frame_override[_cur_occ[0]] = _transport_frame(
+                    _eff_out, _tr, _reg_w, "Seq: the consumer's egress ")
+                _seq_boundary(a_f, _a_g, False, "a real Align",
+                              transport=_tr, cut_wires=wires,
+                              interfaces=(_p_if, _c_if, _wid))
+                circ.append(_staged)
                 return
-            _a_g = go(t.g, offset, env)
-            _seq_boundary(a_f, _a_g, True, "identity cut")
+            # A STRICT IDENTITY CUT. The relay cases are tried first inside
+            # _seq_boundary; when none applies, the composition runs through
+            # the SAME transport + seq_cut authority as every other cut --
+            # never a refusal, and never a silent frame default.
+            _cut_err = None
+            try:
+                _tr, wires, _p_if, _c_if, _wid = _pick_cut()
+            except UnsupportedFrame as _ce:
+                _tr = wires = _p_if = _c_if = _wid = None
+                _cut_err = str(_ce)
+            _a_g, _staged = _staged_consumer(_tr)
+            _seq_boundary(a_f, _a_g, True, "identity cut", transport=_tr,
+                          cut_wires=wires, interfaces=(_p_if, _c_if, _wid),
+                          cut_error=_cut_err)
+            circ.append(_staged)
             return
 
         # TenTerm: parallel composition with offset semantics (Phase 2)
@@ -3911,7 +4862,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         _ub_bindings,
                         max(_pi.n_qubits, _po.n_qubits), max(k, 1),
                         len(p.new_to_old))
-                _prepared, _pm_param_owners = [], []
+                _prepared, _pm_param_owners, _pm_roots = [], [], {}
                 for _bidx, (branch, pw, ctx_w, anti, st) in enumerate([
                     (t.left, payload_left_w, ctx_left_w, True, t.ty_left),
                     (t.right, payload_right_w, ctx_right_w, False, t.ty_right),
@@ -3967,10 +4918,32 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                             codes=tuple(canonical_frame(st).codes),
                             ingress_placement=tuple(range(pw)),
                             register_width=pw + ctx_w)
+                        # THE BRANCH'S EXTERNAL ROOTS, issued BEFORE it is
+                        # compiled and handed down, so every port minted
+                        # inside records its link to one of them at mint
+                        # time. Without this the adapter would know only
+                        # "payload root" and "binding f" while the finished
+                        # factors carried unrelated internal Apply
+                        # identities, and the split would have to be invented
+                        # after the fact.
+                        _roots_in = _roots.get(("payload", "ingress")) \
+                            or _prov.fork().owner()
+                        _roots_out = _roots.get(("payload", "egress")) \
+                            or _prov.fork().owner()
+                        _branch_roots = {("payload", "ingress"): _roots_in,
+                                         ("payload", "egress"): _roots_out}
+                        _branch_roots.update(
+                            {k: v for k, v in _roots.items()
+                             if k[0] == "fibre"})
+                        for _b in _used:
+                            _branch_roots[("fibre", _b.owner_id)] = _b.owner_id
                         _art = _compile_branch_artifact(
                             branch_to_compile, env=sub_env,
                             scope=_branch_scope(), parameter=_bp,
-                            typed_env=_views)
+                            typed_env=_views, port_roots=_branch_roots)
+                        _pm_roots[_bidx] = _branch_projections(
+                            _art, _branch_roots, _roots_in, _roots_out,
+                            tuple(b.owner_id for b in _used), _bidx)
                         _pm_param_owners.append(_bp.owner_id)
                         ctx_parent_phys = []
                         for name, ty_fv in fv:
@@ -3980,8 +4953,24 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         # ctx_w == 0 means no free variable of this branch is
                         # bound in env, so it uses nothing. Recorded, not
                         # rediscovered by a second scan.
+                        # A CONTEXT-FREE branch still presents a main
+                        # occurrence, so it gets its own issued payload root.
+                        # "No context" is not "no payload".
+                        _roots_in = _roots.get(("payload", "ingress")) \
+                            or _prov.fork().owner()
+                        _roots_out = _roots.get(("payload", "egress")) \
+                            or _prov.fork().owner()
+                        _branch_roots = {("payload", "ingress"): _roots_in,
+                                         ("payload", "egress"): _roots_out}
+                        _branch_roots.update(
+                            {k: v for k, v in _roots.items()
+                             if k[0] == "fibre"})
                         _art = _compile_branch_artifact(
-                            branch, scope=_branch_scope())
+                            branch, scope=_branch_scope(),
+                            port_roots=_branch_roots)
+                        _pm_roots[_bidx] = _branch_projections(
+                            _art, _branch_roots, _roots_in, _roots_out,
+                            (), _bidx)
                         ctx_parent_phys = []
                     _local = ()
                     if _ub_layout is not None:
@@ -3996,7 +4985,8 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                                  uses=tuple(b.owner_id for b in _pr[5]),
                                  bindings=tuple(_pr[5]),
                                  local_to_ambient=_pr[6],
-                                 transport=_pr[7])
+                                 transport=_pr[7],
+                                 projections=_pm_roots.get(_i))
                     for _i, _pr in enumerate(_prepared) if _pr is not None)
 
                 # COMPLETE each alternative against the context it does NOT
@@ -4057,12 +5047,53 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                         block_width=_ublock.block_width,
                         ambient_width=_ublock.ambient_width)
                     _bdesc.check_against(_ublock)
+                    # Introduced HERE: the Block occurrence's per-polarity
+                    # root comes from the handed-down record via `_link`,
+                    # exactly as on the n-ary path; outside a branch there
+                    # is none and the aggregate factor stays unlinked.
+                    _pm_in = aggregate_block_chart(
+                        _ublock, "ingress", _bdesc,
+                        root=_link(_cut_ids[_cur_occ[0]], "ingress"))
+                    _pm_out = aggregate_block_chart(
+                        _ublock, "egress", _bdesc,
+                        root=_link(_cut_ids[_cur_occ[0]], "egress"))
                     _boundary_sink[_cur_occ[0]] = SelectedBoundary(
-                        ingress=aggregate_block_chart(_ublock, "ingress",
-                                                      _bdesc),
-                        egress=aggregate_block_chart(_ublock, "egress",
-                                                     _bdesc),
+                        ingress=_pm_in, egress=_pm_out,
                         origin="plusmap:use-block", authority=DERIVED)
+                    # THE OPEN BINARY SUM'S MAIN INTERFACE, recorded here
+                    # where its plan is built, independently per polarity.
+                    # The layout gives the PLACEMENT; the label alphabet is
+                    # whatever the plan's own parent rows present, which is
+                    # why no canonical frame appears.
+                    _pm_main = tuple(_ub_layout.tag_wires) + tuple(
+                        _ub_layout.workspace_wires)
+                    _pm_b2a = tuple(_ublock.block_to_ambient)
+                    _pm_ib = tuple(_pm_b2a.index(w) for w in _pm_main)
+                    _pm_cut = _cut_ids[_cur_occ[0]]
+                    _placement_sink[_cur_occ[0]] = _pm_main
+                    _egress_sink[_cur_occ[0]] = _pm_main
+                    _interface_sink[_cur_occ[0]] = ((_pm_main, None),
+                                                    (_pm_main, None))
+                    # THE ANTECEDENT ALPHABETS. The formerly-PENDING gap is
+                    # closed by the branch projections: each branch's
+                    # completed per-polarity projection expresses its
+                    # SELECTED interface on the cut coordinates through its
+                    # own recorded schedule -- no parent frame in local
+                    # space needs relating, and no row image is taken. The
+                    # antecedent is their tagged concatenation in summand
+                    # order, and the face's rows are validated against it
+                    # through the SAME shared rule the n-ary path uses.
+                    _pm_ante_in = antecedent_main_alphabet(
+                        _ublock, _pm_main, "ingress", "PlusMap open: ")
+                    _pm_ante_out = antecedent_main_alphabet(
+                        _ublock, _pm_main, "egress", "PlusMap open: ")
+                    _face_sink[_cur_occ[0]] = (
+                        _issue_block_face(_pm_in, _ublock, _pm_ante_in,
+                                          _pm_ib, _pm_main, _pm_cut,
+                                          "ingress"),
+                        _issue_block_face(_pm_out, _ublock, _pm_ante_out,
+                                          _pm_ib, _pm_main, _pm_cut,
+                                          "egress"))
                     if explain:
                         log.append(
                             f"PlusMap open: emitted {len(_ublock.branches)} "
@@ -5616,7 +6647,74 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             _head_in = _head_bundle_wires("ingress", _a_fun.ingress_wires)
             _head_out = _head_bundle_wires("egress", _a_fun.egress_wires)
 
-            def _operand_factor(chart, wires, side):
+            def _arg_root(chart, art, side):
+                """WHICH root this argument serves, from records only.
+
+                Its own chart is asked first -- a pullback transports a link
+                it already has. Failing that, a bound Var that merely ROUTED
+                a binding says so in its RoutingOnly certificate, and the
+                binding it brought is the occurrence it serves. If neither
+                record answers, this refuses rather than picking whichever of
+                the branch's roots is in scope.
+                """
+                r = _recorded_root(chart)
+                if r is None:
+                    cert = getattr(art, "routing", None)
+                    if cert is not None and cert.owner_id is not None:
+                        r = cert.owner_id
+                if r is None:
+                    sb = getattr(art, "selected_boundary", None)
+                    if sb is not None and not isinstance(sb, str):
+                        r = _recorded_root(sb.ingress if side == "ingress"
+                                           else sb.egress)
+                # Whatever the record gave, it reaches a root by the SAME
+                # rule the head does. An argument is not special.
+                return _link(r, side) if r is not None else \
+                    _roots.get(("payload", side))
+
+            def _consumer_root(side):
+                """The port that CONSUMES this spine's operands: the head
+                variable's occurrence.
+
+                The head is consumed at the cut, and what its consumption
+                leaves on the boundary belongs to IT: at ingress the result
+                port's face is the head bundle's B half at entry, and at
+                egress the operand faces hold what the consumed head took.
+                A Var head records its occurrence directly -- the binding its
+                RoutingOnly certificate routed, or failing that its own
+                minted occurrence, introduced inside this compilation -- and
+                the handed-down record maps it: a captured binding is fibre,
+                an internal occurrence is what this compilation computes, and
+                outside any branch there is no record and the link stays
+                absent. A spine head already recorded the same port on ITS
+                egress operand factors, so it is READ BACK from that record,
+                never re-derived from the head's syntax.
+                """
+                ch = _head_chart(side)
+                if ch is None or ch.route is None or not ch.route.parts:
+                    _cr = _child_root(_a_fun, side)
+                    return _link(_cr if _cr is not None else _a_fun.cut_id,
+                                 side)
+                if side != "egress":
+                    # The ingress residual of a spine head is INHERITED from
+                    # the head's own terminal residual, so this path has no
+                    # caller; a new one must say what it wants first.
+                    raise TypeCheckError(
+                        f"Apply: the consumer root of a spine head is only "
+                        f"read back at egress, not {side}")
+                roots = {r.root for f in ch.route.parts
+                         if f.role == "operand" and f.source is not None
+                         for r in f.source.refs}
+                roots.discard(None)
+                if len(roots) > 1:
+                    raise TypeCheckError(
+                        f"Apply: the head's {side} spine records operands "
+                        f"consumed by several roots "
+                        f"{sorted(map(str, roots))}; one spine has one "
+                        f"consuming head")
+                return roots.pop() if roots else None
+
+            def _operand_factor(chart, wires, side, root=None):
                 """The operand premise as ONE factor, on ONE polarity.
 
                 A premise-local chart is placed at the argument artifact's
@@ -5641,15 +6739,67 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 # without collision. Only the ambient pullback can collide,
                 # and par_then_repart refuses it when it does.
                 pre_f, pre_pl = _prefix(side)
-                _nq, _codes, _wires = _operand_factor(arg_chart, arg_wires,
-                                                      side)
-                new_operand = ChartFactor(name="S_y", owner=_a_arg.cut_id,
-                                          n_qubits=_nq, codes=_codes,
-                                          role="operand", logical=A)
-                residual = ChartFactor(name="Y_B", owner=_cut_ids[_cur_occ[0]],
-                                       n_qubits=_yank_B.n_qubits,
-                                       codes=tuple(_yank_B.codes),
-                                       role="residual", logical=B)
+                # WHERE THE RESULT PORT COMES FROM.
+                #
+                # An application consumes its head's terminal residual, so
+                # when the head records a spine the result residual descends
+                # from that port. A VARIABLE head records no spine: it
+                # displays no residual port to inherit, so this rule ISSUES
+                # the result occurrence itself, minted from the derivation's
+                # own scope. That is a derivation-issued port, not a recovery
+                # from a missing one -- the Apply is where that result first
+                # exists.
+                _hc = _head_chart(side)
+                _head_res_ref = None
+                if _hc is not None and _hc.route is not None \
+                        and _hc.route.parts:
+                    _hr = _hc.route.parts[-1]
+                    if _hr.source is None:
+                        raise TypeCheckError(
+                            f"Apply: the head's {side} spine records a "
+                            f"terminal residual {_hr.name!r} with no source "
+                            f"port, so the result cannot inherit it")
+                    _head_res_ref = _hr.source.refs[-1]
+                else:
+                    # The result occurrence is minted per polarity, and each
+                    # side links to the port its FACE actually descends from:
+                    # at ingress those coordinates hold the consumed head's
+                    # B half, so the ingress face descends from the head's
+                    # own occurrence; at egress the result first exists here
+                    # and serves this compilation's issued egress root.
+                    _head_res_ref = SourcePortRef(
+                        ref=_prov.fork().owner(),
+                        origin_cut=_cut_ids[_cur_occ[0]],
+                        path=("apply", "result", "issued", side),
+                        root=(_consumer_root(side) if side == "ingress"
+                              else _roots.get(("payload", side))))
+                _nq, _codes, _wires = _operand_factor(
+                    arg_chart, arg_wires, side,
+                    root=_arg_root(arg_chart, _a_arg, side))
+                # The operand's two faces descend from two different ports:
+                # at ingress the argument arrives, resolved through ITS OWN
+                # record; at egress its coordinates hold what the consumed
+                # head took, so the egress face descends from the head's
+                # occurrence -- captured head, carried context; internal
+                # head, this compilation's own computation.
+                new_operand = ChartFactor(
+                    factor_id=f"spine-operand:{_a_arg.cut_id}",
+                    source=FactorSource((SourcePortRef(
+                        ref=str(_a_arg.cut_id), origin_cut=_a_arg.cut_id,
+                        path=("apply", "argument", side),
+                        root=(_arg_root(arg_chart, _a_arg, side)
+                              if side == "ingress"
+                              else _consumer_root(side))),)),
+                    name="S_y", owner=_a_arg.cut_id,
+                    n_qubits=_nq, codes=_codes,
+                    role="operand", logical=A)
+                residual = ChartFactor(
+                    factor_id=f"spine-residual:{_cut_ids[_cur_occ[0]]}",
+                    source=FactorSource((_head_res_ref,)),
+                    name="Y_B", owner=_cut_ids[_cur_occ[0]],
+                    n_qubits=_yank_B.n_qubits,
+                    codes=tuple(_yank_B.codes),
+                    role="residual", logical=B)
                 factors = pre_f + (new_operand, residual)
                 places = pre_pl + (_wires, tuple(head_wires[wA:]))
                 rep, places = scatter_repart(places, _reg)

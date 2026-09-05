@@ -3,10 +3,7 @@
   ctrl_ho — directional guard certification via raw split ⊕-map
 ==========================================================================
   PASS  u0 (closed) compiles (0 gates)
-  PASS  first-order guard ACCEPTED the term.
-        (Compilation had an unrelated pytket wire-routing issue,
-         but that is orthogonal to the guard certification.)
-        Compile error: Multiple operation arguments reference q[1]
+  PASS  closed plus_map compiles cleanly (8 gates)
 
   DIRECTIONAL GUARD CERTIFICATION:
   - u0 has closed context ∅

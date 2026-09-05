@@ -195,7 +195,7 @@ def _root(codes, n_local):
     Exactly the shape a prepared BranchArtifact carries: its own register,
     not the parent's. complete_branch lifts it through local_to_ambient.
     """
-    f = ChartFactor(name="V", owner="cut:v", n_qubits=n_local, codes=codes)
+    f = ChartFactor(factor_id="tssion0", name="V", owner="cut:v", n_qubits=n_local, codes=codes)
     rep, pl = scatter_repart((tuple(range(n_local)),), n_local)
     return par_then_repart((f,), rep, n_local, "v", placements=pl,
                            kind="scatter")

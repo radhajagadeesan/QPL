@@ -1,5 +1,21 @@
 # Release-safety status
 
+> **Addendum 2026-09-05 — checkpoint `semantic-seqcut-20260905`.**
+> Milestones 1–4 of the proof-directed semantic SeqCut plan are complete:
+> recorded source-link dataflow behind per-polarity branch projections
+> (Part P), Complete/Block consuming those projections with
+> antecedent-defined alphabets (Part Q), the self-validating relational
+> `seq_cut` join (Part R), and transactional whole-Seq composition through
+> one `CutTransport` + `seq_cut` authority for identity, wire-permutation
+> and code-permutation cuts (the Part-L positive gates; see
+> `COMPILER_INVARIANTS.md`, Invariant S). Witness **D** is now green: the
+> curried selector compiles to its exact pinned circuit in both modes.
+> The executable red set is **C only** — the two
+> `test_C_noncontiguous_beta_ingress_and_action` modes — deferred to the
+> Milestone-5 beta-boundary repair. The category table and per-witness
+> notes below predate this addendum and are retained as the historical
+> record of the `031a40f` stabilization checkpoint.
+
 **Baseline:** `031a40f`, branch `zenodo/frame-safety-hardening`.
 
 This is a **stabilization checkpoint**, not a release candidate. It retains

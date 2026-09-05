@@ -149,7 +149,7 @@ def test_J6_no_h_residual_is_fabricated(materialize):
 
     # NEGATIVE CONTROL: Q(x)Q is also dimension 4 and must NOT satisfy the
     # test, so the identification cannot be reading the dimension.
-    decoy = ChartFactor(name="S", owner="cut:decoy", n_qubits=2,
+    decoy = ChartFactor(factor_id="t_plan0", name="S", owner="cut:decoy", n_qubits=2,
                         codes=(0, 1, 2, 3), role="operand", logical=Ten(q, q))
     assert decoy.dim == s_h[0].dim == 4
     assert decoy.logical != endo, (
@@ -371,7 +371,7 @@ def test_J16_completion_reads_the_selected_root_not_the_frames():
 
 def _synthetic(k, ambient):
     """A branch-LOCAL chart on its own wires 0..k-1, ready to be lifted."""
-    f = ChartFactor(name="V", owner="cut:v", n_qubits=k,
+    f = ChartFactor(factor_id="t_plan1", name="V", owner="cut:v", n_qubits=k,
                     codes=tuple(range(1 << k)))
     rep, pl = scatter_repart((tuple(range(k)),), ambient)
     return par_then_repart((f,), rep, ambient, "v", placements=pl,

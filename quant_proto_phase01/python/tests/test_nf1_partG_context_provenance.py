@@ -1297,7 +1297,10 @@ def test_G2d_omitting_the_handoff_fails_the_live_B_gate():
     finally:
         TP._compile_branch_artifact, TP._emit_open_use_block = o_art, o_emit
     assert not emitted, "the parent was emitted despite an unproved resource"
-    assert "carry the PARENT'S resource" in str(ei.value), str(ei.value)
+    # The remint is now refused at branch-projection time, BEFORE the Block
+    # identity gate ever sees a plan: the fresh owner reaches the branch's
+    # role context, which names only the roots the parent actually issued.
+    assert "has no recorded role at" in str(ei.value), str(ei.value)
 
 
 def test_G2d_a_broken_local_to_ambient_transport_is_refused():

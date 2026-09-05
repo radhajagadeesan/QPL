@@ -1,7 +1,5 @@
-"""NF-1 Part L: relaying selected boundaries across cuts, and the Block as one
-aggregate factor.
-
-Two narrow rules, each derived rather than generic:
+"""NF-1 Part L: Seq across cuts -- relays, general composition, and the
+Block as one aggregate factor.
 
   L0  Seq relays a DERIVED boundary across a CERTIFIED IDENTITY leg -- a leg
       that emitted nothing, carries no phase, does not permute, and whose
@@ -9,13 +7,20 @@ Two narrow rules, each derived rather than generic:
 
   L1  Seq relays across a bound-variable ROUTING handoff, on a certificate the
       variable's own emitter issues. This is NOT "any gate-free permutation":
-      an arbitrary structural permutation carries no certificate and is
-      refused.
+      an arbitrary structural permutation carries no certificate -- and since
+      Milestone 4 it is COMPOSED through the cut's own wire-permutation
+      transport rather than refused.
 
   L2  An open sum's Block is exposed as ONE aggregate factor over its own
       direct-sum alphabet, with a genuine one-factor scatter route. It is
       never a product of its sectors, and TenPack is not weakened to accept
       route-less charts.
+
+  L3  (Milestone 4) When no relay applies, the cut is GENERAL: identity,
+      wire-permutation and code-permutation cuts all select ONE CutTransport
+      and compose through the one seq_cut authority, transactionally --
+      the consumer and any Align are staged, and the parent circuit commits
+      only after the composition validates.
 """
 
 import os
@@ -93,25 +98,68 @@ def test_L3_case_C_is_exactly_frame_default_on_both_legs():
     assert sb.origin == "seq:frame-default"
 
 
-def test_L4_case_D_refuses_two_derived_legs():
-    """Both legs derived and NEITHER a certified identity: there is nothing
-    to relay past, so this is general SeqCut."""
+def test_L4_case_D_composes_two_derived_legs_exactly():
+    """Both legs derived and NEITHER a certified identity: nothing is
+    relayed -- the two boundaries COMPOSE through the cut's own transport,
+    and the composed action is exactly (S H) (x) I. This replaces the
+    Milestone-4 refusal: general SeqCut transport is implemented."""
     t = Seq(Pair(Hg(0, q), Id(q)), Pair(Sg(0, q), Id(q)))
-    with pytest.raises(UnsupportedFrame) as e:
-        compile(t)
-    msg = str(e.value)
-    assert "general SeqCut transport is not implemented" in msg
-    assert "both legs carry derived boundaries" in msg
+    for mat in MODES:
+        r, arts = compile_with_artifacts(t, materialize=mat)
+        root = [a for a in arts if a.occurrence == 0][0]
+        sb = root.selected_boundary
+        assert sb.authority == DERIVED
+        assert sb.origin.startswith("seq:cut<-"), sb.origin
+        U = r.circuit.get_unitary()
+        SH = np.array([[1, 0], [0, 1j]]) @ (
+            np.array([[1, 1], [1, -1]]) / np.sqrt(2))
+        want = np.kron(SH, np.eye(2))
+        got = semantic_action(sb.ingress, U, sb.egress)
+        assert np.allclose(got, want, atol=ATOL, rtol=0.0)
+        assert not np.allclose(got, np.eye(4), atol=ATOL)
+        assert leakage(sb.ingress, U, sb.egress) < ATOL
+        assert abs(float(r.circuit.phase)) < ATOL
 
 
-def test_L4b_two_derived_certified_identities_are_ambiguous():
+def test_L4b_two_derived_certified_identities_compose_without_picking():
     """A derived boundary on BOTH legs, both contributing nothing: which one
-    the cut relays is not determined, so it fails closed rather than
-    picking."""
+    a relay would carry is not determined -- so NOTHING is relayed. The two
+    boundaries compose through the cut, which needs no such choice, and the
+    result is the exact identity."""
     t = Seq(Pair(Id(q), Id(q)), Pair(Id(q), Id(q)))
-    with pytest.raises(UnsupportedFrame) as e:
-        compile(t)
-    assert "ambiguous" in str(e.value)
+    for mat in MODES:
+        r, arts = compile_with_artifacts(t, materialize=mat)
+        root = [a for a in arts if a.occurrence == 0][0]
+        sb = root.selected_boundary
+        assert sb.authority == DERIVED
+        assert sb.origin.startswith("seq:cut<-"), (
+            "the ambiguity was resolved by picking a relay; it must be "
+            "resolved by composing")
+        U = r.circuit.get_unitary()
+        assert np.allclose(semantic_action(sb.ingress, U, sb.egress),
+                           np.eye(4), atol=ATOL, rtol=0.0)
+        assert leakage(sb.ingress, U, sb.egress) < ATOL
+        assert len(r.circuit.get_commands()) == 0
+
+
+def test_L4d_the_seq_transaction_validates_before_the_parent_commits():
+    """The WHOLE general cut is transactional: the consumer and any Align
+    are staged, and the composition validates through seq_cut before the
+    parent circuit gains a command. A composition that refuses aborts the
+    compilation -- no completed parent ever contains a half-committed Seq."""
+    class _Sentinel(Exception):
+        pass
+
+    def bomb(*a, **k):
+        raise _Sentinel()
+
+    real = TP.seq_cut
+    TP.seq_cut = bomb
+    try:
+        with pytest.raises(_Sentinel):
+            compile(Seq(Pair(Hg(0, q), Id(q)), Pair(Sg(0, q), Id(q))))
+    finally:
+        TP.seq_cut = real
 
 
 def test_L4c_a_derived_but_inert_leg_is_still_a_valid_identity_relay():
@@ -134,34 +182,64 @@ def test_L4c_a_derived_but_inert_leg_is_still_a_valid_identity_relay():
         right.selected_boundary.ingress.codes
 
 
-def test_L5_case_D_refuses_a_command_bearing_sibling():
-    """A derived leg beside a gate-emitting leg is not a relay."""
+def test_L5_case_D_composes_a_command_bearing_sibling():
+    """A derived leg beside a gate-emitting leg is not a relay -- it is a
+    GENERAL cut, and it composes: the sibling's command is emitted, the
+    producer's derived boundary survives into the composite, and the
+    composition leaks nothing."""
     inner = LetPair("h", "y", endo, q, Id(Ten(endo, q)),
                     Apply(Var("h", endo), Var("y", q)))
-    with pytest.raises(UnsupportedFrame) as e:
-        compile(Seq(inner, Hg(0, q)))
-    assert "emitted" in str(e.value) and "command" in str(e.value)
+    for mat in MODES:
+        r, arts = compile_with_artifacts(Seq(inner, Hg(0, q)),
+                                         materialize=mat)
+        root = [a for a in arts if a.occurrence == 0][0]
+        sb = root.selected_boundary
+        assert sb.authority == DERIVED
+        assert sb.origin.startswith("seq:cut<-letpair:splice"), sb.origin
+        U = r.circuit.get_unitary()
+        assert leakage(sb.ingress, U, sb.egress) < ATOL
+        assert abs(float(r.circuit.phase)) < ATOL
+        assert any(c.op.type.name == "H" for c in r.circuit.get_commands())
 
 
-def test_L6_case_D_refuses_a_phase_bearing_sibling():
+def test_L6_case_D_composes_a_phase_bearing_sibling():
+    """A phase-only sibling composes, and its scalar arrives EXACTLY: the
+    composite's phase is the sibling's own compiled phase, neither dropped
+    nor doubled."""
     from lang.terms import ExpInvolution
     inner = LetPair("h", "y", endo, q, Id(Ten(endo, q)),
                     Apply(Var("h", endo), Var("y", q)))
     sibling = ExpInvolution(0.3, Id(q))          # scalar: phase only
-    with pytest.raises(UnsupportedFrame) as e:
-        compile(Seq(inner, sibling))
-    msg = str(e.value)
-    assert "general SeqCut transport is not implemented" in msg
-    assert "phase" in msg
+    own = float(compile(sibling).circuit.phase)
+    assert abs(own) > 1e-6, "the witness sibling must actually carry phase"
+    for mat in MODES:
+        r, arts = compile_with_artifacts(Seq(inner, sibling),
+                                         materialize=mat)
+        root = [a for a in arts if a.occurrence == 0][0]
+        sb = root.selected_boundary
+        assert sb.authority == DERIVED
+        assert sb.origin.startswith("seq:cut<-"), sb.origin
+        assert abs(float(r.circuit.phase) - own) < ATOL, (
+            "the sibling's phase was dropped or altered by the cut")
+        U = r.circuit.get_unitary()
+        assert leakage(sb.ingress, U, sb.egress) < ATOL
 
 
 def test_L7_a_derived_boundary_is_never_replaced_by_a_frame_default():
-    """Whatever else happens, case D raises rather than silently defaulting."""
+    """Whatever else happens, case D never silently defaults: the composite
+    carries the producer's DERIVED authority and its recorded origin, not a
+    frame default wearing its width."""
     inner = LetPair("h", "y", endo, q, Id(Ten(endo, q)),
                     Apply(Var("h", endo), Var("y", q)))
-    with pytest.raises(UnsupportedFrame) as e:
-        compile(Seq(inner, Hg(0, q)))
-    assert "Refusing to replace a derived selected boundary" in str(e.value)
+    for mat in MODES:
+        _r, arts = compile_with_artifacts(Seq(inner, Hg(0, q)),
+                                          materialize=mat)
+        root = [a for a in arts if a.occurrence == 0][0]
+        sb = root.selected_boundary
+        assert sb.authority == DERIVED, (
+            "the derived boundary was replaced by a frame default")
+        assert sb.origin != "seq:frame-default"
+        assert "letpair:splice" in sb.origin, sb.origin
 
 
 # ===========================================================================
@@ -199,13 +277,61 @@ def test_L9_only_a_bound_variable_carries_a_certificate():
                 "this witness needs a term that really permutes")
 
 
-def test_L10_an_uncertified_permuting_leg_is_refused():
+def test_L10_an_uncertified_permuting_leg_composes_through_the_transport():
     """Same SHAPE as the routing relay -- a gate-free permuting left leg
-    beside a derived right one -- but with no certificate."""
+    beside a derived right one -- but with no certificate. It is NOT
+    relayed and NOT refused: the boundaries compose through the SAME
+    transport + seq_cut authority as every other cut. The structural
+    permutation folds into the running WirePerm BEFORE the cut forms, so
+    both premises' recorded interfaces already agree and the truthful
+    cut-local transport kind is "identity" -- the twist is visible in the
+    artifact's exit permutation, never gauged into the cut."""
     from lang.terms import TwistTen
-    with pytest.raises(UnsupportedFrame) as e:
-        compile(Seq(TwistTen(q, q), Pair(Id(q), Id(q))))
-    assert "general SeqCut transport is not implemented" in str(e.value)
+    import compile.align as AL
+    made = []
+    real_make = AL.make_cut_transport
+
+    def spy_make(*a, **k):
+        tr = real_make(*a, **k)
+        made.append(tr)
+        return tr
+
+    consumed = []
+    real_cut = TP.seq_cut
+
+    def spy_cut(prod, cons, transport, **kw):
+        consumed.append(transport)
+        return real_cut(prod, cons, transport, **kw)
+
+    AL.make_cut_transport = spy_make
+    TP.make_cut_transport = spy_make
+    TP.seq_cut = spy_cut
+    try:
+        for mat in MODES:
+            made.clear()
+            consumed.clear()
+            r, arts = compile_with_artifacts(
+                Seq(TwistTen(q, q), Pair(Id(q), Id(q))), materialize=mat)
+            root = [a for a in arts if a.occurrence == 0][0]
+            sb = root.selected_boundary
+            assert sb.authority == DERIVED
+            assert sb.origin.startswith("seq:cut<-"), sb.origin
+            # ONE authority: the transport seq_cut consumed IS the object
+            # the cut selection minted
+            assert consumed and made
+            assert consumed[0] is made[-1]
+            assert consumed[0].kind == "identity", (
+                "the pre-cut fold makes this cut identity; a non-identity "
+                "kind here would mean the twist leaked into the cut")
+            # ... and the twist is REAL, recorded in the routing
+            assert tuple(root.perm_at_entry) != tuple(root.perm_at_exit)
+            U = r.circuit.get_unitary()
+            assert leakage(sb.ingress, U, sb.egress) < ATOL
+            assert abs(float(r.circuit.phase)) < ATOL
+    finally:
+        AL.make_cut_transport = real_make
+        TP.make_cut_transport = real_make
+        TP.seq_cut = real_cut
 
 
 def test_L11_the_certificate_refuses_a_gate_or_a_phase():
@@ -484,7 +610,7 @@ def test_L17_a_block_factor_is_not_a_typed_residual():
                         uses=((),), inactive=((),), block_dims=(2,),
                         tag_wires=(), block_to_ambient=(0,),
                         block_width=1, ambient_width=1)
-    b = ChartFactor(name="B", owner="cut:x", n_qubits=1, codes=(0, 1),
+    b = ChartFactor(factor_id="tblock0", name="B", owner="cut:x", n_qubits=1, codes=(0, 1),
                     role="block", descriptor=d)
     rep, pl = scatter_repart(((0,),), 1)
     ch = par_then_repart((b,), rep, 1, "b", placements=pl, kind="scatter")
@@ -495,7 +621,7 @@ def test_L17_a_block_factor_is_not_a_typed_residual():
 
 def test_L18_a_block_factor_requires_its_descriptor():
     with pytest.raises(ProvenanceError) as e:
-        ChartFactor(name="B", owner="c", n_qubits=1, codes=(0, 1),
+        ChartFactor(factor_id="tblock1", name="B", owner="c", n_qubits=1, codes=(0, 1),
                     role="block")
     assert "records no descriptor" in str(e.value)
 
@@ -729,9 +855,9 @@ def test_L26_splice_of_the_aggregate_is_splice_of_each_block(side):
 
     # a whole-port producer over the block's own placement, with a
     # deliberately NON-IDENTITY correspondence so the pullback is visible
-    fwd = _CF(name="P", owner="cut:p", n_qubits=len(port),
+    fwd = _CF(factor_id="tL-fwd", name="P", owner="cut:p", n_qubits=len(port),
               codes=tuple(range(1 << len(port))), role="residual", logical=tt)
-    rev = _CF(name="P", owner="cut:p", n_qubits=len(port),
+    rev = _CF(factor_id="tL-rev", name="P", owner="cut:p", n_qubits=len(port),
               codes=tuple(reversed(range(1 << len(port)))),
               role="residual", logical=tt)
     rep, pls = _sc((port,), n)

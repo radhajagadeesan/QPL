@@ -1,6 +1,25 @@
 # Known Limitations
 
-Last updated: 2026-03-08.
+Last updated: 2026-09-05.
+
+---
+
+## 0. Seq composition — resolved 2026-09-05, one deferred red
+
+General `Seq` composition (two derived legs, command- or phase-bearing
+siblings, uncertified permuting legs) is **supported** as of checkpoint
+`semantic-seqcut-20260905`: every cut kind selects one `CutTransport` and
+composes through the relational `seq_cut` authority, transactionally
+(`docs/COMPILER_INVARIANTS.md`, Invariant S). The former Part-L refusals
+are replaced by positive semantic gates.
+
+**Still red, by design:** the noncontiguous-beta witness `C`
+(`test_C_noncontiguous_beta_ingress_and_action[False]/[True]`): the
+recorded beta ingress is `(0,4,8,12)` where the derivation makes
+`(0,1,8,9)`. This is the Milestone-5 beta-boundary repair (inherit the
+argument artifact's exact negative boundary through the recorded
+binder/substitution schedule) and is the sole remaining red in the Python
+suite.
 
 ---
 

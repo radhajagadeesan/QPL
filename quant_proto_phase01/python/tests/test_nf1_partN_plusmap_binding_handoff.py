@@ -314,7 +314,10 @@ def test_N7_removing_the_typed_view_remints_and_is_caught():
         TP._compile_branch_artifact = o_art
         TP._emit_open_use_block = orig_emit
     assert not seen, "the parent was emitted despite an unproved resource"
-    assert "carry the PARENT'S resource" in str(ei.value)
+    # The remint is now refused at branch-projection time, BEFORE the Block
+    # identity gate ever sees a plan: the fresh owner reaches the branch's
+    # role context, which names only the roots the parent actually issued.
+    assert "has no recorded role at" in str(ei.value)
 
 
 def test_N8_used_bindings_alone_do_not_satisfy_the_gate():
