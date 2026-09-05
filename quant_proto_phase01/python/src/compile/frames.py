@@ -3741,6 +3741,83 @@ class SourceSubstitution:
 
 
 @dataclass(frozen=True, slots=True)
+class BetaSubstitution:
+    """The recorded substitution cut of ONE beta reduction.
+
+    `Apply(Lam(x, A, body), argument)` eliminates its cut by substitution:
+    the prepared argument's recorded EGRESS is what the binder `x`
+    receives. This record is issued at the beta-reduction derivation site
+    -- the only place that holds the argument artifact, the binder identity
+    and the physical binder schedule together -- and proves the handoff by
+    RECORDS: the binder's physical schedule is exactly the argument's
+    recorded egress placement, in order; the type is the argument's
+    recorded output type; the lineage is the binder's minted owner and the
+    argument occurrence's cut. Nothing here is reconstructed from type_of,
+    widths, offsets, canonical frames or code geometry.
+    """
+    binder: str
+    owner_id: object                 # the owner actually installed for x
+    binder_logical: object           # the lambda's OWN typed domain
+    arg_logical: object              # what the ARGUMENT's record produced
+    x_phys: Tuple[int, ...]          # the binder's physical schedule
+    arg_cut: object                  # the argument occurrence's cut lineage
+    arg_egress_wires: Tuple[int, ...]
+    at_cut: object                   # the beta occurrence's own cut
+    polarity: str = "ingress"
+
+    def __post_init__(self):
+        if not self.binder:
+            raise ProvenanceError("beta substitution: no binder name")
+        if self.owner_id is None:
+            raise ProvenanceError(
+                f"beta substitution: binder {self.binder!r} has no minted "
+                f"owner identity")
+        if self.arg_cut is None or self.at_cut is None:
+            raise ProvenanceError(
+                f"beta substitution: binder {self.binder!r} records no "
+                f"argument or occurrence cut lineage")
+        if self.polarity != "ingress":
+            raise ProvenanceError(
+                f"beta substitution: the binder receives at ingress, not "
+                f"{self.polarity!r}")
+        # TWO INDEPENDENT RECORDS meet here: the lambda's own typed domain
+        # and the argument artifact's recorded output type. Their equality
+        # is the substitution's typing, and it is validated -- never one
+        # side copied into the other and compared with itself.
+        if self.binder_logical is not None and self.arg_logical is not None \
+                and self.binder_logical != self.arg_logical:
+            raise ProvenanceError(
+                f"beta substitution: the lambda binds {self.binder!r} at "
+                f"{pretty(self.binder_logical)} but the argument's record "
+                f"produced {pretty(self.arg_logical)}; equal widths are not "
+                f"evidence, and the substitution refuses the mismatch")
+        # The argument's RESULT occupies the leading coordinates of its
+        # recorded egress -- the emitters' own slot rule -- and any trailing
+        # coordinates are its internal function-layout. The binder receives
+        # exactly that leading slice, in order.
+        lead = tuple(self.arg_egress_wires)[:len(self.x_phys)]
+        if tuple(self.x_phys) != lead:
+            raise ProvenanceError(
+                f"beta substitution: binder {self.binder!r} is scheduled on "
+                f"{tuple(self.x_phys)} but the argument's recorded egress "
+                f"leads with {lead} (full egress "
+                f"{tuple(self.arg_egress_wires)}); the substitution does "
+                f"not hand the binder what the argument produced")
+
+    def check_installed(self, installed_owner, where=""):
+        """The recorded owner IS the one installed for the binder in the
+        compilation's own environment -- a freshly minted identity that was
+        never installed is a forgery, not a handoff."""
+        if installed_owner is None or self.owner_id != installed_owner:
+            raise ProvenanceError(
+                f"{where}the substitution records owner {self.owner_id!r} "
+                f"for binder {self.binder!r} but the installed owner is "
+                f"{installed_owner!r}; the record does not describe this "
+                f"binding")
+        return True
+
+
+@dataclass(frozen=True, slots=True)
 class FactorSource:
     """The ordered semantic ports a factor's content descends from.
 

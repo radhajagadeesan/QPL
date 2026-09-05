@@ -4,7 +4,7 @@ Last updated: 2026-09-05.
 
 ---
 
-## 0. Seq composition — resolved 2026-09-05, one deferred red
+## 0. Seq composition and beta boundaries — both resolved 2026-09-05
 
 General `Seq` composition (two derived legs, command- or phase-bearing
 siblings, uncertified permuting legs) is **supported** as of checkpoint
@@ -13,13 +13,19 @@ composes through the relational `seq_cut` authority, transactionally
 (`docs/COMPILER_INVARIANTS.md`, Invariant S). The former Part-L refusals
 are replaced by positive semantic gates.
 
-**Still red, by design:** the noncontiguous-beta witness `C`
-(`test_C_noncontiguous_beta_ingress_and_action[False]/[True]`): the
-recorded beta ingress is `(0,4,8,12)` where the derivation makes
-`(0,1,8,9)`. This is the Milestone-5 beta-boundary repair (inherit the
-argument artifact's exact negative boundary through the recorded
-binder/substitution schedule) and is the sole remaining red in the Python
-suite.
+**Noncontiguous-beta — resolved** as of checkpoint
+`beta-boundary-20260905` (`COMPILER_INVARIANTS.md`, Invariant B).
+Historically the β-reduced Apply recorded only a string default, so the
+root's frames fell back to the `type_of`-canonical contiguous frame
+padded with function-layout spectators: for the `C` witness this claimed
+ingress `(0,4,8,12)` — advertising the function value's first wire as an
+external input — where the derivation makes `(0,1,8,9)`, and the
+recorded frames leaked against the artifact. The boundary is now
+inherited from the argument artifact's exact ingress and the body
+artifact's exact egress, with the substitution cut recorded as a
+validated `BetaSubstitution` and the closed function-value layout
+preserved as a residual port. Witness `C` is exact in both modes, and
+the Python suite carries **zero red witnesses**.
 
 ---
 

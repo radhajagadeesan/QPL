@@ -335,9 +335,54 @@ Supporting structure, each with its own enforcement point:
   completed common cut, and face symbols embed through it. Gates: the
   Part-L positive gates (L4, L4b, L4d, L5, L6, L7, L10).
 
-**Deferred red set:** exactly the two `C` witnesses
-(`test_C_noncontiguous_beta_ingress_and_action[False]/[True]`) — the
-Milestone-5 beta-boundary repair. Nothing else is red.
+**Deferred red set:** none — the Milestone-5 beta-boundary repair below
+closed the two `C` witnesses. The Python suite is fully green.
+
+---
+
+## Invariant B — beta boundaries inherit from artifacts
+
+**Status:** implemented 2026-09-05 (checkpoint `beta-boundary-20260905`,
+Milestone 5).
+
+For a β-reduced `Apply(Lam(x, A, body), argument)` the external negative
+boundary IS the prepared argument artifact's exact ingress boundary and
+the external positive boundary IS the compiled body artifact's exact
+egress boundary; the function-value/binder-layout coordinates between
+them are internal and never advertised as external input padding. Nothing
+is reconstructed from `type_of`, widths, offsets, canonical frames or
+code geometry.
+
+* **`BetaSubstitution`** (frames.py): the substitution cut, recorded and
+  validated at the β-reduction site. It holds TWO independent typed
+  records — the lambda's own domain annotation and the argument
+  artifact's recorded output type — validated equal (equal widths are not
+  evidence); the binder's physical schedule, which must be the leading
+  slice of the argument's recorded egress (the emitters' own result-slot
+  rule); the argument occurrence's cut lineage; and the owner actually
+  installed for the binder, checked with `check_installed` against the
+  live environment. Stored on the Artifact (`substitution`).
+* **Compositional inheritance.** The occurrence's DERIVED boundary
+  (origin `appcut:beta`) is built from the two premises' boundaries by
+  identity; premise faces are recut and re-expressed onto the surviving
+  factors; interface, placement and effective-frame records follow the
+  same authorities. The effective input frame preserves the closed
+  function-value layout as a residual port taken from the argument's
+  recorded Par schedule (the factor's own one-state type, owner and
+  origin — never a port invented from widths or fixed bits).
+* **Ambient lifting.** A premise-local chart lifts into ambient space
+  through the child artifact's own recorded ingress/egress wires, the
+  lifted factor carrying the child's recorded occurrence — so
+  finalisation keeps `appcut:beta` on the returned `Compiled` and never
+  silently substitutes a frame default.
+* **Lexical restoration.** The binder-id and `term_env` entries installed
+  for the β parameter are restored in `try/finally`; sibling reductions
+  under one binder name mint distinct installed owners.
+
+The repair is BOUNDARY-ONLY: emitted commands, phase and pending
+permutation are pinned unchanged against the pre-repair compilation.
+Gates: Part S (`test_nf1_partS_beta_boundary.py`), and release-safety
+witness `C` exact in both modes.
 
 ---
 

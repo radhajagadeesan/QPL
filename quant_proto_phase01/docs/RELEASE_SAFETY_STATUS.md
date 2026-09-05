@@ -1,5 +1,17 @@
 # Release-safety status
 
+> **Addendum 2026-09-05 (later) — checkpoint `beta-boundary-20260905`.**
+> Milestone 5 closed the last red: witness **C** is now SUPPORTED in both
+> materialization modes — ingress exactly `(0,1,8,9)`, framed action
+> exactly `I₂ ⊗ H`, zero leakage, zero phase — by inheriting the
+> β-reduced Apply's boundary from the argument artifact's exact ingress
+> and the body artifact's exact egress, with the substitution cut
+> recorded as a validated `BetaSubstitution` and the closed
+> function-value layout preserved as a residual port
+> (`COMPILER_INVARIANTS.md`, Invariant B; gates in Part S). The repair is
+> boundary-only: commands, phase and pending permutation are pinned
+> unchanged. **The Python suite is fully green — zero red witnesses.**
+
 > **Addendum 2026-09-05 — checkpoint `semantic-seqcut-20260905`.**
 > Milestones 1–4 of the proof-directed semantic SeqCut plan are complete:
 > recorded source-link dataflow behind per-polarity branch projections

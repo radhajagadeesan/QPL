@@ -67,6 +67,7 @@ from compile.frames import (Frame, Sector, Port, canonical_frame,
                             gather_code,
                             replace_code, _lift_chart, semantic_action,
                             SourcePortRef, FactorSource, RowProjection,
+                            BetaSubstitution,
                             BranchRoleContext, BranchMainProjection,
                             project_branch_root,
                             restrict_to_cut, InterfaceEmbedding,
@@ -142,6 +143,10 @@ class Artifact:
     # A RoutingOnly certificate, when the emitter issued one. Never derived
     # by a consumer from this artifact's other fields.
     routing: object = None
+    # The recorded BetaSubstitution, when this occurrence is a beta-reduced
+    # Apply: the proof that the argument's recorded egress is what the
+    # binder received. Issued at the derivation site, never reconstructed.
+    substitution: object = None
     # WHERE this occurrence's effective interface lives, recorded
     # independently per polarity. Distinct from ingress_wires/egress_wires,
     # which say where the RESULT SLOT arrives and leaves: an open sum's
@@ -2504,6 +2509,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                        ingress_wires=_ing_w, egress_wires=_egr_w,
                        n_cmds=_n_emitted, phase_delta=_phase_delta,
                        routing=_rc,
+                       substitution=_subst_sink.pop(occ, None),
                        factorization=_factorization_sink.pop(occ, ()))
         frame_registry[occ] = art
         artifacts.append(art)
@@ -2523,6 +2529,7 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
     _roots = dict(_port_roots or {})
     _placement_plans = {}
     _boundary_sink = {}
+    _subst_sink = {}
     _placement_sink = {}
     _egress_sink = {}
     _interface_sink = {}
@@ -6459,17 +6466,181 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 # β-reduction: compile arg (with deferred Lam bodies), then body
                 # Arg compiled as value: Lam bodies within the arg are deferred
                 # and registered in term_env for inner Apply β-reduction.
-                go(t.arg, offset, env, is_value=True)
-                # Register arg term in term_env for LetPair propagation
+                _a_arg = go(t.arg, offset, env, is_value=True)
+                # Register arg term in term_env for LetPair propagation --
+                # LEXICALLY: the binding lives for the body compile alone,
+                # and any shadowed sibling entry is restored afterwards.
+                _had_te = lam.name in term_env
+                _prev_te = term_env.get(lam.name)
                 term_env[lam.name] = t.arg
                 # Bind x to the argument wires (physical positions for perm stability)
                 x_phys = [p.new_to_old[offset + i] for i in range(wA)]
                 new_env = {**env, lam.name: x_phys}
                 _prev_ids = _bind_ids(**{lam.name: 1})
-                go(lam.body, offset, new_env)
-                # β-reduction ELIMINATES the cut, so there is no AppCut
-                # boundary to build here. Recorded explicitly.
-                _boundary_sink[_cur_occ[0]] = "appcut:beta-reduced"
+                try:
+                    _a_body = go(lam.body, offset, new_env)
+                    # ---- THE SUBSTITUTION CUT, recorded where it happens --
+                    #
+                    # Beta reduction eliminates the Apply cut by
+                    # SUBSTITUTION: the prepared argument's recorded egress
+                    # is what the binder receives. TWO INDEPENDENT typed
+                    # records meet in the certificate -- the lambda's own
+                    # domain annotation and the argument artifact's recorded
+                    # output -- and the owner is the one actually installed
+                    # for the binder, checked against the environment while
+                    # the binding is still live.
+                    _occ = _cur_occ[0]
+                    _subst = BetaSubstitution(
+                        binder=lam.name,
+                        owner_id=_binder_ids.get(lam.name),
+                        binder_logical=lam.dom,
+                        arg_logical=(_a_arg.output_frame.logical
+                                     if _a_arg.output_frame is not None
+                                     else None),
+                        x_phys=tuple(x_phys),
+                        arg_cut=_a_arg.cut_id,
+                        arg_egress_wires=tuple(_a_arg.egress_wires),
+                        at_cut=_cut_ids[_occ])
+                    _subst.check_installed(_binder_ids.get(lam.name),
+                                           f"Apply (beta '{lam.name}'): ")
+                finally:
+                    _unbind_ids(_prev_ids)
+                    if _had_te:
+                        term_env[lam.name] = _prev_te
+                    else:
+                        term_env.pop(lam.name, None)
+                _subst_sink[_occ] = _subst
+                # ---- THE BOUNDARY, built COMPOSITIONALLY ------------------
+                #
+                # The external negative boundary is the prepared argument
+                # artifact's EXACT ingress boundary -- the function value's
+                # own layout coordinates between the real inputs are a
+                # dimension-1 factor there, internal, and never advertised
+                # as external input padding. The external positive boundary
+                # is the compiled body artifact's EXACT egress boundary.
+                # Neither is rebuilt from type_of, a width, an offset, a
+                # canonical frame or code geometry.
+                _sb_a, _sb_b = (_a_arg.selected_boundary,
+                                _a_body.selected_boundary)
+                _reg_now = len(p.new_to_old)
+
+                def _beta_lift(chart, art, side, label):
+                    """A premise-LOCAL chart lifted into ambient space from
+                    the child artifact's own recorded placement, its lifted
+                    factor carrying the child's recorded occurrence -- so
+                    finalisation keeps the derived boundary instead of
+                    silently replacing it with a frame default."""
+                    if chart.space == "ambient":
+                        return chart
+                    wires = tuple(art.ingress_wires if side == "ingress"
+                                  else art.egress_wires)
+                    _cr = _child_root(art, side)
+                    _port = SourcePortRef(
+                        ref=str(art.cut_id), origin_cut=art.cut_id,
+                        path=("beta", side),
+                        root=_link(_cr if _cr is not None else art.cut_id,
+                                   side))
+                    return _lift_chart(chart, wires, _reg_now, label,
+                                       port=_port)
+
+                _ing = _beta_lift(_sb_a.ingress, _a_arg, "ingress", "beta^-")
+                _egr = _beta_lift(_sb_b.egress, _a_body, "egress", "beta^+")
+                _boundary_sink[_occ] = SelectedBoundary(
+                    ingress=_ing, egress=_egr,
+                    origin="appcut:beta", authority=DERIVED)
+                # The premises' own recorded faces and interfaces travel
+                # with their boundaries, recut at this occurrence. An
+                # EXHAUSTIVE atomic face over a lift's single factor is
+                # matched by the recorded exhaustiveness -- the lift minted
+                # its own id after the face was issued -- exactly the
+                # convention seq_cut validates by.
+                def _beta_face(face, chart, pol, nm):
+                    if face is None:
+                        return None
+                    face = face.recut(_cut_ids[_occ], pol)
+                    if chart.route is not None and face.whole_chart and \
+                            len(chart.route.parts) == 1:
+                        g = chart.route.parts[0]
+                        if tuple(face.codes) != tuple(g.codes):
+                            raise TypeCheckError(
+                                f"{nm}the exhaustive face records "
+                                f"{len(face.codes)} states but the lifted "
+                                f"premise's one factor has {len(g.codes)}, "
+                                f"or different codes")
+                        # the face FOLLOWS the factor: re-expressed onto the
+                        # lift's own recorded identity and placement
+                        face = _dc_replace(
+                            face, factor_ids=(g.factor_id,),
+                            placement=tuple(chart.route.placements[0]),
+                            role=g.role, logical=g.logical,
+                            descriptor=g.descriptor, whole_chart=False)
+                    face.check_against(chart, _cut_ids[_occ], nm)
+                    return face
+
+                _bf_in = _beta_face(_a_arg.ingress_face, _ing, "ingress",
+                                    "Apply (beta) ingress face: ")
+                _bf_out = _beta_face(_a_body.egress_face, _egr, "egress",
+                                     "Apply (beta) egress face: ")
+                _face_sink[_occ] = (_bf_in, _bf_out)
+                # The EFFECTIVE frames, placements and interface records
+                # follow the same authorities, PER SIDE, whenever the
+                # premise's chart is expressed in this register: the
+                # argument's own ingress chart on its recorded arrival, the
+                # body's own egress on its recorded exit. A premise-local
+                # chart keeps the existing defaults -- its boundary above
+                # still composes, and nothing is widened or reconstructed
+                # to force a record. The egress frame keeps the existing
+                # effective propagation; finalisation transports it exactly
+                # once.
+                _ch_in = _sb_a.ingress
+                _placement_sink[_occ] = tuple(_a_arg.ingress_wires)
+                _egress_sink[_occ] = tuple(_a_body.egress_wires)
+                if _ch_in.space == "ambient" and \
+                        _ch_in.n_qubits == len(p.new_to_old):
+                    # The closed function-value layout inside the argument
+                    # is PRESERVED as a residual port: every factor of the
+                    # argument's recorded Par schedule whose recorded type
+                    # presents exactly one state occupies its coordinates
+                    # without external input, and the effective frame says
+                    # so -- with the factor's own type, owner and origin,
+                    # never a port invented from widths or fixed bits.
+                    _fn_ports = ()
+                    if _ch_in.route is not None:
+                        _fn_ports = tuple(
+                            Port(name="fn_layout", logical=f.logical,
+                                 wires=tuple(pl), role="residual",
+                                 owner_id=f.owner,
+                                 origin_cut=(f.source.refs[0].origin_cut
+                                             if f.source is not None
+                                             and f.source.refs else None))
+                            for f, pl in zip(_ch_in.route.parts,
+                                             _ch_in.route.placements)
+                            if pl and f.logical is not None
+                            and semantic_dim(f.logical) == 1)
+                    _frame_in_override[_occ] = Frame(
+                        logical=(_a_arg.input_frame.logical
+                                 if _a_arg.input_frame is not None else None),
+                        n_qubits=_ch_in.n_qubits,
+                        codes=tuple(_ch_in.codes), label="beta^-",
+                        ports=_fn_ports)
+                elif _a_arg.input_frame is not None:
+                    # A premise-local ingress: the argument's own recorded
+                    # input frame IS the authority -- never the Apply's
+                    # canonical function-layout frame, whose binder-slot
+                    # coordinates are internal.
+                    _frame_in_override[_occ] = _a_arg.input_frame
+                _ch_out = _sb_b.egress
+                _iface_pair = (
+                    ((tuple(_a_arg.ingress_wires), _a_arg.ingress_interface)
+                     if _ch_in.space == "ambient"
+                     and _ch_in.n_qubits == len(p.new_to_old)
+                     else (None, None)),
+                    ((tuple(_a_body.egress_wires), _a_body.egress_interface)
+                     if _ch_out.space == "ambient"
+                     and _ch_out.n_qubits == len(p.new_to_old)
+                     else (None, None)))
+                if _iface_pair != ((None, None), (None, None)):
+                    _interface_sink[_occ] = _iface_pair
                 if explain:
                     log.append(f"Apply (β-reduce '{lam.name}'): arg;body, x phys={x_phys}")
                 return
