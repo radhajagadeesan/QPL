@@ -1,0 +1,35 @@
+executable	classification	fixture	note
+abstract_qswitch_oterm_e2e	Raw-language diagnostic	golden	Abstract higher-order switch encoded in Linear Raw
+abstract_select_2_e2e	Raw-language diagnostic	golden	Abstract binary selector beyond sealed Source
+algorithms_e2e	Raw-language diagnostic	golden	Legacy Raw algorithm constructions
+ctrl_ho_eta_e2e	Raw-language diagnostic	golden	Higher-order control compiler witness
+ctrl_lambda_e2e	Raw-language diagnostic	golden	Curried Raw control witness
+curried_select_3_e2e	Raw-language diagnostic	golden	Curried three-way selector witness
+curried_select_3_ndist_e2e	Raw-language diagnostic	golden	Curried selector without explicit distributivity
+datatype_demo	Raw-language diagnostic	golden	Legacy Raw datatype API demonstration
+dist_l_naturality_probe	Raw/backend probe	golden	Distributivity naturality inspection
+dist_unequal_width_probe	Raw/backend probe	golden	Unequal-width distributor inspection
+dump_abstract_qswitch	Raw/backend probe	none	Serialized abstract-switch dump
+dump_select_5_inst	Raw/backend probe	none	Serialized five-way selector dump
+exp_swap_T3_e2e	Raw/backend probe	golden	Raw exponentiation and representation probe
+exp_twist_e2e	Raw-language diagnostic	golden	Legacy Raw exponential witness
+n_plusmap_e2e	Raw-language diagnostic	golden	Direct Raw NPlusMap witness
+nested_apply_e2e	Raw-language diagnostic	golden	Nested Raw application witness
+nested_select_e2e	Raw-language diagnostic	golden	Nested Raw selection witness
+phased_map_probe_e2e	Raw/backend probe	golden	Phased-map compiler inspection
+qif_cnot_verify_e2e	Raw-language diagnostic	golden	Raw coherent-if unitary witness
+qs2_dummy_sim_e2e	Raw-language diagnostic	golden	Two-way Raw switch simulation
+qs3_pn_dummy_sim_e2e	Raw-language diagnostic	golden	Three-way Raw switch simulation
+qswitch_eta_endoQ_e2e	Raw-language diagnostic	golden	Eta-expanded higher-order switch witness
+qswitch_eta_expansion_e2e	Raw-language diagnostic	golden	Explicit eta-expansion witness
+qswitch_instantiated_e2e	Raw-language diagnostic	golden	Instantiated Raw QSwitch witness
+reader_qif_ocaml_attempt	Raw-language diagnostic	golden	Historical Raw reader example
+short_circuit_e2e	Raw-language diagnostic	golden	Raw short-circuit control witness
+source_datatype_e2e	Source	golden	Generative datatype with exact branch arity
+source_exp_twist_e2e	Source	golden	Certified exponential of tensor symmetry
+source_fixed_control_e2e	Source	golden	case_bool with one exact shared context
+source_quickstart_e2e	Source	golden	Tensor elimination and certified gates
+test_first_order	Source	golden	Minimal sealed first-order exponential
+verify_nested_ctrl_e2e	Raw-language diagnostic	golden	Verification of nested Raw controls
+zn_controlled_phase_e2e	Raw-language diagnostic	golden	Raw cyclic controlled-phase witness
+zn_group_ops_e2e	Raw-language diagnostic	golden	Raw cyclic-group operation witness

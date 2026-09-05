@@ -1,0 +1,4 @@
+# raw term cannot be sealed must be rejected by the public Source interface.
+Error:
+Bridge.term
+Src.term

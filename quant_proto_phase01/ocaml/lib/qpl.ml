@@ -9,6 +9,7 @@ module Datatype = Datatype
 module Emit = Emit
 module Bridge = Bridge
 module Linear = Linear
+module Source = Source
 
 (** Example: Bool datatype registration *)
 module Bool = Datatype.Make2(struct
@@ -70,11 +71,14 @@ let swap_term () =
 (** Print library info *)
 let info () =
   print_endline "QPL Surface Language v0.1.0";
-  print_endline "Embedded OCaml DSL for quantum programming";
+  print_endline "Sealed Source API with an explicit Raw compiler backend";
   print_endline "";
   print_endline "Available modules:";
-  print_endline "  Rep      - Type representations (⊗, +)";
-  print_endline "  Datatype - Datatype registration functors";
-  print_endline "  Emit     - Python code generation";
-  print_endline "  Bridge   - Python compiler integration";
-  print_endline "  Linear   - GADT-enforced linear DSL (iterate, fold, pow2)"
+  print_endline "  Source   - Primary sealed programmer-facing Source calculus";
+  print_endline "             (first-order sums, nominal linear contexts)";
+  print_endline "  Linear   - Raw/backend GADT DSL and compatibility combinators";
+  print_endline "  Ast      - Raw compiler-facing syntax";
+  print_endline "  Rep      - Raw type representations (⊗, +)";
+  print_endline "  Datatype - Raw datatype registration functors";
+  print_endline "  Emit     - Raw/Python code generation";
+  print_endline "  Bridge   - Python compiler integration"

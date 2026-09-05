@@ -1,0 +1,3 @@
+# datatype distinct instances must be rejected by the public Source interface.
+Error:
+Type Second.t is not compatible with type First.t

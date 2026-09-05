@@ -1,0 +1,4 @@
+2 qubits, 1 gates
+  Unitary1qBox q[0]
+  perm: [1, 0]
+OK: size=1 perm_n=2

@@ -1,4 +1,11 @@
-(** SRC_TESTS.md Conformance Test Suite (Linear GADT Version)
+(** Legacy Raw/Linear compatibility checks.
+
+    This predates the sealed [Source] module and is deliberately not counted
+    as Source conformance evidence.  In particular, its prose-only rejection
+    notes followed by [check ... true] prove nothing about rejected client
+    programs.  The Source client-CMI harness supplies that evidence.
+
+    Historical SRC_TESTS.md suite (Linear GADT version).
 
     This file implements the conformance tests for the source language
     using the Linear GADT module where OCaml enforces linearity at compile time.

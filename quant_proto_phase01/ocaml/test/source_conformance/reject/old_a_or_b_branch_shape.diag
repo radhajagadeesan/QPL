@@ -1,0 +1,3 @@
+# old a or b branch shape must be rejected by the public Source interface.
+Error:
+Type b_id is not compatible with type a_id

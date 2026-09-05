@@ -1,0 +1,3 @@
+# distinct equal typed branch contexts must be rejected by the public Source interface.
+Error:
+Type right_id is not compatible with type left_id

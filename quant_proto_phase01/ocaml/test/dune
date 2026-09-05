@@ -44,3 +44,24 @@
  ; definitions copied verbatim from the demos declare helpers unused here
  (flags (:standard -w -32-26-27-33-35))
  (libraries qpl_surface str))
+
+(executable
+ (name source_typecheck_harness)
+ (modules source_typecheck_harness)
+ (libraries unix qpl_surface))
+
+(rule
+ (alias runtest)
+ (deps
+  (sandbox always)
+  (package qpl_surface)
+  (source_tree source_conformance))
+ (action
+  (run %{exe:source_typecheck_harness.exe}
+       --ocamlc %{ocamlc}
+       --public-cmi %{lib:qpl_surface:qpl_surface.cmi}
+       --fixtures source_conformance)))
+
+(test
+ (name test_source_semantics)
+ (libraries qpl_surface))

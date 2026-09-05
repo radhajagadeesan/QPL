@@ -1,0 +1,3 @@
+# source unit not public must be rejected by the public Source interface.
+Error:
+Unbound value Src.P.one

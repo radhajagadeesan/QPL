@@ -1,110 +1,66 @@
-# OCaml E2E Demos (Primary User Language)
+# OCaml demos
 
-**OCaml is the primary user language for this release.** Programs are written using the
-OCaml Linear DSL (`ocaml/lib/linear.ml`), which provides GADT-enforced linearity at
-compile time. The full pipeline is:
+The sealed `Source` module is the programmer-facing language:
 
 ```
-OCaml Linear DSL → Elaborate → Bridge (JSON) → Python compile() → pytket Circuit
+OCaml Source DSL -> sealed elaboration -> Linear Raw terms -> Bridge -> compiler
 ```
 
-These demos are the main showcase of the system's capabilities. For backend-level
-Python demos that exercise the compiler directly, see `python/demos/`.
+`Source` separates first-order data witnesses (`P`) from general Source
+types (`S`). Every public sum is first-order. Tensor elimination is
+`let_tensor` (also `split` and `let_pair`), and the GADT context indices
+enforce linear use and exact branch contexts. There is no public Raw injection,
+sum constructor, `PlusMap`, or `NPlusMap`.
 
-## Running the Demos
+## Start here
 
-From the `ocaml/` directory:
+These examples construct programs using only the sealed Source API:
 
-```bash
-# Build all demos
+- `source_quickstart_e2e.ml`: `lam`, `let_tensor`, certified gates, and
+  linear pairing.
+- `source_fixed_control_e2e.ml`: `case_bool` with exactly the same nominal
+  context in both branches.
+- `source_datatype_e2e.ml`: a generative three-constructor datatype with an
+  exact-arity branch vector.
+- `source_exp_twist_e2e.ml`: `exp_i` of the certified tensor involution.
+- `test_first_order.ml`: the smallest sealed exponential example.
+
+From `quant_proto_phase01/ocaml/`:
+
+```sh
 dune build demos/
-
-# Run individual demos
-dune exec demos/algorithms_e2e.exe
-dune exec demos/qswitch_instantiated_e2e.exe
-dune exec demos/abstract_qswitch_oterm_e2e.exe
-dune exec demos/zn_controlled_phase_e2e.exe
-dune exec demos/short_circuit_e2e.exe
-dune exec demos/exp_twist_e2e.exe
-dune exec demos/ctrl_lambda_e2e.exe
-dune exec demos/verify_nested_ctrl_e2e.exe
-dune exec demos/datatype_demo.exe
+dune exec demos/source_quickstart_e2e.exe
+dune exec demos/source_fixed_control_e2e.exe
+dune exec demos/source_datatype_e2e.exe
+dune exec demos/source_exp_twist_e2e.exe
+dune exec demos/test_first_order.exe
 ```
 
-## Demos
+Each executable exits nonzero when compilation fails.
 
-### algorithms_e2e.ml
+## Raw diagnostics and probes
 
-Parameterized quantum algorithms using OCaml functors:
-- **Deutsch-Jozsa**: Oracle as plain function parameter
-- **HSP Standard Form**: `HSP_Core` functor over abstract types G, X
-- **Simon's Algorithm**: `Simon_Core` functor over abstract types Z, Y
-- **Bell and GHZ states**: Structural composition patterns
+`Linear` remains the Raw implementation language. Existing demos built with it
+are kept for compiler regression coverage, historical witnesses, and backend
+inspection. They may express terms rejected by sealed Source, so they should
+not be copied as new user syntax.
 
-Key pattern: `oracle ; (fourier_transform tensor id)`
+The complete classification is in `manifest.tsv`:
 
-### qswitch_instantiated_e2e.ml
+- `Source`: constructs the program through sealed `Source`.
+- `Raw-language diagnostic`: a Raw end-to-end language or semantic witness.
+- `Raw/backend probe`: compiler, bridge, routing, representation, or
+  serialization inspection.
 
-Compositional use of abstract QSwitch:
-- Multiple instantiations (H/S, X/Z, rotations)
-- Sequential composition
-- Self-inverse case (f = g)
+Complex Raw demos were not mechanically converted in this pass. In particular,
+there is deliberately no sealed-Source QSwitch-specialization demo yet: the
+abstract Source term is accepted, but specializing its higher-order arguments
+to H/S still reaches a recorded Raw-normalization limitation. The fixed-control
+Source demo is the supported introduction to coherent case analysis.
 
-### zn_controlled_phase_e2e.ml
+## Golden outputs
 
-Coherent control over cyclic groups:
-- Z2 (Bool): CZ gate (1 gate)
-- Z4: Binary decomposition with CS, CZ (2 gates)
-- Z5: CRz binary decomposition (3 gates)
-- Z8: NPlusMap n-ary coherent sum eliminator (8 branches, no manual decomposition)
-- O(log n) gate count via binary decomposition
-
-### short_circuit_e2e.ml
-
-Short-circuit conjunction with witness routing and quantum phase marking:
-- `toggle_W`, `ctrl_W`, `and_sc` structural operations
-- `phased_omap0` for phase-weighted bifunctors
-- `phased_control` for n-ary datatypes
-- Creates interference between execution paths
-
-### exp_twist_e2e.ml
-
-Exponential of involution (`exp_i`) E2E verification:
-- `TwistTen(Q,Q)` compilation sanity check
-- `exp_i(pi/4, twist)` via direct unitary synthesis
-- `exp_i(pi/4, twist) ; exp_i(pi/4, twist)` composition
-- Composition law: `exp(pi/4);exp(pi/4) = exp(pi/2)` via `eq_circ`
-- `exp_i(pi/4, twist_plus I I)` on sum types
-
-Uses the `exp_i` Linear DSL combinator (wraps `ExpInvolution`).
-
-### ctrl_lambda_e2e.ml
-
-Higher-order ctrl combinator as a curried lambda term:
-- `ctrl := λf. undist ∘ (id ⊕ (id_I ⊗ f)) ∘ dist`
-- Abstract lambda compilation (f as wire bundle)
-- Iterated: `ctrl(X)` = CX, `ctrl²(X)` = CCX, `ctrl³(X)` = CCCX, `ctrl⁴(X)` = CCCCX
-- Gate counts are pytket box counts (nested QControlBox); primitive gate counts are higher
-- Unitary verification via `eq_circ`
-
-### verify_nested_ctrl_e2e.ml
-
-Mathematical ground-truth verification for nested controls:
-- Tests ctrl^k(G) for G in {H, S, Z, T} and k = 1..4 (16 tests)
-- Compares compiled unitary against mathematically constructed reference
-- Reference: I_{2^n} with bottom-right 2x2 block = G (independent of compiler)
-- Uses `verify_ctrl_unitary` bridge command for fidelity comparison
-
-### abstract_qswitch_oterm_e2e.ml
-
-Abstract QSwitch as an open term (full source language):
-- Builds QSwitch using `Lam`, `LetPair`, `Var`, `App`, `PlusMap`
-- Follows `full_source_language_compilation_spec.md` section 5
-- Instantiation with concrete gate pairs and unitary verification
-
-### datatype_demo.ml
-
-Datatype declaration system:
-- Bool, G[8], Z_n datatypes
-- Operations, control combinator, phase rotations
-- E2E compilation of datatype operations
+A `golden` manifest entry has a checked-in `.output` file. An entry marked
+`none` is executable but has no golden fixture. The Source demos and converted
+first-order smoke test have checked-in goldens; no pre-existing `.output` file
+was regenerated or altered by the Source-layer addition.

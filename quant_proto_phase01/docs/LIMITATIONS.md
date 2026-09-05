@@ -27,6 +27,25 @@ validated `BetaSubstitution` and the closed function-value layout
 preserved as a residual port. Witness `C` is exact in both modes, and
 the Python suite carries **zero red witnesses**.
 
+### Source higher-order specialization
+
+The sealed `Source` interface accepts the abstract higher-order quantum
+switch, and that closed abstraction compiles. A fixed `H`/`S` control built
+directly with `Source.case_bool` also compiles. Applying the abstract switch
+to closed `H` and `S` function values currently fails during Raw boundary
+normalization with:
+
+```text
+route par^-: wire 0 is placed twice
+```
+
+This is an executable-coverage limitation, not a Source typing restriction.
+The Source elaborator retains the manuscript's prescribed context-left
+`G_Gamma tensor (A+B)` case expansion; it does not switch to a
+coherence-equivalent mirror lowering merely to avoid the diagnostic.
+`ocaml/test/test_source_semantics.ml` records the limitation and will also
+accept a future successful compilation.
+
 ---
 
 ## 1. Sum Type Arity — pytket

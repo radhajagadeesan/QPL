@@ -1,0 +1,3 @@
+# duplicate lambda binder cannot close must be rejected by the public Source interface.
+Error:
+which is less general than

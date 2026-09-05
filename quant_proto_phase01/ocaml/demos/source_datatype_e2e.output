@@ -1,0 +1,15 @@
+Source datatype: Three has 3 constructors [zero, one, two]
+6 qubits, 11 gates
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  X q[0]
+  QControlBox q[0, 1, 2]
+  X q[0]
+  X q[1]
+  QControlBox q[0, 1, 2]
+  X q[1]
+  perm: [3, 4, 5, 0, 1, 2]
+Source datatype: OK gates=11 wires=6

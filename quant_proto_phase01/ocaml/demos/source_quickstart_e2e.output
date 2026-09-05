@@ -1,0 +1,5 @@
+4 qubits, 2 gates
+  H q[0]
+  S q[1]
+  perm: [2, 3, 0, 1]
+Source quickstart: OK gates=2 wires=4

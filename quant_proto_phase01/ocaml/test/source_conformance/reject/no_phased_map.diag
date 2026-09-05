@@ -1,0 +1,3 @@
+# no phased map must be rejected by the public Source interface.
+Error:
+Unbound value Src.phased_map

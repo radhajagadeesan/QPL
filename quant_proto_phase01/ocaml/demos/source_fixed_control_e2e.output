@@ -1,0 +1,7 @@
+4 qubits, 4 gates
+  X q[0]
+  CH q[0, 1]
+  X q[0]
+  CS q[0, 1]
+  perm: [2, 3, 0, 1]
+Source fixed control: OK gates=4 wires=4

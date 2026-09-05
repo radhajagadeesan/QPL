@@ -1,10 +1,175 @@
-# OCaml Surface Language
+# OCaml API: Sealed Source and Raw Backend
 
-This document describes the OCaml surface language for Granthi, including the two-level staging architecture.
+The programmer-facing OCaml API is `Qpl_surface.Source`. It is a sealed,
+typed presentation of Granthi's Source calculus. `Qpl_surface.Linear`,
+`Ast`, `Bridge`, and the representation modules remain available as the
+Raw/compiler interface and for historical programs, but they are not the
+Source language.
 
 ---
 
-## Overview
+## Primary programmer API: `Source`
+
+Start new programs with:
+
+```ocaml
+open Qpl_surface.Source
+```
+
+The module does not expose its term constructors or their Raw representation.
+It exposes one total lowering operation, `emit`, from a closed Source term to
+`Bridge.term`; there is deliberately no coercion in the other direction.
+
+### The two Source type strata
+
+The public witnesses enforce the grammar directly:
+
+```text
+P ::= Q | QBool | P tensor P | P + P
+S ::= P | S tensor S | S -o S
+```
+
+`P` is the first-order stratum. In particular, every public sum is built by
+`P.plus`, so neither side of a sum can contain a function type. `S` is the
+full Source stratum: it embeds first-order types and closes under tensor and
+linear function space.
+
+```ocaml
+let pair_of_qubits = P.(q ** q)
+let first_order_choice = P.(qbool ++ (q ** q))
+let qubit_endomorphism = S.(data P.q -@ data P.q)
+```
+
+There is no public Source `Unit` witness. Raw `I` may appear internally in
+the elaboration of datatypes and branch machinery, but Source programs cannot
+construct or inspect it. Likewise, the Source interface exposes no sum
+injections, raw `PlusMap`/`NPlusMap`, phase-weighted raw maps, or constructor
+accepting a `Bridge.term`.
+
+The context of a Source term may contain arbitrary `S` values, including
+higher-order functions. The first-order restriction applies to values *inside
+a sum*, not to the surrounding linear context.
+
+### Nominal linear contexts
+
+`Source.term` carries an abstract context index. Variables are introduced by
+rank-2 binders, so each lexical variable receives a fresh nominal identity;
+equal OCaml or Source types do not make two variables interchangeable.
+`U0`, `UL`, and `UR` are total, disjoint context-partition witnesses used
+by `pair`, `app`, `seq`, and tensor elimination. They account for every
+variable exactly once—there is no weakening hidden in the API.
+
+`let_tensor` is Source tensor elimination:
+
+```text
+let (x,y) = producer in body
+```
+
+`split` and `let_pair` are user-friendly aliases for the same operation.
+All three introduce two fresh nominal binders and require an explicit context
+partition between the producer and body.
+
+### Tag-preserving case
+
+`case` implements the Source rule
+
+```text
+Delta |- e : A + B
+Gamma |- left  : C
+Gamma |- right : C
+--------------------------------
+Delta,Gamma |- case e of ... : (A + B) tensor C
+```
+
+The two branches must use the **same complete nominal context** `Gamma`:
+not merely variables of the same types, and not two disjoint subsets. The
+routed summand binders are intentionally absent from the public branch
+contexts; elaboration pairs the selected summand back into the result. The
+result therefore preserves the original sum tag and payload as
+`(A + B) tensor C`.
+
+This rejects, at OCaml type-checking time, the tempting but non-linear term
+`let (a,b) = e z in [a | b]`: its two alternatives consume different
+variables, rather than the same nominal context. Empty shared context is
+represented by the separate `case0` rule; `case_bool` and `case_bool0`
+are the `QBool` conveniences.
+
+### Certified operations
+
+`Source.Op` packages closed, typed operations and preserves whether their
+implementation is a value or a structural action. It provides:
+
+- identity, composition, tensor, and application;
+- tensor coherence at arbitrary `S` types;
+- additive coherence and distributivity only at `P` types;
+- the primitive quantum gates, `Rz`, and scalar phase;
+- certified involutions and `exp_i`.
+
+`Op.value` embeds a certified operation as a closed Source function value,
+while `Op.apply` applies it without discarding its certification.
+`Op.seal` seals a closed, typed Source function; it does not admit Raw syntax.
+
+For example:
+
+```ocaml
+let h_then_s = Op.compose Op.h Op.s
+let closed_source_term = Op.value h_then_s
+let raw_term = emit closed_source_term
+```
+
+### Nominal control datatypes
+
+`Source.Datatype.Make` creates a fresh nominal first-order control type on
+each application, even when names and labels are textually equal. Constructor
+labels are supplied by a length-indexed vector:
+
+```ocaml
+module Bit =
+  Datatype.Make (struct
+    type tail = Datatype.n1
+    let name = "Bit"
+    let labels = Datatype.("zero" @: "one" @: VNil)
+  end) ()
+
+let controlled_hs =
+  Bit.select ~target:P.q Datatype.(Op.h @: Op.s @: VNil)
+```
+
+The vector is the single arity authority, so a two-label datatype accepts
+exactly two branch operations. The Source API exposes neither injections nor
+observation of the Raw tag representation.
+
+### Current backend limitation
+
+The Source typing and elaboration rules accept the abstract higher-order
+quantum switch, and the direct abstract qswitch compiles. A directly built
+fixed `H`/`S` control also compiles. However, specializing that abstract
+higher-order qswitch to closed `H` and `S` values currently reaches a Raw
+backend placement limitation:
+
+```text
+route par^-: wire 0 is placed twice
+```
+
+This is a known backend limitation, not permission to expose Raw constructs
+through `Source`, and not evidence that the Source term is ill-typed.
+
+### Documentation follow-up
+
+TODO: synchronize the purported “Source syntax” examples in `intro_obj` with
+this sealed API. That manuscript/document is intentionally not edited as part
+of this implementation.
+
+---
+
+## Historical Raw/backend reference
+
+The remainder of this document records the older `Ast` and `Linear` APIs,
+existing demos, and compiler-facing combinators. Names such as “oterm surface”
+or “full source language” below are historical terminology: those facilities
+construct Raw terms and do not have the guarantees of `Source`.
+
+### Raw staging overview
 
 Granthi uses a **two-level staging architecture**:
 
@@ -37,14 +202,18 @@ Granthi uses a **two-level staging architecture**:
 
 ---
 
-## Two Interfaces
+### Raw interfaces
 
-The OCaml surface language provides two interfaces:
+The historical Raw layer provides two principal interfaces:
 
 | Interface | Module | Use Case |
 |-----------|--------|----------|
-| **Direct AST** | `Ast` | Full surface syntax with λ, let, case |
-| **Linear DSL** | `Linear` | GADT-enforced linearity, sealed types |
+| **Direct Raw AST** | `Ast` | Compiler-facing syntax with λ, let, case |
+| **Raw GADT DSL** | `Linear` | Typed Raw construction and compatibility combinators |
+
+`Linear` is sealed against arbitrary constructor forgery, but it remains the
+Raw implementation language: unlike `Source`, it publicly exposes `I`,
+unrestricted sum formation, and branchwise sum maps.
 
 ### Direct AST (`Ast` module)
 
@@ -79,9 +248,9 @@ type term =
   | ...                     (* other gates *)
 ```
 
-### Linear DSL (`Linear` module)
+### Raw GADT DSL (`Linear` module)
 
-The `Linear` module provides **GADT-enforced linearity** where OCaml's type system guarantees every linear variable is used exactly once:
+The historical `Linear` module provides GADT-indexed Raw construction:
 
 ```ocaml
 open Qpl_surface.Linear
@@ -214,9 +383,9 @@ On superposition inputs, both branches execute coherently.
 
 ---
 
-## GADT-Enforced Linearity
+## Historical Raw GADT context tracking
 
-The `Linear` module uses OCaml's type system to enforce linearity at compile time.
+The `Linear` module uses OCaml's type system to track Raw contexts.
 
 ### How It Works
 
@@ -307,9 +476,9 @@ let ctrl f =
        (case_hom one one q q left right)
 ```
 
-### Oterm Case Sugar
+### Historical Raw oterm case sugar
 
-The same case sugar pattern is available at the **oterm level** for the full source
+The same case sugar pattern is available at the **Raw oterm level** for the older
 language (lambdas, variables, function application):
 
 | Combinator | Type | Description |
@@ -418,9 +587,9 @@ val n_factor : 'a ty array -> 'b ty
 
 See `ocaml/demos/curried_select_3_ndist_e2e.ml` for the textbook curried form.
 
-### Curried Higher-Order Dispatch (full source language)
+### Curried higher-order dispatch (historical Raw oterm layer)
 
-The full source language supports nested Apply on curried lambdas with full
+The Raw oterm layer supports nested Apply on curried lambdas with full
 β-reduction. Use this when implementing the textbook curried form:
 
 ```ocaml
@@ -476,11 +645,13 @@ ocaml/
 │   ├── datatype.ml     # Datatype definitions (Bool, W, etc.)
 │   ├── elaborate.ml    # Elaboration to Core IR
 │   ├── emit.ml         # Term emission helpers
-│   ├── linear.ml       # GADT-enforced Linear DSL
-│   ├── linear.mli      # Linear DSL interface
+│   ├── linear.ml       # Historical Raw GADT DSL
+│   ├── linear.mli      # Raw GADT interface
 │   ├── perm_gen.ml     # Permutation generation
 │   ├── qpl.ml          # QPL module (surface combinators)
-│   └── rep.ml          # Type representation
+│   ├── rep.ml          # Raw type representation
+│   ├── source.ml       # Sealed Source implementation
+│   └── source.mli      # Primary programmer-facing API
 ├── demos/              # All OCaml demos (full pipeline to circuits)
 │   ├── algorithms_e2e.ml
 │   ├── abstract_qswitch_oterm_e2e.ml

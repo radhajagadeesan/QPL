@@ -1,0 +1,4 @@
+# datatype label count mismatch must be rejected by the public Source interface.
+Error:
+Signature mismatch:
+val labels

@@ -1,0 +1,4 @@
+4 qubits, 1 gates
+  Unitary2qBox q[0, 1]
+  perm: [2, 3, 0, 1]
+Source exp(i pi/4 swap): OK gates=1 wires=4

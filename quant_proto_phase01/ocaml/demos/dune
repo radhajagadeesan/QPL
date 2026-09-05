@@ -108,3 +108,19 @@
  (name exp_swap_T3_e2e)
  (libraries qpl_surface str))
 (executable (name test_first_order) (libraries qpl_surface str))
+
+(executable
+ (name source_quickstart_e2e)
+ (libraries qpl_surface))
+
+(executable
+ (name source_fixed_control_e2e)
+ (libraries qpl_surface))
+
+(executable
+ (name source_datatype_e2e)
+ (libraries qpl_surface))
+
+(executable
+ (name source_exp_twist_e2e)
+ (libraries qpl_surface))

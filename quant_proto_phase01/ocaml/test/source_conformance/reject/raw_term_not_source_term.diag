@@ -1,0 +1,4 @@
+# raw term not source term must be rejected by the public Source interface.
+Error:
+Bridge.term
+Src.term

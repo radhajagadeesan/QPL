@@ -1,0 +1,4 @@
+# uncertified raw operation must be rejected by the public Source interface.
+Error:
+Bridge.term
+Src.op

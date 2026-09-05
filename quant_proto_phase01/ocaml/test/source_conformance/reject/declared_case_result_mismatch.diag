@@ -1,0 +1,3 @@
+# declared case result mismatch must be rejected by the public Source interface.
+Error:
+Type Src.q is not compatible with type Src.qbool
