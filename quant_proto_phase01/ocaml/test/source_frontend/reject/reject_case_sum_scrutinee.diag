@@ -1,0 +1,4 @@
+# location: exactly the scrutinee token
+File "reject_case_sum_scrutinee.ml", line 6, characters 7-8
+Source: this case form scrutinizes a first-order sum, but the
+scrutinee has type q

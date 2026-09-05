@@ -1,0 +1,18 @@
+(library
+ (name qpl_counterparts)
+ (modules surface_programs oracle_legacy oracle_sealed)
+ (preprocess
+  (per_module
+   ((pps qpl_source_ppx) surface_programs)))
+ (libraries qpl_surface))
+
+(test
+ (name run_counterparts)
+ (modules run_counterparts)
+ (libraries qpl_surface qpl_counterparts)
+ (deps
+  coverage.tsv
+  surface_programs.ml
+  ../demos/manifest.tsv
+  ../test/source_frontend/reject/reject_reading_b.ml
+  ../test/source_frontend/reject/reject_reader_qif.ml))

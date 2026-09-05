@@ -1,0 +1,3 @@
+# location: exactly the wildcard pattern
+File "reject_match_wildcard.ml", line 10, characters 4-5
+Source: datatype matching is exhaustive by constructor; wildcards are

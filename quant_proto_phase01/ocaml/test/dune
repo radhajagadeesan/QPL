@@ -72,6 +72,12 @@
  (preprocess (pps qpl_source_ppx))
  (libraries qpl_surface))
 
+(test
+ (name test_source_ppx_ext)
+ (modules test_source_ppx_ext)
+ (preprocess (pps qpl_source_ppx))
+ (libraries qpl_surface))
+
 (executable
  (name source_frontend_harness)
  (modules source_frontend_harness)
@@ -90,3 +96,8 @@
        --public-cmi %{lib:qpl_surface:qpl_surface.cmi}
        --ppx-driver %{exe:../ppx/qpl_source_pp.exe}
        --fixtures source_frontend)))
+
+(test
+ (name test_source_datatype_ops)
+ (modules test_source_datatype_ops)
+ (libraries qpl_surface))

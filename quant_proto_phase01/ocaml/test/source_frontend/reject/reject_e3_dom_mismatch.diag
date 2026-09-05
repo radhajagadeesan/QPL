@@ -1,0 +1,4 @@
+# location: exactly the mismatched argument token
+File "reject_e3_dom_mismatch.ml", line 10, characters 55-56
+Source: this host operation expects ((q, q) plus, q) tensor but the
+argument has type q

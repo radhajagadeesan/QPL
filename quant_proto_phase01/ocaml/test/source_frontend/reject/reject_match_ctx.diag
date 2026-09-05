@@ -1,0 +1,4 @@
+# location: the whole match
+File "reject_match_ctx.ml", lines 8-11
+Source: every match arm must consume the same nominal linear context
+the M0 arm uses [u] but the M2 arm uses [v]

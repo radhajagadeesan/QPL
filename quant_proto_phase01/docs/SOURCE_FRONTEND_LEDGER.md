@@ -1,10 +1,14 @@
 # Source Frontend Feasibility Ledger (corrected, 34 rows)
 
-Status: **proposal under review — uncommitted.** Companion to
-`SOURCE_FRONTEND_SLICE_REPORT.md`.  One row per file in
-`ocaml/demos/` (the 34-demo manifest).  Every classification below was
-re-derived from the demo's actual contents and from the sealed
-`source.mli` at HEAD `a052e14`, not carried over from the design spike.
+Status: **superseded as the living authority by
+`ocaml/counterparts/coverage.tsv`**, which the `run_counterparts` CI
+test validates row-by-row.  This file remains the Phase-1 feasibility
+analysis; the Phase-2 addendum at the end records what has since been
+implemented.  Companion to `SOURCE_FRONTEND_SLICE_REPORT.md`.  One row
+per file in `ocaml/demos/` (the 34-demo manifest).  Every
+classification below was re-derived from the demo's actual contents and
+from the sealed `source.mli` at HEAD `a052e14`, not carried over from
+the design spike.
 
 ## What the verified MVP surface provides
 
@@ -134,3 +138,34 @@ layer; E3 is an ergonomics rule.  Migration of the 34 counterparts is
 obligation is: write the counterpart, `emit`, compile, and
 `Bridge.eq_circ` against the existing demo's construction, with pinned
 facts where the demo pins them.
+
+## Phase-2 addendum (implemented; coverage.tsv is the authority)
+
+- **E1 and E3 are implemented and tested** (`case s ~left_:/~right_:`
+  over first-order sums; `((op : (dom, cod) lolli) argument)` for
+  certified non-endomorphisms), with located rejection fixtures.
+- **The datatype operation/elimination layer is implemented** — the
+  narrow design that replaced this ledger's broader E2 sketch (no
+  `Op.plus`, no branch-swap involution grammar over raw sums):
+  `Datatype.Make(...)()` now exposes `cases`/`cases0` (exhaustive
+  tag-preserving datatype case, reached by ordinary `match` syntax in
+  `let%source`), `permute`, and `involution_permute` (certified label
+  permutations with constructor-name PPX sugar, forward convention,
+  padding states fixed).  See
+  `docs/E2_DATATYPE_PERMUTATION_PROPOSAL.md` for the shipped design and
+  the canonical LEFT-association decision (fixed by the clean calculus
+  in `narymonoidal.tex`/`datatypes-new.tex` and pinned structurally by
+  `test_source_datatype_ops`).
+- Consequently rows **13, 14, 18, 26, and 34** — the E2/blocked entries
+  above — are **migrated**: branch-swap exponentials via datatype
+  involutions tensored with payload identities (row 13), the plus-swap
+  exponential via the two-label datatype involution (row 14), per-label
+  phased dispatch derived from `Op.phase` composed into `select`
+  branches (row 18), the concrete W3 = Qudit(3) toggle / ctrl_W /
+  and_sc programs (row 26 — not the paper's general `Aux + QBool` with
+  nontrivial `Aux`), and Z_n shifts/negations/additions for
+  n ∈ {3, 4, 5, 8, 11} (row 34).
+- All 34 rows now carry an executed concise Source counterpart; the
+  remaining split residues are backend-inspection or normalization
+  matters (rows 4, 5, 9, 10, 17, 21 notes in coverage.tsv), none of
+  them datatype-related.

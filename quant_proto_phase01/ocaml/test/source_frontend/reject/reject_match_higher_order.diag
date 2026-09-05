@@ -1,0 +1,4 @@
+# location: the whole match
+File "reject_match_higher_order.ml", lines 8-11
+Source: a match result must be first-order data, but the arms have
+type (q, q) lolli

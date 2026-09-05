@@ -1,0 +1,4 @@
+# location: exactly the repeated constructor entry
+File "reject_permute_duplicate.ml", line 7, characters 27-29
+Source: constructor M1 appears twice; a permutation lists each
+constructor exactly once

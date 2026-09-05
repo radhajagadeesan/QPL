@@ -237,6 +237,40 @@ module Datatype : sig
       target:'a P.t ->
       (arity, ('a, 'a) op) vector ->
       ((t, 'a) tensor, (t, 'a) tensor) op
+
+    (** Exhaustive tag-preserving datatype case.  Branch order is
+        declaration order; the tag survives in the result; every branch
+        returns the same first-order type and consumes the identical
+        complete nominal linear context.  The hidden representation is
+        the canonical LEFT-associated expansion fixed by the clean
+        calculus (bigplus_{i<=n} A_i := (bigplus_{i<n} A_i) ⊕ A_n), and
+        dispatch is a single flat n-ary map over its leaf order. *)
+    val cases :
+      result:'c P.t ->
+      scrutinee:('g1, t) term ->
+      branches:(arity, (('id, 'x, 'tail) cons, 'c) term) vector ->
+      using:('g1, ('id, 'x, 'tail) cons, 'g) uses ->
+      ('g, (t, 'c) tensor) term
+
+    (** Empty shared context is a separate clause, as with [case0]. *)
+    val cases0 :
+      result:'c P.t ->
+      scrutinee:('g, t) term ->
+      branches:(arity, (empty, 'c) term) vector ->
+      ('g, (t, 'c) tensor) term
+
+    (** Certified label permutation.  Position [i] carries the destination
+        of constructor [i]: the forward convention |i⟩ ↦ |p(i)⟩.  Length is
+        fixed by [arity]; range and bijectivity are validated eagerly; the
+        padding states of a non-power-of-two arity are untouched.  Lowers
+        through the existing trusted tag-permutation machinery; no
+        injection, observation, or representation is exposed. *)
+    val permute : (arity, int) vector -> (t, t) op
+
+    (** [permute]'s checks plus the proof p(p(i)) = i.  A valid
+        non-involutive permutation (a 3-cycle, say) is rejected here even
+        though [permute] accepts it. *)
+    val involution_permute : (arity, int) vector -> t Op.involution
   end
 end
 

@@ -25,11 +25,23 @@
    - host operations: the primitive gate names [h s t x y z cx not_bool]
      have built-in types; any other host identifier applied inside a
      source body must denote a certified endomorphism [('a,'a) op] and its
-     result type is its argument's type.  A non-endomorphism host operation
-     must be wrapped at the call site with an annotation.
+     result type is its argument's type.  A non-endomorphism host
+     operation (a distributor, a coherence) is applied with an explicit,
+     located annotation in function position:
+       ((host_op : (dom, cod) lolli) argument)
+     The annotation fixes the domain and codomain before OCaml inference
+     runs; the sealed GADT still re-checks the certified op against both.
 
-   The rewriter never writes files; use [dune describe pp] to display the
-   expansion. *)
+   Case forms (both tag-preserving, both requiring the two branches to
+   consume the same nominal linear context, both first-order results):
+   - [case b ~zero:e0 ~one_:e1]      over a [qbool] scrutinee;
+   - [case s ~left_:el ~right_:er]   over an [('a,'b) plus] scrutinee.
+   Each lowers to the sealed [case_bool]/[case] (or the [*0] clause when
+   the shared branch context is empty; the sealed API exposes no closed
+   first-order constructors, so that clause is structural parity only).
+
+   The rewriter never writes files; use the standalone driver to display
+   the expansion. *)
 
 open Ppxlib
 module Ab = Ast_builder.Default
@@ -46,6 +58,31 @@ let src_ident ~loc names last =
   Ab.pexp_ident ~loc { txt = lid_of_path (src_mod @ names) last; loc }
 
 let err ~loc fmt = Location.raise_errorf ~loc fmt
+
+(* ------------------------------------------------------------------ *)
+(* Datatypes declared in this compilation unit                          *)
+(* ------------------------------------------------------------------ *)
+
+(* module name -> constructors in declaration order; reset per file *)
+let declared_datatypes : (string * string list) list ref = ref []
+
+let find_datatype module_name =
+  List.assoc_opt module_name !declared_datatypes
+
+let constructor_owner ctor =
+  List.find_opt (fun (_, ctors) -> List.mem ctor ctors) !declared_datatypes
+
+let datatype_lid path =
+  Ldot (Ldot (Ldot (Lident "Qpl_surface", "Source"), "Datatype"), path)
+
+let rec vector_of ~loc = function
+  | [] -> Ast_builder.Default.pexp_construct ~loc
+            { txt = datatype_lid "VNil"; loc } None
+  | head :: rest ->
+      Ast_builder.Default.pexp_construct ~loc
+        { txt = datatype_lid "VCons"; loc }
+        (Some (Ast_builder.Default.pexp_tuple ~loc
+                 [ head; vector_of ~loc rest ]))
 
 (* ------------------------------------------------------------------ *)
 (* The sealed type grammar, as parsed from annotations                  *)
@@ -323,6 +360,30 @@ let rec elab (wenv : wenv) (env : env) (e : expression) :
               (Ab.pexp_ident ~loc:fn.pexp_loc { txt; loc = fn.pexp_loc })
               arg',
             arg_ctx, arg_ty )
+      | Pexp_constraint (inner, ct)
+        when (match inner.pexp_desc with
+              | Pexp_ident { txt = Lident bound; _ } ->
+                  not (List.mem_assoc bound env)
+              | _ -> true) ->
+          (* annotation-directed host operation: the annotation names the
+             certified op's domain and codomain in the sealed grammar, so
+             non-endomorphisms (distributors, coherences) are typed here,
+             before OCaml inference, with located errors *)
+          let dom, cod =
+            match parse_ty ct with
+            | TLolli (d, c) -> d, c
+            | other ->
+                err ~loc:ct.ptyp_loc
+                  "Source: a host operation annotation must be a lolli \
+                   (dom, cod) lolli, not %s"
+                  (sty_to_string other)
+          in
+          if not (sty_equal dom arg_ty) then
+            err ~loc:arg.pexp_loc
+              "Source: this host operation expects %s but the argument \
+               has type %s"
+              (sty_to_string dom) (sty_to_string arg_ty);
+          (op_apply ~loc inner arg', arg_ctx, cod)
       | _ ->
           let fn', fn_ctx, fn_ty = elab wenv env fn in
           let dom, cod =
@@ -348,11 +409,142 @@ let rec elab (wenv : wenv) (env : env) (e : expression) :
         { e with pexp_desc = Pexp_apply (fn, [ (Nolabel, first) ]) }
       in
       elab wenv env { e with pexp_desc = Pexp_apply (inner, rest) }
+  | Pexp_match (scrut, arms) -> elab_match wenv env ~loc scrut arms
   | _ ->
       err ~loc
         "Source: unsupported syntax in a source expression (expected a \
-         variable, application, pair, let (a,b) = split ..., or case ... \
-         ~zero: ... ~one_: ...)"
+         variable, application, pair, let (a,b) = split ..., case ... \
+         ~zero:/~one_: or ~left_:/~right_:, or match on a declared \
+         datatype)"
+
+and elab_match wenv env ~loc scrut arms =
+  let scrut', scrut_ctx, scrut_ty = elab wenv env scrut in
+  let mpath =
+    match scrut_ty with
+    | TData (m, _) -> m
+    | other ->
+        err ~loc:scrut.pexp_loc
+          "Source: match scrutinizes a declared datatype, but the \
+           scrutinee has type %s"
+          (sty_to_string other)
+  in
+  let mname = Longident.name mpath in
+  let ctors =
+    match find_datatype mname with
+    | Some cs -> cs
+    | None ->
+        err ~loc:scrut.pexp_loc
+          "Source: match requires the [@@source.datatype] declaration of \
+           %s in this compilation unit"
+          mname
+  in
+  let parsed =
+    List.map
+      (fun arm ->
+        (match arm.pc_guard with
+        | Some g ->
+            err ~loc:g.pexp_loc
+              "Source: match guards are not part of the Source surface"
+        | None -> ());
+        match arm.pc_lhs.ppat_desc with
+        | Ppat_construct ({ txt = Lident cname; _ }, None) ->
+            (cname, arm.pc_lhs.ppat_loc, arm.pc_rhs)
+        | Ppat_construct ({ txt = Lident _; _ }, Some _) ->
+            err ~loc:arm.pc_lhs.ppat_loc
+              "Source: datatype constructors carry no payload in this \
+               surface"
+        | Ppat_any | Ppat_var _ ->
+            err ~loc:arm.pc_lhs.ppat_loc
+              "Source: datatype matching is exhaustive by constructor; \
+               wildcards are not accepted"
+        | _ ->
+            err ~loc:arm.pc_lhs.ppat_loc
+              "Source: a match arm names one constructor of the \
+               scrutinee's datatype")
+      arms
+  in
+  List.iter
+    (fun (cname, cloc, _) ->
+      if not (List.mem cname ctors) then
+        match constructor_owner cname with
+        | Some (owner, _) when owner <> mname ->
+            err ~loc:cloc
+              "Source: constructor %s belongs to datatype %s, not %s"
+              cname owner mname
+        | _ ->
+            err ~loc:cloc
+              "Source: %s is not a constructor of datatype %s" cname mname)
+    parsed;
+  let seen = Hashtbl.create 8 in
+  List.iter
+    (fun (cname, cloc, _) ->
+      if Hashtbl.mem seen cname then
+        err ~loc:cloc
+          "Source: constructor %s appears twice in this match" cname;
+      Hashtbl.add seen cname ())
+    parsed;
+  (match List.filter (fun c -> not (Hashtbl.mem seen c)) ctors with
+  | [] -> ()
+  | missing ->
+      err ~loc
+        "Source: match is not exhaustive; missing constructor%s %s"
+        (if List.length missing > 1 then "s" else "")
+        (String.concat ", " missing));
+  (* elaborate the arms in DECLARATION order — the sole code authority *)
+  let elaborated =
+    List.map
+      (fun cname ->
+        let _, _, rhs =
+          List.find (fun (c, _, _) -> String.equal c cname) parsed
+        in
+        elab wenv env rhs)
+      ctors
+  in
+  let _, first_ctx, first_ty = List.hd elaborated in
+  List.iteri
+    (fun i (_, ctx_i, ty_i) ->
+      if not (sty_equal ty_i first_ty) then
+        err ~loc
+          "Source: the match arms have different types (%s versus %s)"
+          (sty_to_string first_ty) (sty_to_string ty_i);
+      let same =
+        List.length ctx_i = List.length first_ctx
+        && List.for_all2 (fun a b -> a.stamp = b.stamp) ctx_i first_ctx
+      in
+      if not same then
+        err ~loc
+          "Source: every match arm must consume the same nominal linear \
+           context; the %s arm uses [%s] but the %s arm uses [%s]"
+          (List.nth ctors 0) (ctx_names first_ctx)
+          (List.nth ctors i) (ctx_names ctx_i))
+    elaborated;
+  if not (first_order first_ty) then
+    err ~loc
+      "Source: a match result must be first-order data, but the arms \
+       have type %s"
+      (sty_to_string first_ty);
+  let result_wit = p_wit ~loc wenv first_ty in
+  let branches_vec =
+    vector_of ~loc (List.map (fun (e', _, _) -> e') elaborated)
+  in
+  let target name =
+    Ab.pexp_ident ~loc { txt = Ldot (mpath, name); loc }
+  in
+  if first_ctx = [] then
+    ( [%expr
+        [%e target "cases0"]
+          ~result:[%e result_wit] ~scrutinee:[%e scrut']
+          ~branches:[%e branches_vec]],
+      scrut_ctx,
+      TTensor (scrut_ty, first_ty) )
+  else
+    let uses, merged = route ~loc scrut_ctx first_ctx in
+    ( [%expr
+        [%e target "cases"]
+          ~result:[%e result_wit] ~scrutinee:[%e scrut']
+          ~branches:[%e branches_vec] ~using:[%e uses]],
+      merged,
+      TTensor (scrut_ty, first_ty) )
 
 and elab_split wenv env ~loc lp rp producer_call body =
   let producer =
@@ -430,67 +622,125 @@ and elab_split wenv env ~loc lp rp producer_call body =
 
 and elab_case wenv env ~loc args =
   let scrutinee = ref None and zero = ref None and one_ = ref None in
+  let left_ = ref None and right_ = ref None in
   List.iter
     (fun (label, value) ->
       match label with
       | Nolabel when !scrutinee = None -> scrutinee := Some value
       | Labelled "zero" when !zero = None -> zero := Some value
       | Labelled "one_" when !one_ = None -> one_ := Some value
+      | Labelled "left_" when !left_ = None -> left_ := Some value
+      | Labelled "right_" when !right_ = None -> right_ := Some value
       | _ ->
           err ~loc:value.pexp_loc
-            "Source: case takes one scrutinee and ~zero:/~one_: branches")
+            "Source: case takes one scrutinee and either ~zero:/~one_: \
+             (qbool) or ~left_:/~right_: (sum) branches")
     args;
   let need what = function
     | Some v -> v
     | None -> err ~loc "Source: case is missing its %s" what
   in
   let scrutinee = need "scrutinee" !scrutinee in
-  let zero = need "~zero: branch" !zero in
-  let one_ = need "~one_: branch" !one_ in
-  let scrut', scrut_ctx, scrut_ty = elab wenv env scrutinee in
-  (match scrut_ty with
-  | TQBool -> ()
-  | other ->
-      err ~loc:scrutinee.pexp_loc
-        "Source: this case form scrutinizes qbool, but the scrutinee has \
-         type %s"
-        (sty_to_string other));
-  let zero', z_ctx, z_ty = elab wenv env zero in
-  let one', o_ctx, o_ty = elab wenv env one_ in
-  if not (sty_equal z_ty o_ty) then
-    err ~loc
-      "Source: the two branches have different types (%s versus %s)"
-      (sty_to_string z_ty) (sty_to_string o_ty);
-  if not (first_order z_ty) then
-    err ~loc
-      "Source: a case result must be first-order data, but the branches \
-       have type %s"
-      (sty_to_string z_ty);
-  let same_ctx =
-    List.length z_ctx = List.length o_ctx
-    && List.for_all2 (fun a b -> a.stamp = b.stamp) z_ctx o_ctx
+  (* shared branch discipline: identical types, first-order result, and the
+     same nominal linear context in both branches *)
+  let elab_branches ~first_name ~second_name first second =
+    let first', f_ctx, f_ty = elab wenv env first in
+    let second', s_ctx, s_ty = elab wenv env second in
+    if not (sty_equal f_ty s_ty) then
+      err ~loc
+        "Source: the two branches have different types (%s versus %s)"
+        (sty_to_string f_ty) (sty_to_string s_ty);
+    if not (first_order f_ty) then
+      err ~loc
+        "Source: a case result must be first-order data, but the branches \
+         have type %s"
+        (sty_to_string f_ty);
+    let same_ctx =
+      List.length f_ctx = List.length s_ctx
+      && List.for_all2 (fun a b -> a.stamp = b.stamp) f_ctx s_ctx
+    in
+    if not same_ctx then
+      err ~loc
+        "Source: both case branches must consume the same nominal linear \
+         context; %s uses [%s] but %s uses [%s]"
+        first_name (ctx_names f_ctx) second_name (ctx_names s_ctx);
+    first', second', f_ctx, f_ty
   in
-  if not same_ctx then
-    err ~loc
-      "Source: both case branches must consume the same nominal linear \
-       context; ~zero: uses [%s] but ~one_: uses [%s]"
-      (ctx_names z_ctx) (ctx_names o_ctx);
-  let result_wit = p_wit ~loc wenv z_ty in
-  if z_ctx = [] then
-    ( [%expr
-        [%e src_ident ~loc [] "case_bool0"]
-          ~result:[%e result_wit] ~scrutinee:[%e scrut'] ~zero:[%e zero']
-          ~one_:[%e one']],
-      scrut_ctx,
-      TTensor (TQBool, z_ty) )
-  else
-    let uses, merged = route ~loc scrut_ctx z_ctx in
-    ( [%expr
-        [%e src_ident ~loc [] "case_bool"]
-          ~result:[%e result_wit] ~scrutinee:[%e scrut'] ~zero:[%e zero']
-          ~one_:[%e one'] ~using:[%e uses]],
-      merged,
-      TTensor (TQBool, z_ty) )
+  match !zero, !one_, !left_, !right_ with
+  | None, None, None, None ->
+      err ~loc "Source: case is missing its branches"
+  | (Some _ | None), (Some _ | None), None, None ->
+      let zero = need "~zero: branch" !zero in
+      let one_ = need "~one_: branch" !one_ in
+      let scrut', scrut_ctx, scrut_ty = elab wenv env scrutinee in
+      (match scrut_ty with
+      | TQBool -> ()
+      | other ->
+          err ~loc:scrutinee.pexp_loc
+            "Source: this case form scrutinizes qbool, but the scrutinee \
+             has type %s"
+            (sty_to_string other));
+      let zero', one', z_ctx, z_ty =
+        elab_branches ~first_name:"~zero:" ~second_name:"~one_:" zero one_
+      in
+      let result_wit = p_wit ~loc wenv z_ty in
+      if z_ctx = [] then
+        ( [%expr
+            [%e src_ident ~loc [] "case_bool0"]
+              ~result:[%e result_wit] ~scrutinee:[%e scrut']
+              ~zero:[%e zero'] ~one_:[%e one']],
+          scrut_ctx,
+          TTensor (TQBool, z_ty) )
+      else
+        let uses, merged = route ~loc scrut_ctx z_ctx in
+        ( [%expr
+            [%e src_ident ~loc [] "case_bool"]
+              ~result:[%e result_wit] ~scrutinee:[%e scrut']
+              ~zero:[%e zero'] ~one_:[%e one'] ~using:[%e uses]],
+          merged,
+          TTensor (TQBool, z_ty) )
+  | None, None, (Some _ | None), (Some _ | None) ->
+      (* E1: general first-order sum case, targeting the sealed
+         tag-preserving [case]/[case0] *)
+      let lbr = need "~left_: branch" !left_ in
+      let rbr = need "~right_: branch" !right_ in
+      let scrut', scrut_ctx, scrut_ty = elab wenv env scrutinee in
+      let lt, rt =
+        match scrut_ty with
+        | TPlus (a, b) -> a, b
+        | other ->
+            err ~loc:scrutinee.pexp_loc
+              "Source: this case form scrutinizes a first-order sum, but \
+               the scrutinee has type %s"
+              (sty_to_string other)
+      in
+      let left', right', b_ctx, b_ty =
+        elab_branches ~first_name:"~left_:" ~second_name:"~right_:" lbr rbr
+      in
+      let left_wit = p_wit ~loc wenv lt in
+      let right_wit = p_wit ~loc wenv rt in
+      let result_wit = p_wit ~loc wenv b_ty in
+      if b_ctx = [] then
+        ( [%expr
+            [%e src_ident ~loc [] "case0"]
+              ~left:[%e left_wit] ~right:[%e right_wit]
+              ~result:[%e result_wit] ~scrutinee:[%e scrut']
+              ~left_branch:[%e left'] ~right_branch:[%e right']],
+          scrut_ctx,
+          TTensor (TPlus (lt, rt), b_ty) )
+      else
+        let uses, merged = route ~loc scrut_ctx b_ctx in
+        ( [%expr
+            [%e src_ident ~loc [] "case"]
+              ~left:[%e left_wit] ~right:[%e right_wit]
+              ~result:[%e result_wit] ~scrutinee:[%e scrut']
+              ~left_branch:[%e left'] ~right_branch:[%e right']
+              ~using:[%e uses]],
+          merged,
+          TTensor (TPlus (lt, rt), b_ty) )
+  | _ ->
+      err ~loc
+        "Source: case mixes ~zero:/~one_: with ~left_:/~right_: branches"
 
 (* ------------------------------------------------------------------ *)
 (* let%source binding assembly                                          *)
@@ -678,6 +928,7 @@ let expand_datatype ~loc (td : type_declaration) : structure_item list =
            least one nullary constructor"
   in
   let module_name = String.capitalize_ascii name in
+  declared_datatypes := (module_name, constructors) :: !declared_datatypes;
   let dt path = Ldot (Ldot (Ldot (Lident "Qpl_surface", "Source"),
                             "Datatype"), path) in
   let rec peano n =
@@ -758,6 +1009,83 @@ let select_mapper =
       let e = super#expression e in
       match e.pexp_desc with
       | Pexp_apply
+          (({ pexp_desc =
+                Pexp_ident
+                  { txt =
+                      Ldot
+                        (mpath,
+                         (("permute" | "involution_permute") as op_name));
+                    _ };
+              _ } as fn),
+           [ (Nolabel, arg) ])
+        when as_literal_list arg <> None -> (
+          let loc = e.pexp_loc in
+          let entries =
+            match as_literal_list arg with
+            | Some entries -> entries
+            | None -> assert false
+          in
+          let mname = Longident.name mpath in
+          match find_datatype mname with
+          | None ->
+              err ~loc:fn.pexp_loc
+                "Source: %s.%s over constructor names requires the \
+                 [@@source.datatype] declaration of %s in this \
+                 compilation unit"
+                mname op_name mname
+          | Some ctors ->
+              let n = List.length ctors in
+              if List.length entries <> n then
+                err ~loc:arg.pexp_loc
+                  "Source: %s.%s lists exactly the %d constructors of %s \
+                   (one destination per declared constructor), got %d"
+                  mname op_name n mname (List.length entries);
+              let index_of entry =
+                match entry.pexp_desc with
+                | Pexp_construct ({ txt = Lident cname; _ }, None) -> (
+                    let rec find i = function
+                      | [] -> (
+                          match constructor_owner cname with
+                          | Some (owner, _) when owner <> mname ->
+                              err ~loc:entry.pexp_loc
+                                "Source: constructor %s belongs to \
+                                 datatype %s, not %s"
+                                cname owner mname
+                          | _ ->
+                              err ~loc:entry.pexp_loc
+                                "Source: %s is not a constructor of \
+                                 datatype %s"
+                                cname mname)
+                      | c :: rest ->
+                          if String.equal c cname then i
+                          else find (i + 1) rest
+                    in
+                    find 0 ctors, cname)
+                | _ ->
+                    err ~loc:entry.pexp_loc
+                      "Source: a permutation entry names a constructor \
+                       of %s"
+                      mname
+              in
+              let images = List.map index_of entries in
+              let dup = Hashtbl.create 8 in
+              List.iteri
+                (fun position (_, cname) ->
+                  if Hashtbl.mem dup cname then
+                    err ~loc:(List.nth entries position).pexp_loc
+                      "Source: constructor %s appears twice; a \
+                       permutation lists each constructor exactly once"
+                      cname;
+                  Hashtbl.add dup cname ())
+                images;
+              let int_vec =
+                vector_of ~loc
+                  (List.map
+                     (fun (i, _) -> Ab.eint ~loc i)
+                     images)
+              in
+              { e with pexp_desc = Pexp_apply (fn, [ (Nolabel, int_vec) ]) })
+      | Pexp_apply
           (({ pexp_desc = Pexp_ident { txt = Ldot (_, "select"); _ }; _ } as
             fn),
            args) ->
@@ -813,6 +1141,7 @@ let expand_item (item : structure_item) : structure_item list =
   | _ -> [ item ]
 
 let impl (str : structure) : structure =
+  declared_datatypes := [];
   let expanded = List.concat_map expand_item str in
   select_mapper#structure expanded
 

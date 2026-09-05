@@ -1,0 +1,3 @@
+# location: exactly the foreign constructor entry
+File "reject_permute_foreign.ml", line 8, characters 27-29
+Source: constructor K1 belongs to datatype K3, not M3

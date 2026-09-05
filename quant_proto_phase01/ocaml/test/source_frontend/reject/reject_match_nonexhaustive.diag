@@ -1,0 +1,3 @@
+# location: the whole match
+File "reject_match_nonexhaustive.ml", lines 8-10
+Source: match is not exhaustive; missing constructor M2

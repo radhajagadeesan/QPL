@@ -1,0 +1,4 @@
+# location: the whole qif-as-case expression
+File "reject_reader_qif.ml", lines 10-12
+Source: a case result must be first-order data, but the branches have
+type (q, q) lolli

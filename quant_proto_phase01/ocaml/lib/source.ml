@@ -594,6 +594,22 @@ module Op = struct
       (Bridge.TExpInvolution (theta, involution.involution_raw))
 end
 
+let make_branch tree gamma_rep arm_rep body =
+  let gamma = child_name "case_context" tree in
+  let _, arm = fresh_label "case_branch_arm" in
+  let domain = Rep.Tensor (gamma_rep, arm_rep) in
+  let result =
+    unpack_tree tree gamma
+      (Bridge.TPair (Bridge.TVar (arm, arm_rep), body))
+  in
+  Bridge.TLetPair
+    (gamma, arm, gamma_rep, arm_rep,
+     Bridge.TId domain, result)
+
+let require_result site expected actual =
+  require_same_type site (SData expected) actual
+
+
 module Datatype = struct
   type zero = |
   type !'n succ = |
@@ -623,9 +639,15 @@ module Datatype = struct
     | VNil -> []
     | VCons (head, tail) -> head :: to_list tail
 
+  (* The clean Source calculus fixes the LEFT-associated expansion
+     (narymonoidal.tex: bigplus_{i=0}^{n} A_i := (bigplus_{i=0}^{n-1}) ⊕ A_n;
+     datatypes-new.tex fixes Q_n to that expansion at base = I).  Flat tag
+     codes are the left-to-right leaf order under either association, so
+     this choice is structural, and it is pinned structurally — not just
+     behaviorally — by test_source_datatype_ops. *)
   let rec unit_sum = function
     | 1 -> Rep.Unit
-    | n when n > 1 -> Rep.Plus (Rep.Unit, unit_sum (n - 1))
+    | n when n > 1 -> Rep.Plus (unit_sum (n - 1), Rep.Unit)
     | _ -> invalid_arg "Source.Datatype: a datatype must be nonempty"
 
   let require_nonblank site value =
@@ -688,23 +710,220 @@ module Datatype = struct
           Action
             (Bridge.TDatatypeControl
                (name, arity, representation, raw_p target, branch_array)) }
+
+    (* -------------------------------------------------------------- *)
+    (* Exhaustive tag-preserving datatype case.                        *)
+    (*                                                                *)
+    (* The pipeline is a single flat dispatch over the canonical       *)
+    (* LEFT-associated representation fixed by the clean calculus       *)
+    (* (narymonoidal.tex: bigplus_{i<=n} := (bigplus_{i<n}) ⊕ A_n);     *)
+    (* branch order is declaration order, the tag survives, and every  *)
+    (* branch consumes the identical complete nominal linear context.  *)
+    (* -------------------------------------------------------------- *)
+
+    let cases
+        (type c g1 gamma g)
+        ~(result : c pty)
+        ~(scrutinee : (g1, t) term)
+        ~(branches : (arity, (gamma, c) term) vector)
+        ~(using : (g1, gamma, g) uses) :
+        (g, (t, c) tensor) term =
+      let Term (scrut_ctx, scrut_ty, _, scrut_raw) = scrutinee in
+      require_same_type "Source.Datatype.cases scrutinee" s scrut_ty;
+      let branch_terms = to_list branches in
+      let branch_raws =
+        List.mapi
+          (fun i (Term (ctx, branch_result, _, raw)) ->
+            require_result
+              (Printf.sprintf "Source.Datatype.cases branch %d result" i)
+              result branch_result;
+            (bindings ctx, raw))
+          branch_terms
+      in
+      let first_bindings =
+        match branch_raws with
+        | (b, _) :: _ -> b
+        | [] ->
+            invalid_arg "Source.Datatype.cases: impossible empty arity"
+      in
+      List.iteri
+        (fun i (b, _) ->
+          if not (same_bindings first_bindings b) then
+            invalid_arg
+              (Printf.sprintf
+                 "Source.Datatype.cases: branch %d does not use the \
+                  identical complete nominal context" i))
+        branch_raws;
+      let tree = tree_of_nonempty first_bindings in
+      let gamma_rep = tree_rep tree in
+      let result_rep = raw_p result in
+      (* Flat n-ary pipeline in the canonical LEFT-associated encoding
+         (the n_dist / n_factor law: for unit summands, both distributed
+         forms share the flat layout, so the boundary conversions are
+         wire-level identities and dispatch is a single flat NPlusMap):
+
+           t ⊗ Γ  ==  ⊕ᵢ (I ⊗ Γ)  --NPlusMap[mᵢ]-->  ⊕ᵢ (I ⊗ c)  ==  t ⊗ c
+
+         with each mᵢ : I ⊗ Γ → I ⊗ c destructuring the packed context.
+         The distributed sums mirror [unit_sum]'s left association. *)
+      let branch_map raw =
+        let _, arm = fresh_label "cases_arm" in
+        let gname = child_name "cases_context" tree in
+        let body =
+          unpack_tree tree gname
+            (Bridge.TPair (Bridge.TVar (arm, Rep.Unit), raw))
+        in
+        Bridge.TLetPair
+          (arm, gname, Rep.Unit, gamma_rep,
+           Bridge.TId (Rep.Tensor (Rep.Unit, gamma_rep)), body)
+      in
+      let left_assoc_sum_of leaf =
+        let rec go k =
+          if k = 1 then leaf else Rep.Plus (go (k - 1), leaf)
+        in
+        go arity
+      in
+      let build_plus () = left_assoc_sum_of (Rep.Tensor (Rep.Unit, gamma_rep)) in
+      let build_plus_out () =
+        left_assoc_sum_of (Rep.Tensor (Rep.Unit, result_rep))
+      in
+      let summand_domains =
+        Array.make arity (Rep.Tensor (Rep.Unit, gamma_rep))
+      in
+      let maps =
+        Array.of_list (List.map (fun (_, raw) -> branch_map raw) branch_raws)
+      in
+      let pipeline =
+        Bridge.TSeq
+          (Bridge.TWireIdentity
+             (Rep.Tensor (representation, gamma_rep), build_plus ()),
+           Bridge.TSeq
+             (Bridge.TNPlusMap (summand_domains, maps),
+              Bridge.TWireIdentity
+                (build_plus_out (),
+                 Rep.Tensor (representation, result_rep))))
+      in
+      let pipeline_value =
+        eta_raw_action
+          (Rep.Tensor (representation, gamma_rep))
+          (Rep.Tensor (representation, result_rep))
+          pipeline
+      in
+      let input = Bridge.TPair (scrut_raw, tree_value tree) in
+      let first_ctx =
+        match branch_terms with
+        | Term (ctx, _, _, _) :: _ -> ctx
+        | [] -> assert false
+      in
+      Term
+        (merge using scrut_ctx first_ctx,
+         STensor (s, SData result), Structural,
+         Bridge.TApply (pipeline_value, input))
+
+    let cases0
+        (type c g)
+        ~(result : c pty)
+        ~(scrutinee : (g, t) term)
+        ~(branches : (arity, (empty, c) term) vector) :
+        (g, (t, c) tensor) term =
+      let Term (ctx, scrut_ty, _, scrut_raw) = scrutinee in
+      require_same_type "Source.Datatype.cases0 scrutinee" s scrut_ty;
+      let branch_raws =
+        List.mapi
+          (fun i (Term (CEmpty, branch_result, _, raw)) ->
+            require_result
+              (Printf.sprintf "Source.Datatype.cases0 branch %d result" i)
+              result branch_result;
+            raw)
+          (to_list branches)
+      in
+      let result_rep = raw_p result in
+      let build_plus_out () =
+        let leaf = Rep.Tensor (Rep.Unit, result_rep) in
+        let rec go k = if k = 1 then leaf else Rep.Plus (go (k - 1), leaf) in
+        go arity
+      in
+      let summand_domains = Array.make arity Rep.Unit in
+      let maps =
+        Array.of_list
+          (List.map
+             (fun raw -> Bridge.TPair (Bridge.TId Rep.Unit, raw))
+             branch_raws)
+      in
+      let pipeline =
+        Bridge.TSeq
+          (Bridge.TNPlusMap (summand_domains, maps),
+           Bridge.TWireIdentity
+             (build_plus_out (), Rep.Tensor (representation, result_rep)))
+      in
+      let pipeline_value =
+        eta_raw_action representation
+          (Rep.Tensor (representation, result_rep))
+          pipeline
+      in
+      Term
+        (ctx, STensor (s, SData result), Structural,
+         Bridge.TApply (pipeline_value, scrut_raw))
+
+    (* -------------------------------------------------------------- *)
+    (* Certified label permutations.  Position i carries the           *)
+    (* destination of constructor i (forward: |i⟩ ↦ |p(i)⟩), lowering  *)
+    (* through the trusted TagPerm machinery, which fixes every        *)
+    (* padding state of a non-power-of-two arity by construction.      *)
+    (* -------------------------------------------------------------- *)
+
+    let permutation_array site (vec : (arity, int) vector) : int array =
+      let images = Array.of_list (to_list vec) in
+      if Array.length images <> arity then
+        invalid_arg (site ^ ": impossible arity witness mismatch");
+      Array.iteri
+        (fun i image ->
+          if image < 0 || image >= arity then
+            invalid_arg
+              (Printf.sprintf
+                 "%s: constructor %d maps to %d, outside 0..%d"
+                 site i image (arity - 1)))
+        images;
+      let seen = Array.make arity false in
+      Array.iteri
+        (fun i image ->
+          if seen.(image) then
+            invalid_arg
+              (Printf.sprintf
+                 "%s: not a bijection (image %d repeated at constructor %d)"
+                 site image i);
+          seen.(image) <- true)
+        images;
+      images
+
+    let permute (vec : (arity, int) vector) : (t, t) op =
+      let images =
+        permutation_array "Source.Datatype.permute" vec
+      in
+      { domain = s;
+        codomain = s;
+        implementation =
+          Action
+            (Bridge.TTagPerm (Array.to_list images, representation)) }
+
+    let involution_permute (vec : (arity, int) vector) : t Op.involution =
+      let images =
+        permutation_array "Source.Datatype.involution_permute" vec
+      in
+      Array.iteri
+        (fun i image ->
+          if images.(image) <> i then
+            invalid_arg
+              (Printf.sprintf
+                 "Source.Datatype.involution_permute: not an involution \
+                  (constructor %d maps to %d, which maps to %d)"
+                 i image images.(image)))
+        images;
+      { Op.involution_type = p;
+        involution_raw =
+          Bridge.TTagPerm (Array.to_list images, representation) }
   end
 end
-
-let make_branch tree gamma_rep arm_rep body =
-  let gamma = child_name "case_context" tree in
-  let _, arm = fresh_label "case_branch_arm" in
-  let domain = Rep.Tensor (gamma_rep, arm_rep) in
-  let result =
-    unpack_tree tree gamma
-      (Bridge.TPair (Bridge.TVar (arm, arm_rep), body))
-  in
-  Bridge.TLetPair
-    (gamma, arm, gamma_rep, arm_rep,
-     Bridge.TId domain, result)
-
-let require_result site expected actual =
-  require_same_type site (SData expected) actual
 
 let case
     (type a b c g1 gamma g)

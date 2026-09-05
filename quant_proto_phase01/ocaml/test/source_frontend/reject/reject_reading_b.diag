@@ -1,0 +1,4 @@
+# location: exactly the coherent function-selecting case inside the split
+File "reject_reading_b.ml", line 9, characters 24-50
+Source: a case result must be first-order data, but the branches have
+type (q, q) lolli

@@ -1,0 +1,3 @@
+# location: the whole case expression
+File "reject_case_mixed_labels.ml", lines 6-8
+Source: case mixes ~zero:/~one_: with ~left_:/~right_: branches

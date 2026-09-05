@@ -1,0 +1,4 @@
+# location: exactly the non-lolli annotation span
+File "reject_e3_not_lolli.ml", line 8, characters 9-22
+Source: a host operation annotation must be a lolli
+not (q, q) tensor

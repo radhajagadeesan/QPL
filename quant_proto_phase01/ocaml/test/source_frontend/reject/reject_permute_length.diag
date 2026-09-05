@@ -1,0 +1,4 @@
+# location: the whole permutation list
+File "reject_permute_length.ml", line 7, characters 21-31
+Source: M3.permute lists exactly the 3 constructors of M3 (one
+destination per declared constructor), got 2

@@ -1,0 +1,3 @@
+# location: exactly the repeated arm's constructor
+File "reject_match_duplicate.ml", line 11, characters 4-6
+Source: constructor M1 appears twice in this match
