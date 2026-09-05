@@ -1,0 +1,4 @@
+# location: the pair expression that consumes x twice
+File "reject_duplicated_variable.ml", line 6, characters 2-12
+Source: variable x is used on both sides here
+consumed exactly once

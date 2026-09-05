@@ -65,3 +65,28 @@
 (test
  (name test_source_semantics)
  (libraries qpl_surface))
+
+(test
+ (name test_source_ppx_slice)
+ (modules test_source_ppx_slice)
+ (preprocess (pps qpl_source_ppx))
+ (libraries qpl_surface))
+
+(executable
+ (name source_frontend_harness)
+ (modules source_frontend_harness)
+ (libraries unix qpl_surface))
+
+(rule
+ (alias runtest)
+ (deps
+  (sandbox always)
+  (package qpl_surface)
+  %{exe:../ppx/qpl_source_pp.exe}
+  (source_tree source_frontend))
+ (action
+  (run %{exe:source_frontend_harness.exe}
+       --ocamlc %{ocamlc}
+       --public-cmi %{lib:qpl_surface:qpl_surface.cmi}
+       --ppx-driver %{exe:../ppx/qpl_source_pp.exe}
+       --fixtures source_frontend)))

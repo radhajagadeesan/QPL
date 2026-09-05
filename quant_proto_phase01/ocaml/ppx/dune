@@ -1,0 +1,12 @@
+(library
+ (name qpl_source_ppx)
+ (public_name qpl_surface.source_ppx)
+ (kind ppx_rewriter)
+ (modules qpl_source_ppx)
+ (preprocess (pps ppxlib.metaquot))
+ (libraries ppxlib))
+
+(executable
+ (name qpl_source_pp)
+ (modules qpl_source_pp)
+ (libraries qpl_source_ppx ppxlib))

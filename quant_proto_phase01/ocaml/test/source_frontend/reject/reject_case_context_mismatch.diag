@@ -1,0 +1,4 @@
+# location: the whole case expression
+File "reject_case_context_mismatch.ml", lines 6-8
+Source: both case branches must consume the same nominal linear
+~zero: uses [u] but ~one_: uses [v]

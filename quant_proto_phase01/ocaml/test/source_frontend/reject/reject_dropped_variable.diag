@@ -1,0 +1,4 @@
+# location: exactly the unused binder token
+File "reject_dropped_variable.ml", line 7, characters 10-11
+Source: r is bound here but never used
+both tensor components must be

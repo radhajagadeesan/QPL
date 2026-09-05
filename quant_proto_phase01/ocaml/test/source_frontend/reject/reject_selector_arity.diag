@@ -1,0 +1,5 @@
+# location: the select application; the length-indexed vector pins 3 labels vs 2 ops
+File "reject_selector_arity.ml", line 9, characters 10-46
+This expression has type (Datatype.zero, 'a) Datatype.vector
+(Datatype.zero Datatype.succ, (q, q) op) Datatype.vector
+Type Datatype.zero is not compatible with type

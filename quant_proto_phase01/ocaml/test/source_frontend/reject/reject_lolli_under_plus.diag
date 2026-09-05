@@ -1,0 +1,4 @@
+# location: exactly the (q, q) lolli annotation beneath plus
+File "reject_lolli_under_plus.ml", line 5, characters 21-33
+Source: a sum admits only first-order data
+function space beneath plus

@@ -1,0 +1,4 @@
+# location: the application  f (f x)  whose function and argument contexts overlap
+File "reject_app_overlap.ml", line 7, characters 2-9
+Source: variable f is used on both sides here
+consumed exactly once

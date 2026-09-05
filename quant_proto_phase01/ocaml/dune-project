@@ -5,4 +5,9 @@
 (package
  (name qpl_surface)
  (synopsis "Surface language for QPL quantum programming")
- (description "ML-style surface DSL that elaborates to Phase 0-4C core IR"))
+ (description "ML-style surface DSL that elaborates to Phase 0-4C core IR")
+ ; ppxlib is a build-time dependency of the qpl_surface.source_ppx frontend
+ ; only; the qpl_surface library itself does not link against it.  Tested
+ ; with ppxlib 0.37.0 (the rewriter uses the 0.37 unified-function AST).
+ (depends
+  (ppxlib (>= 0.37.0))))
