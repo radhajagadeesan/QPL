@@ -259,7 +259,8 @@ materialization modes
 alongside the Align mechanism's own exact framed-semantics and
 zero-leakage assertions (`python/tests/test_align_acceptance.py`).  A
 dense semantic oracle for the UNAPPLIED abstract function value (the
-16-qubit curried λ itself) remains deferred with Align normalization and
+12-qubit curried λ itself; 16-qubit before the direct-boundary Lam
+allocation repair) remains deferred with Align normalization and
 is tracked in `docs/ALIGN_NORMALIZATION.md`.  The missing item is a
 peephole plus one abstract-value oracle, not a soundness gap.
 
@@ -391,6 +392,37 @@ and the term is rejected before emission rather than approximated.
 Tests: `python/tests/test_nplusmap_frame_dispatch.py` — canonical frame,
 reassociation invariance, open-branch routing, rejection before emission,
 asymmetric-frame rejection.
+
+## 11. Legacy Python direct-API demos and `Pair(function value, data)`
+
+Three **legacy Python direct-API demos** fail identically on v1.0.0 and
+on the current tree (verified on both; unrelated to the 2026-09 Lam
+allocation repair):
+
+- `python/demos/qswitch_abstract_demo.py` and
+  `python/demos/qswitch_term_demo.py` — `AlignError: cannot align frames
+  of different semantic dimensions (4 vs 3)`;
+- `python/demos/short_circuit_demo.py` — `UnsupportedFrame: X on
+  wire(s) [0] does not preserve the code space of (I ⊕ (I ⊕ I))` (the
+  fail-closed primitive-frame gate).
+
+These are Python-API programs predating the boundary-frame machinery;
+the supported demo battery is the **OCaml/Source E2E set**
+(`ocaml/demos/`, all green against their goldens). The remaining
+Python demos run; these three fail closed rather than miscompiling.
+
+Separately, compiling `Pair(f_value, data)` — a tensor pair whose first
+component is a function value — at a Python-API root fails closed with
+`ProvenanceError: route par^-: wire 0 is placed twice` (also present on
+v1.0.0). This is the same `par^-` route class as the recorded "Source
+higher-order specialization" limitation in §0 above (applying the
+abstract switch to closed function values), reached from the Python
+side. The same shapes are reachable and green through supported routes
+(function values inside curried selectors and instantiated switches);
+only these roots hit the par-route collision.
+
+**Status:** pre-existing, fail-closed, out of the OCaml-only entry
+point. Not fixed by (and not a regression of) the Lam repair.
 
 ---
 

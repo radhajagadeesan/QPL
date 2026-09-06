@@ -305,7 +305,7 @@ def test_O11_an_open_sums_interface_is_narrower_than_its_frame(materialize):
            and a.output_frame.n_qubits > a.egress_interface.width]
     assert nps, "no open sum recorded a narrower interface than its frame"
     a = nps[-1]
-    assert a.output_frame.n_qubits == 16
+    assert a.output_frame.n_qubits == 12
     assert a.egress_interface.ordered_wires == (6, 7, 8)
     assert a.egress_interface.local_codes == (0, 1, 2, 3, 4, 5)
     assert a.ingress_interface.ordered_wires == (6, 7, 8)
@@ -395,11 +395,15 @@ def test_O13_every_recorded_interface_reconstructs_its_frame(materialize):
 def test_O14_production_part_1_compiles_to_its_pre_migration_circuit(materialize):
     """The complete Part 1 is 25 gates; the inner derived pipeline is 23."""
     res, _arts = _production("curried_select_3_abstract", materialize)
-    assert res.circuit.n_qubits == 16
+    # 12, not 16: the direct-boundary Lam repair removed the double-counted
+    # context wires 12-15, which were fixed points of the permutation and
+    # untouched by every gate; the 25 gates and the retained perm entries
+    # are unchanged wire-for-wire.
+    assert res.circuit.n_qubits == 12
     if not materialize:
         assert res.circuit.n_gates == 25
         assert list(res.perm.new_to_old) == [10, 11, 5, 9, 3, 4,
-                                             0, 1, 2, 6, 7, 8, 12, 13, 14, 15]
+                                             0, 1, 2, 6, 7, 8]
 
 
 @pytest.mark.parametrize("materialize", MODES)
@@ -512,7 +516,7 @@ def test_O19_the_open_sum_cut_stays_three_wires_with_no_completion(materialize):
         assert tr.producer_wires == tr.consumer_wires == (6, 7, 8)
         assert tr.completion is None, (
             "a completion was issued for premises that already agree")
-        assert tr.ambient_width == 16
+        assert tr.ambient_width == 12
 
 
 def test_O20_a_forged_completion_is_refused():

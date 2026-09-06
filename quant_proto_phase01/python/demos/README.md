@@ -320,6 +320,14 @@ PYTHONPATH=python/src python python/demos/pauli_conjugation_demo.py
 
 ## Running Demos
 
+> **Known-failing legacy demos.** Three legacy direct-API demos predate
+> the boundary-frame machinery and fail closed on current builds (and
+> already failed on v1.0.0): `qswitch_abstract_demo.py`,
+> `qswitch_term_demo.py`, `short_circuit_demo.py`. See
+> `docs/LIMITATIONS.md §11`. The supported E2E battery is the
+> OCaml/Source demo set in `ocaml/demos/`; the remaining Python demos
+> here run.
+
 All demos require:
 ```bash
 pip install pytket

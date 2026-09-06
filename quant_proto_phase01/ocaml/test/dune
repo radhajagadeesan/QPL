@@ -43,7 +43,7 @@
  (modules dump_release_fixtures)
  ; definitions copied verbatim from the demos declare helpers unused here
  (flags (:standard -w -32-26-27-33-35))
- (libraries qpl_surface str))
+ (libraries qpl_surface qpl_counterparts str))
 
 (executable
  (name source_typecheck_harness)

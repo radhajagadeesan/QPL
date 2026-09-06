@@ -1003,15 +1003,22 @@ def _internal_width(t: Term) -> int:
     from lang.types import width as type_width
 
     if isinstance(t, Lam):
-        # Lam needs width(A) + width(B) for the function layout [A_slot | B_slot]
-        # For open lambdas (body has free variables), the body needs
-        # ctx_w extra wires during execution for the context.
+        # Lam needs width(A) + width(B) for the function layout [A_slot | B_slot].
+        # The body needs ONLY its own internal width: a free variable is typed
+        # as the identity on its own wires (typing_/check.type_of: Var maps to
+        # (ty, ty)), so the captured context is already inside the body's
+        # typing judgment and therefore inside _internal_width(t.body). The
+        # emitter's placement contract agrees: an open Lam is emitted at its
+        # own offset with the context at [offset, offset+ctx_w) and the binder
+        # at [offset+ctx_w, offset+ctx_w+wA) -- both spans the body's typing
+        # already covers. Adding ctx_w on top of body_internal counted the
+        # context twice, compounding per nesting level (the abstract QSwitch
+        # allocated 12 wires against its selected 8-wire carrier, the
+        # eta-expanded switch 34 against 14), and the excess used to survive
+        # only as a root 'fn_layout' residual fixed at |0>.
         wA = type_width(t.dom)
         wB = type_width(t.cod)
-        body_internal = _internal_width(t.body)
-        from typing_.check import _free_var_width
-        ctx_w = _free_var_width(t.body, frozenset({t.name}))
-        return max(wA + wB, ctx_w + body_internal)
+        return max(wA + wB, _internal_width(t.body))
 
     if isinstance(t, Apply):
         # Nested Apply chain fully β-reducible: compute width on the reduced form
@@ -2308,6 +2315,33 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
                 for phys in phys_list:
                     if phys + 1 > n:
                         n = phys + 1
+
+    # --- public Lam-root allocation == selected carrier --------------------
+    # A function VALUE is its wire bundle: at a public compilation root
+    # (closed, no surrounding env) whose term is a Lam, the register IS the
+    # wA+wB carrier that select_frames chose. (+) introduces its tag and
+    # prescribed block/padding coordinates, but those are already inside the
+    # selected carrier, so any allocation beyond it is allocator drift --
+    # refused here, BEFORE the circuit is created or mutated, instead of
+    # surviving to finalization as a root 'fn_layout' residual. Scope:
+    #   * Apply/Cup/Cap-rooted artifacts keep their emission-determined
+    #     function-layout workspace (the certified beta-boundary residual
+    #     mechanism, test_nf1_partS_beta_boundary) -- not touched;
+    #   * first-order root drift keeps failing via Invariant W below;
+    #   * sub-compiles with an env carry typed outer-context coordinates;
+    #   * open roots carry free-variable context;
+    #   * the legacy EncodeQubit/DecodeQubit ancilla policy is excluded.
+    if (env is None and isinstance(term, Lam)
+            and n > max(_sel_in.n_qubits, _sel_out.n_qubits)):
+        from typing_.check import _free_var_width as _fvw_root
+        if _fvw_root(term) == 0 and not _contains_encode_decode(term):
+            raise TypeCheckError(
+                f"public-root allocation of {n} qubits exceeds the selected "
+                f"boundary carrier ({_sel_in.n_qubits} in / "
+                f"{_sel_out.n_qubits} out) for {type(term).__name__}: "
+                f"a Lam value is exactly its carrier wire bundle, so this "
+                f"drift is refused before emission rather than recorded as "
+                f"a root 'fn_layout' residual.")
 
     # --- derivation-selected frame recording -------------------------------
     # The typed term IS the derivation: the emitter handling each constructor
@@ -7173,18 +7207,36 @@ def compile(term: Term, *, materialize: bool = False, explain: bool = False,
             f"required, never reconstructed downstream)")
     _fin, _fout = _root.input_frame, _root.output_frame
 
-    # Higher-order terms carry function-layout wires (Lam/Apply boundary
-    # slots, Cup/Cap) whose exact count emission determines rather than
-    # _internal_width predicting it. The CATEGORY is declared here -- these
-    # coordinates are function layout, recorded as such -- so a first-order
-    # term whose register drifts still trips W below.
-    if _has_spectator_coordinates(term):
-        if _fin.n_qubits < n:
-            _fin = with_spectators(_fin, n, residual_name="fn_layout",
-                                   role="residual")
-        if _fout.n_qubits < n:
-            _fout = with_spectators(_fout, n, residual_name="fn_layout",
-                                    role="residual")
+    # At a public (closed, env-free) Lam root the register must equal the
+    # selected wA+wB carrier -- the pre-emission check in compile() refuses
+    # allocator drift up front, and this re-checks the FINAL frames, so
+    # unexplained excess is never legitimized here as a root 'fn_layout'
+    # residual. Everything else keeps its certified widening: Apply-rooted
+    # beta artifacts' emission-determined function layout (the residual
+    # mechanism test_nf1_partS_beta_boundary pins, including the in-carrier
+    # beta ports Apply itself records), open-term free-variable context,
+    # and the excluded legacy encode/decode ancilla policy. Drift compares
+    # against the LARGER carrier: a function-value artifact legitimately
+    # has a narrower ingress (e.g. I) than its function-layout register,
+    # and widening that narrow side records the in-carrier preparation
+    # embedding, not allocator excess.
+    if _fin.n_qubits < n or _fout.n_qubits < n:
+        from typing_.check import _free_var_width as _fvw_fin
+        if (env is None and isinstance(term, Lam) and _fvw_fin(term) == 0
+                and not _contains_encode_decode(term)
+                and n > max(_fin.n_qubits, _fout.n_qubits)):
+            raise TypeCheckError(
+                f"public-root register of {n} qubits exceeds the selected "
+                f"boundary carrier ({_fin.n_qubits} in / {_fout.n_qubits} "
+                f"out) for {type(term).__name__}: unexplained drift is "
+                f"refused, not recorded as a root 'fn_layout' residual.")
+        if _has_spectator_coordinates(term):
+            if _fin.n_qubits < n:
+                _fin = with_spectators(_fin, n, residual_name="fn_layout",
+                                       role="residual")
+            if _fout.n_qubits < n:
+                _fout = with_spectators(_fout, n, residual_name="fn_layout",
+                                        role="residual")
 
     # A sub-compile given an `env` works inside a larger PARENT register; the
     # extra coordinates are the outer context, which is explainable and so is

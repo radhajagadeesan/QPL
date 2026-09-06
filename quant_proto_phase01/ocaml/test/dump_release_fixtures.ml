@@ -408,6 +408,26 @@ let dump path json =
 
 let () =
   let dir = "../python/tests/fixtures" in
+  (* ---- sealed Source value terms for the direct-boundary Lam gates ---- *)
+  let module CP = Qpl_counterparts.Surface_programs in
+  let module Src = Qpl_surface.Source in
+  dump (Filename.concat dir "qswitch_abstract_sealed.json")
+    (Bridge.term_to_json (Src.emit (CP.cp_qswitch Src.P.q)));
+  dump (Filename.concat dir "compose2_abstract_sealed.json")
+    (Bridge.term_to_json (Src.emit CP.cp_compose2));
+  dump (Filename.concat dir "qswitch_eta_sealed.json")
+    (Bridge.term_to_json (Src.emit CP.cp_qswitch_eta_endoq));
+  dump (Filename.concat dir "select5_sealed.json")
+    (Bridge.term_to_json (Src.emit CP.cp_select5_hstxy));
+  (* Instantiated QSwitch homs for the independent Python spec oracle.
+     The OCaml counterpart suite proves these equal the Source sugar
+     switches (run_counterparts rows 1/24), which are the certified
+     content route for the case-bodied abstract qswitch value. *)
+  let module OLQ = Qpl_counterparts.Oracle_legacy in
+  dump (Filename.concat dir "qswitch_hs_hom.json")
+    (Bridge.term_to_json (emit (OLQ.qswitch gate_h gate_s)));
+  dump (Filename.concat dir "qswitch_xz_hom.json")
+    (Bridge.term_to_json (emit (OLQ.qswitch gate_x gate_z)));
   dump (Filename.concat dir "ctrl_ho_closed_plus_map.json")
     (Bridge.term_to_json (emit_oterm ctrl_ho_closed_plus_map));
   dump (Filename.concat dir "qswitch_eta_endoQ.json")

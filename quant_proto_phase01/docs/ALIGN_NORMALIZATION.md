@@ -22,7 +22,8 @@ back, and several alignments in sequence stay as separate permutation boxes.
 The visible symptom is `ocaml/demos/curried_select_3_e2e`: the
 selector's INNER pipeline went from **13 to 23 commands** — ten
 `ToffoliBox`es, repeatedly on the same wire triple — and the complete
-curried selector (abstract 16-qubit form and applied H/S/T form alike)
+curried selector (abstract 12-qubit form — 16 before the 2026-09
+direct-boundary Lam allocation repair — and applied H/S/T form alike)
 sits at a **25-gate** baseline.  That 25-gate figure is the optimization
 target for this task.
 

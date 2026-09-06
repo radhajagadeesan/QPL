@@ -14,8 +14,8 @@ Type: (Q⊸Q) ⊸ (Q⊸Q) ⊸ (Q ⊸ Q)
 Definition: λf_1. λf_2. λx. f_1(f_2(x))
 
 Compile abstract compose_2:
-8 qubits, 0 gates
-  perm: [4, 5, 3, 2, 0, 1, 6, 7]
+6 qubits, 0 gates
+  perm: [4, 5, 3, 2, 0, 1]
   ✓ compose_2(H, S) = S ; H (fidelity=1.000000)
   ✓ compose_2(H, H) = H ; H = id_Q (fidelity=1.000000)
   ✓ compose_2(T, S) = S ; T (fidelity=1.000000)
@@ -27,8 +27,8 @@ Type: (Q⊸Q) ⊸ (Q⊸Q) ⊸ (Q⊸Q) ⊸ (Q ⊸ Q)
 Definition: λf_1. λf_2. λf_3. λx. f_1(f_2(f_3(x)))
 
 Compile abstract compose_3:
-14 qubits, 0 gates
-  perm: [6, 7, 5, 4, 3, 2, 0, 1, 8, 9, 10, 11, 12, 13]
+8 qubits, 0 gates
+  perm: [6, 7, 5, 4, 3, 2, 0, 1]
   ✓ compose_3(H, S, T) = T ; S ; H (fidelity=1.000000)
   ✓ compose_3(X, H, S) = S ; H ; X (fidelity=1.000000)
 
@@ -38,8 +38,8 @@ Compile abstract compose_3:
 Type: (Q⊸Q) ⊸ (Q⊸Q) ⊸ (Q⊸Q) ⊸ (Q⊸Q) ⊸ (Q ⊸ Q)
 
 Compile abstract compose_4:
-22 qubits, 0 gates
-  perm: [8, 9, 7, 6, 5, 4, 3, 2, 0, 1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+10 qubits, 0 gates
+  perm: [8, 9, 7, 6, 5, 4, 3, 2, 0, 1]
   ✓ compose_4(H, S, T, X) = X ; T ; S ; H (fidelity=1.000000)
   ✓ compose_4(H, H, S, S) = S ; S ; H ; H = id (fidelity=1.000000)
 

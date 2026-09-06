@@ -165,6 +165,55 @@ wider boundary.
 Free-variable context wires are a third spectator category alongside
 `Lam`/`Apply` layout wires and Sum's transported context.
 
+### Direct-boundary Lam allocation
+
+`Lam` is **not** licensed to widen a public root. Its allocation contract:
+
+- **The body's allocation already includes the captured context.** A free
+  variable is typed as the identity on its own wires
+  (`typing_/check.type_of(Var) → (ty, ty)`), so the context $\Gamma$ of an
+  open lambda is inside the body's typing judgment and therefore inside
+  `_internal_width(body)`. The recurrence is
+  $\max(w_A + w_B,\; \texttt{body\_internal})$ — adding `ctx_w` on top
+  counted $\Gamma$ twice, compounding per nesting level (the abstract
+  QSwitch allocated 12 wires against its selected 8-wire carrier; the
+  η-expanded switch 34 against 14), with the excess surviving only as a
+  root `('fn_layout', 'residual')` port fixed at $|0\rangle$.
+- **At a public (closed, env-free) `Lam` root, the register equals the
+  selected semantic carrier.** A function value *is* its $w_A + w_B$ wire
+  bundle; `compile()` refuses a larger allocation before the circuit is
+  created, and root finalization re-checks the final frames. Unexplained
+  Lam-root `fn_layout` widening is refused, never recorded.
+- **$(+)$ tag and prescribed block/padding coordinates are carrier
+  structure**, part of the selected coproduct carrier — they never trip the
+  refusal and are not `fn_layout`. The audited coproduct representation
+  shares one payload carrier: all summands embed onto the same physical
+  payload wires under their mutually orthogonal tag sectors
+  (`frames._canonical_codes(Plus)`), and no compiler rule allocates
+  disjoint per-summand payload registers. Sparse padding consists of
+  unused codes, or fixed zero positions for narrower summands, inside the
+  chosen tagged representation — it adds no wires beyond
+  $\lceil\log_2 n\rceil + \max_i \operatorname{width}(A_i)$. This layout
+  is minimal *within the chosen explicit-tag, factor-preserving
+  representation*; a globally packed encoding could sometimes use fewer
+  qubits, but it would be a different boundary representation.
+- Unchanged and distinct from allocator drift: `Apply`-rooted β artifacts
+  keep their emission-determined function-layout workspace and in-carrier
+  β residual ports (`test_nf1_partS_beta_boundary`), env sub-compiles keep
+  typed context coordinates, open roots keep free-variable context, and
+  the legacy `EncodeQubit`/`DecodeQubit` ancilla policy is excluded.
+- **Scope of the guard.** The 2026-09 audit found no *other* current
+  source of non-boundary root wires: after the Lam correction, every
+  audited public artifact's register equals its selected carrier. The
+  stronger constructor-independent statement — no non-$(+)$ constructor
+  creates surviving root wires outside the carrier — is *satisfied* by
+  all audited paths, but it is enforced mechanically only for `Lam` roots
+  (plus Invariant W's corollary for spectator-free terms). A future
+  constructor with its own widening rule would need its own gate; the
+  Lam-root guard does not automatically cover it.
+
+Gates: `python/tests/test_lam_direct_boundary.py`.
+
 **Enforcement point:** an assertion at the end of top-level `compile()`.
 Comparing `n_qubits` against the allocated `n` is tautological (`circ =
 Circuit(n)`); the form with teeth is the **corollary** — for a term with no
