@@ -2,7 +2,7 @@
 
 > ⚠️ **This is not the user-facing front-end.** If you want to write Granthi
 > programs, use the OCaml surface language under
-> [`../ocaml/`](../ocaml/). See the [top-level README](../../README.md#using-granthi).
+> [`../ocaml/`](../ocaml/). See the [top-level README](../../README.md) and `docs/PROGRAMMING_GUIDE.md`.
 
 ## What this layer is
 

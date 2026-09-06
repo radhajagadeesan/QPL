@@ -1,0 +1,5 @@
+(test
+ (name doc_examples)
+ (modules doc_examples)
+ (preprocess (pps qpl_source_ppx))
+ (libraries qpl_surface))

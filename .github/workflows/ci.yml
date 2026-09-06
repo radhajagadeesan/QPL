@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   python-tests:
@@ -20,12 +21,18 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python dependencies
-        run: pip install numpy pytket pytket-pyzx pytest
+        run: pip install -r requirements.txt
 
       - name: Run Python tests
         run: PYTHONPATH=python/src pytest python/tests --tb=short -q
 
-  ocaml-tests:
+  ocaml-and-verification:
+    # The real public verification surface: complete dune test (unit and
+    # property suites, the frontend compile-pass/reject harness, the
+    # 34-row Source counterpart coverage harness, datatype invariants,
+    # compiled documentation examples) followed by the complete
+    # demo/golden battery via artifact/reproduce.sh.  The Python backend
+    # is installed FIRST because the OCaml bridge tests invoke it.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,34 +41,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python dependencies
-        run: pip install numpy pytket pytket-pyzx
+      - name: Install Python dependencies (backend used by OCaml tests)
+        run: pip install -r quant_proto_phase01/requirements.txt
 
       - uses: ocaml/setup-ocaml@v3
         with:
           ocaml-compiler: "4.14"
 
       - name: Install OCaml dependencies
-        run: opam install dune yojson --yes
+        run: opam install dune ppxlib --yes
 
-      - name: Build OCaml surface language
+      - name: Build
         run: cd quant_proto_phase01/ocaml && opam exec -- dune build
 
-      - name: Run OCaml unit tests
-        run: cd quant_proto_phase01/ocaml && opam exec -- dune test
+      - name: Complete OCaml test suite
+        run: cd quant_proto_phase01/ocaml && opam exec -- dune runtest --force
 
-      - name: Run newtests suite
-        run: cd quant_proto_phase01/ocaml && opam exec -- dune exec test/test_newtests.exe
-
-      - name: Run E2E demos (OCaml → Python bridge)
-        run: |
-          cd quant_proto_phase01/ocaml
-          opam exec -- dune exec demos/algorithms_e2e.exe
-          opam exec -- dune exec demos/qswitch_instantiated_e2e.exe
-          opam exec -- dune exec demos/short_circuit_e2e.exe
-          opam exec -- dune exec demos/zn_controlled_phase_e2e.exe
-          opam exec -- dune exec demos/exp_twist_e2e.exe
-          opam exec -- dune exec demos/abstract_qswitch_oterm_e2e.exe
-          opam exec -- dune exec demos/ctrl_lambda_e2e.exe
-          opam exec -- dune exec demos/verify_nested_ctrl_e2e.exe
-          opam exec -- dune exec demos/datatype_demo.exe
+      - name: Full demo/golden battery and Python regression
+        run: cd quant_proto_phase01 && opam exec -- ./artifact/reproduce.sh

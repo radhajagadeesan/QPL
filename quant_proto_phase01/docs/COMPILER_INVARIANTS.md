@@ -411,25 +411,30 @@ Each is "the inactive part passes through unchanged". None is weakening.
 | T — tag ordering | shared big-endian helpers | **enforced** |
 | Λ — linearity | no weakening constructor; partition witness | **enforced** on `prog` and `oterm` |
 
-Test suites: `test_nplusmap_frame_dispatch.py` (8), `test_phase_propagation.py`
-(15), `test_sum_introduction.py` (12), `test_case_expr_first_order_guard.py`
-(2). Full: `pytest` 578, `dune test` 90/90, 27/27 demos byte-identical.
+Focused suites at the time this table was first recorded:
+`test_nplusmap_frame_dispatch.py`, `test_phase_propagation.py`,
+`test_sum_introduction.py`, `test_case_expr_first_order_guard.py`.
+Current full-surface baselines (v1.0.0, 2026-09-05): Python suite 1570
+passed / 0 failed; complete `dune test` green; 32 golden demos
+byte-identical plus 2 no-fixture dumps.  See `docs/VERIFICATION.md`.
 
 ---
 
-## The frame-aware round (deferred, by decision)
+## The frame-aware round (recorded when deferred; item 1 since completed)
 
-Four items are deliberately **not** addressed here. They share one missing
-piece — the canonical-frame inclusions $j_i^\pm$ do not exist explicitly in
-the implementation (index maps are computed inline) — so each would otherwise
-require ad-hoc frame conversions, which is the defect class this document
-exists to stop. Every one of them is **rejected before emission**, never
-silently miscompiled.
+Four items were deliberately deferred from the round this document first
+recorded. They shared one missing piece — the canonical-frame inclusions
+$j_i^\pm$ did not exist explicitly in the implementation — so each would
+otherwise have required ad-hoc frame conversions, which is the defect
+class this document exists to stop. Deferred items are **rejected before
+emission**, never silently miscompiled.
 
-**1. Unequal-width distributivity (§6 of `LIMITATIONS.md`).**
-`docs/LAYOUT_FRAME_REPAIR.md` records the naturality failure: at `A = Q`,
-`B = Q⊗Q`, `C = Q` the two sides of the distributivity-naturality square have
-full-unitary fidelity 0.5. Witness: `demos/dist_l_naturality_probe`.
+**1. Unequal-width distributivity (§6 of `LIMITATIONS.md`) — COMPLETED.**
+The boundary-frame/Align repair landed (`docs/LAYOUT_FRAME_REPAIR.md` is
+now the implemented record): the naturality witness
+`demos/dist_l_naturality_probe` (`A = Q`, `B = Q⊗Q`, `C = Q`), which
+previously showed full-unitary fidelity 0.5, now reports fidelity 1.0,
+and all four distributors compile gate-free.
 
 **2. Asymmetric-frame block synthesis.** Dense synthesis requires the
 completed source and target to share a canonical frame. Example:

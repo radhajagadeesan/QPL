@@ -1,7 +1,10 @@
 # Align normalization
 
-**Status:** Open. Filed 2026-09-01, immediately after the boundary-frame /
-Align correctness repair landed.
+**Status:** Open — deliberately deferred **post-v1.0.0**.  Filed
+2026-09-01, immediately after the boundary-frame / Align correctness
+repair landed.  This is optimization/normalization debt (circuit size at
+splices), **not a correctness or soundness blocker**: v1.0.0 ships with
+the correct, tested Align behaviour.
 
 **Not a soundness gap.** The correctness repair is complete and green; this
 task is about the *cost* of what it emits. Normalization deliberately belongs

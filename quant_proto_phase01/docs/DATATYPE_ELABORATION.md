@@ -1,8 +1,7 @@
-# Datatype Operation/Elimination Layer — Implemented
+# Datatype Elaboration
 
-Status: **implemented in the Phase-2 datatype batch** (this document was
-the recorded proposal; it now describes the shipped design and its
-honest limitations).  The gap it closed was the operation/elimination
+The datatype operation/elimination layer as implemented in Granthi
+v1.0.0 (`[@@source.datatype]`, the Qudit(n) abstraction).  The gap it closed was the operation/elimination
 half of datatype elaboration — a contained Source-layer gap, not a
 compiler or distributivity redesign:
 
@@ -22,9 +21,9 @@ expansion `bigplus_{i=0}^{n} A_i := (bigplus_{i=0}^{n-1} A_i) ⊕ A_n`,
 and `datatypes-new.tex` fixes `Q_n` to that expansion at base `I`.
 `Source.Datatype.unit_sum` is therefore left-associated
 (`unit_sum n = Plus (unit_sum (n-1), Unit)`), and the flat sums built
-by `cases`/`cases0` mirror it.  (`RadhaMSG/developer_datatypes.md`
-previously wrote the right-associated expansion; it has been corrected
-to agree with the clean calculus.)
+by `cases`/`cases0` mirror it.  (An older untracked developer
+note wrote the right-associated expansion; it contradicted the clean
+calculus and was corrected.  This document is the tracked authority.)
 
 Flat tag codes are the association-invariant left-to-right leaf order
 (`flatten_plus`), consumed identically by the datatype dispatch

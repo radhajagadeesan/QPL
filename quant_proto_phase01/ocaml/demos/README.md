@@ -1,66 +1,79 @@
-# OCaml demos
+# Examples and demos
 
-The sealed `Source` module is the programmer-facing language:
+## Where to look first
 
-```
-OCaml Source DSL -> sealed elaboration -> Linear Raw terms -> Bridge -> compiler
-```
+Concise, current Source programs live in two places:
 
-`Source` separates first-order data witnesses (`P`) from general Source
-types (`S`). Every public sum is first-order. Tensor elimination is
-`let_tensor` (also `split` and `let_pair`), and the GADT context indices
-enforce linear use and exact branch contexts. There is no public Raw injection,
-sum constructor, `PlusMap`, or `NPlusMap`.
+- [`../examples/doc_examples.ml`](../examples/doc_examples.ml) — the
+  Programming Guide's programs, compiled by `dune test`.
+- [`../counterparts/surface_programs.ml`](../counterparts/surface_programs.ml)
+  — a concise Source counterpart for **every** behaviour exercised by the
+  34 historical demos in this directory: the quantum-switch family,
+  selectors at arities 2–11, nested controls, algorithm cores, datatype
+  group operations (Z₃…Z₁₁ shifts/negations/additions), branch-swap
+  exponentials, per-label phased dispatch, the short-circuit witness, the
+  QS₂/QS₃ simulators, and more.
 
-## Start here
-
-These examples construct programs using only the sealed Source API:
-
-- `source_quickstart_e2e.ml`: `lam`, `let_tensor`, certified gates, and
-  linear pairing.
-- `source_fixed_control_e2e.ml`: `case_bool` with exactly the same nominal
-  context in both branches.
-- `source_datatype_e2e.ml`: a generative three-constructor datatype with an
-  exact-arity branch vector.
-- `source_exp_twist_e2e.ml`: `exp_i` of the certified tensor involution.
-- `test_first_order.ml`: the smallest sealed exponential example.
-
-From `quant_proto_phase01/ocaml/`:
+The Source demos in this directory (`source_*.ml`, `test_first_order.ml`)
+are small end-to-end entry points:
 
 ```sh
-dune build demos/
 dune exec demos/source_quickstart_e2e.exe
 dune exec demos/source_fixed_control_e2e.exe
 dune exec demos/source_datatype_e2e.exe
 dune exec demos/source_exp_twist_e2e.exe
-dune exec demos/test_first_order.exe
 ```
 
-Each executable exits nonzero when compilation fails.
+## The coverage ledger
 
-## Raw diagnostics and probes
+[`../counterparts/coverage.tsv`](../counterparts/coverage.tsv) is the
+**authoritative ledger** relating the 34 demos to their concise Source
+counterparts.  It is machine-validated on every `dune test` run by the
+`run_counterparts` harness, which:
 
-`Linear` remains the Raw implementation language. Existing demos built with it
-are kept for compiler regression coverage, historical witnesses, and backend
-inspection. They may express terms rejected by sealed Source, so they should
-not be copied as new user syntax.
+- executes over a hundred semantic checks comparing each counterpart to a
+  legacy Raw/Linear or handwritten sealed oracle (circuit equality at
+  fidelity 1.0, composition laws, compile pins),
+- cross-checks the ledger against `manifest.tsv`,
+- lexically forbids Raw/Linear/Bridge constructions and manual routing
+  witnesses inside the surface-authored counterpart file.
 
-The complete classification is in `manifest.tsv`:
+## Why the 34 Raw demos are retained
 
-- `Source`: constructs the program through sealed `Source`.
-- `Raw-language diagnostic`: a Raw end-to-end language or semantic witness.
-- `Raw/backend probe`: compiler, bridge, routing, representation, or
-  serialization inspection.
+`Linear` remains the Raw implementation language.  The historical demos
+built with it serve as **independent oracles** and compiler regression
+coverage: 32 have committed golden `.output` files diffed byte-for-byte
+by CI and `artifact/reproduce.sh`; 2 (`dump_abstract_qswitch`,
+`dump_select_5_inst`) are serialization dumps with no golden fixture, by
+design.  They may express terms the sealed Source deliberately rejects,
+so they should not be copied as new user syntax.
 
-Complex Raw demos were not mechanically converted in this pass. In particular,
-there is deliberately no sealed-Source QSwitch-specialization demo yet: the
-abstract Source term is accepted, but specializing its higher-order arguments
-to H/S still reaches a recorded Raw-normalization limitation. The fixed-control
-Source demo is the supported introduction to coherent case analysis.
+`manifest.tsv` classifies each demo (`Source`, `Raw-language diagnostic`,
+`Raw/backend probe`); `coverage.tsv` records each row's counterpart,
+oracle, test, and status.
+
+## Split rows, honestly
+
+Some rows are `split-migrated`: their expressible behaviour has a
+verified Source counterpart, but the demo *also* tests machinery that is
+not a surface subject, so the Raw demo remains load-bearing:
+
+- rows 4, 9, 10, 17 — backend/Raw inspection (guard certification,
+  distributivity layout probes, the nested open-branch PlusMap
+  mechanism);
+- rows 1, 5 — the abstract open-branch ⊕-map form is excluded from the
+  sealed calculus by design, and wire-level `Apply` of certified op
+  values into case-bodied lambdas currently trips the
+  canonical-normal-form gates (a recorded finding; the instantiated
+  content is verified through the sugar instances);
+- row 21 — the full 7-qubit QS₃ simulator equality stays in the retained
+  demo (component equalities and compile pins are in the harness; the
+  full-width comparison exceeds the harness's unitary-simulation budget).
+
+The `remaining` column of `coverage.tsv` states each residue precisely.
 
 ## Golden outputs
 
-A `golden` manifest entry has a checked-in `.output` file. An entry marked
-`none` is executable but has no golden fixture. The Source demos and converted
-first-order smoke test have checked-in goldens; no pre-existing `.output` file
-was regenerated or altered by the Source-layer addition.
+A `golden` manifest entry has a checked-in `.output` file; runs are
+compared byte-for-byte and goldens are never regenerated to hide a
+difference.  Every executable exits nonzero on failure.

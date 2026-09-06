@@ -54,10 +54,16 @@ x:A ⊢ x : A
 1. **Var** uses exactly a singleton context — no extra variables
 2. **Lam** removes x from the context (x is bound, not free)
 3. **Multiplicative rules** (Pair, LetPair, App, PlusMap) all split the context
-4. **PlusMap** branches have SEPARATE contexts (Γ₁ for f, Γ₂ for g)
-   - Each branch can have its own free variables
-   - Branches' free variables must be disjoint
-   - Combined context = disjoint union of both branches' contexts
+4. **Branch contexts.** Two disciplines coexist:
+   - The Raw open ⊕-map (`oplusmap`) uses SPLIT contexts: each branch
+     owns its own disjoint slice of the conclusion context, proven by a
+     partition witness.
+   - The sealed Source `case`/`cases` (and the `let%source` surface) use
+     COMPLETE branch-context transport: every branch consumes the
+     identical complete nominal linear context, and the compiler
+     transports the whole context into each branch (see
+     `BRANCH_CONTEXT_LINEARITY.md`).  The earlier "disjoint union of
+     branch contexts" phrasing described only the Raw ⊕-map.
 
 ## Part B: Generating Unitaries
 

@@ -280,10 +280,12 @@ discarded — $\mathsf{Wire}_{\Gamma_j}$ is identity transport, and
 (Sum-through) is its selected-sector reading. The two designs share one
 concept and should share its vocabulary in the paper.
 
-## Implementation surface
+## Implementation surface (as built)
 
-Deliberately minimal and to be confirmed against the invariants doc before
-coding:
+Deliberately minimal.  The items below were confirmed against the
+invariants document and are IMPLEMENTED as described (closed premises
+only; the sealed Source surface exposes no introduction — see
+`LIMITATIONS.md §8`, the governing statement):
 
 - **OCaml** — smart constructor taking $\alpha, \beta$ (validated
   $|\alpha| = |\beta| = 1$), the two premise terms, and a context-partition

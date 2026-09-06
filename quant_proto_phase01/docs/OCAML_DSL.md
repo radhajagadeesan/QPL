@@ -1,5 +1,9 @@
 # OCaml API: Sealed Source and Raw Backend
 
+> **Internal/advanced.** New programs should use the `let%source`
+> surface syntax (`docs/PROGRAMMING_GUIDE.md`); this document describes
+> the sealed calculus the PPX targets and the internal Raw layers.
+
 The programmer-facing OCaml API is `Qpl_surface.Source`. It is a sealed,
 typed presentation of Granthi's Source calculus. `Qpl_surface.Linear`,
 `Ast`, `Bridge`, and the representation modules remain available as the
@@ -139,6 +143,22 @@ The vector is the single arity authority, so a two-label datatype accepts
 exactly two branch operations. The Source API exposes neither injections nor
 observation of the Raw tag representation.
 
+Beyond `select`, the datatype module provides the operation/elimination
+layer added in v1.0.0 (see `DATATYPE_ELABORATION.md` for the design):
+
+- `cases` / `cases0` — the exhaustive tag-preserving n-ary datatype case
+  (declaration order is the code authority; every branch consumes the
+  identical complete nominal context).  The `let%source` surface reaches
+  it with ordinary `match`.
+- `permute : (arity, int) vector -> (t, t) op` — certified label
+  permutations (forward |i⟩ ↦ |p(i)⟩; range/bijectivity validated;
+  padding states of non-power-of-two arities untouched).
+- `involution_permute : (arity, int) vector -> t Op.involution` — the
+  permutation checks plus a p(p(i)) = i proof, usable under `Op.exp_i`.
+
+The `let%source` surface writes permutations with constructor names
+(`Bit.permute [One; Zero]`); the sealed API takes declaration indices.
+
 ### Current backend limitation
 
 The Source typing and elaboration rules accept the abstract higher-order
@@ -151,14 +171,12 @@ backend placement limitation:
 route par^-: wire 0 is placed twice
 ```
 
-This is a known backend limitation, not permission to expose Raw constructs
-through `Source`, and not evidence that the Source term is ill-typed.
-
-### Documentation follow-up
-
-TODO: synchronize the purported “Source syntax” examples in `intro_obj` with
-this sealed API. That manuscript/document is intentionally not edited as part
-of this implementation.
+This is a known backend limitation (a canonical-normal-form gate refusing
+rather than miscompiling), not permission to expose Raw constructs through
+`Source`, and not evidence that the Source term is ill-typed.  The
+instantiated behaviour is verified through the sugar instances instead
+(`ocaml/counterparts/`).  `docs/LIMITATIONS.md` is the governing
+limitations statement.
 
 ---
 
@@ -669,7 +687,7 @@ ocaml/
 
 ## Further Reading
 
-- **PROGRAMMING_GUIDE.md** — Meta-level combinators, datatype declarations
-- **STAGING_SOUNDNESS.md** — Formal soundness arguments for staging
-- **IR_DESIGN.md** — Wire layouts and IR architecture
-- **CLAUDE.md** — Compilation pipeline and elaboration rules
+- **PROGRAMMING_GUIDE.md** — the user-facing `let%source` syntax (start there)
+- **DATATYPE_ELABORATION.md** — the datatype operation/elimination layer
+- **IR_DESIGN.md** — wire layouts and IR architecture
+- **TOOLCHAIN.md** — the compilation pipeline

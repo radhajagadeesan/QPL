@@ -1,95 +1,94 @@
 # Granthi
 
-**Higher-Order Quantum Programming via Unitary Wiring**
+**Higher-Order Quantum Programming via Unitary Wiring — v1.0.0**
 
-Granthi is an experimental quantum programming language/compiler for writing
-linear typed programs and compiling them to quantum circuits. The OCaml surface
-language enforces linear use of quantum data; the backend lowers structural
-operations, case analysis, and higher-order wiring into pytket circuits.
+Granthi is a research quantum programming language and compiler.  The
+public user interface is the ergonomic `let%source` Source syntax: linear
+typing with located diagnostics, coherent case analysis, first-order
+datatypes, and higher-order functions as physically real wire bundles,
+compiled through the sealed Source calculus and the Python backend to
+pytket circuits.
 
-Structural operations (associativity, commutativity, distributivity) compile
-to zero gates; computational content (gates, controlled operations, case
-analysis) emits real quantum gates.
+The [Programming Guide](docs/PROGRAMMING_GUIDE.md) is the authoritative
+language document; its programs are compiled verbatim by
+[`ocaml/examples/doc_examples.ml`](ocaml/examples/doc_examples.ml) in
+`dune test`.
 
-## Status
+## Quick start
 
-Research prototype. APIs and semantics are still evolving.
-
-## Features
-
-- **Linear type system** with compile-time enforcement (OCaml GADT surface language)
-- **Higher-order functions** via boundary exposure/splicing (no closures, no runtime)
-- **Sum types** with flat log-sized tag encoding and coherent case analysis
-- **N-ary datatypes** with multi-controlled branch dispatch
-- **Curried higher-order n-ary dispatch** via `o_n_plusmap`, `n_dist`, `n_factor`
-- **Parameterized algorithms** via OCaml functors (Deutsch-Jozsa, HSP, Simon's)
-- **Full compilation pipeline**: OCaml surface language → Bridge → Python compiler → pytket circuits
-
-## Quick Start
-
-### Requirements
-
-- OCaml 4.14 with opam, dune, yojson
-- Python 3.10+ with numpy, pytest, pytket, pytket-pyzx
-
-Assumes an initialized opam switch. If you don't have one, run
-`opam switch create 4.14.2 && eval $(opam env)` before `opam install dune yojson`.
-
-### Build and test the OCaml surface language
+Prerequisites: OCaml 4.14 (opam) and Python 3.10+.  Install the Python
+backend first — the OCaml suite invokes it:
 
 ```bash
-eval $(opam env) && cd ocaml && dune build && dune test
+pip install -r requirements.txt      # numpy, pytest, pytket
+opam install dune ppxlib             # inside an OCaml 4.14 switch
+cd ocaml
+dune build
+dune test
 ```
 
-### Run demos
+Write a program:
+
+```ocaml
+let%source quickstart (p : (q, q) tensor) =
+  let (l, r) = split p in
+  (h l, s r)
+```
+
+Run examples and demos:
 
 ```bash
-eval $(opam env) && cd ocaml
-dune exec demos/algorithms_e2e.exe
-dune exec demos/short_circuit_e2e.exe
-dune exec demos/abstract_qswitch_oterm_e2e.exe
-dune exec demos/n_plusmap_e2e.exe
-dune exec demos/curried_select_3_ndist_e2e.exe
+cd ocaml
+dune exec examples/doc_examples.exe
+dune exec demos/source_quickstart_e2e.exe
+dune exec demos/source_datatype_e2e.exe
 ```
 
-### Run Python backend tests
-
-```bash
-PYTHONPATH=python/src pytest python/tests
-```
-
-## Project Structure
+## Project structure
 
 ```
-python/src/       Python core (types, terms, compiler)
-python/tests/     pytest test suite
-python/demos/     Python demonstrations
-ocaml/lib/        OCaml surface language (Linear GADT, elaborator, bridge)
-ocaml/test/       OCaml tests
-ocaml/demos/      OCaml E2E demos (full pipeline to circuits)
-docs/             Documentation
+ocaml/ppx/           PPX frontend (let%source, match, permutation sugar)
+ocaml/lib/           sealed Source calculus + internal Raw/Linear + Bridge
+ocaml/examples/      compiled documentation examples
+ocaml/counterparts/  concise Source counterparts for all 34 demos + coverage.tsv
+ocaml/demos/         demo executables (Source demos + retained compiler demos)
+ocaml/test/          OCaml test suites and compile-reject harnesses
+python/src/          Python compiler backend (internal)
+python/tests/        Python regression suite
+docs/                documentation (see docs/INDEX.md)
 ```
+
+## Layers and their status
+
+| Layer | Status |
+|---|---|
+| `let%source` Source syntax (PPX) | **Public v1.0.0 interface** |
+| Sealed `Qpl_surface.Source` calculus | Public (the PPX's target; usable directly, verbose) |
+| `Qpl_surface.Linear` / Raw / `Bridge` | Internal compiler-facing layers; tested, kept for regression and inspection; not a stable public API |
+| Python term IR (`python/src/lang`) | Internal backend; **does not enforce linearity** — do not author terms against it |
 
 ## Documentation
 
-- [Programming Guide](docs/PROGRAMMING_GUIDE.md) — language features and usage
-- [Compiler API Guide](docs/COMPILER_API_GUIDE.md) — compilation pipeline
-- [API Reference](docs/API_REFERENCE.md) — type and term reference
-- [OCaml DSL Guide](docs/OCAML_DSL.md) — OCaml surface language
-- [Limitations](docs/LIMITATIONS.md) — known limitations
+- [Programming Guide](docs/PROGRAMMING_GUIDE.md) — the language, with compiled examples
+- [Examples and demos](ocaml/demos/README.md) — Source counterparts and the 34 retained demos
+- [Limitations](docs/LIMITATIONS.md) — sole current limitations authority
+- [Verification](docs/VERIFICATION.md) — reproduction commands and expected results
+- [Documentation index](docs/INDEX.md) — current vs. historical documents
+- [OCaml API layers](docs/OCAML_DSL.md), [Compiler pipeline](docs/COMPILER_API_GUIDE.md),
+  [Datatype elaboration](docs/DATATYPE_ELABORATION.md) — internal/advanced
 
 ## Author / Citation
 
 Radha Jagadeesan — DePaul University — radha.jagadeesan@gmail.com
 
-Citation information forthcoming.
+To appear at **OOPSLA 2026** (Samson Abramsky and Radha Jagadeesan,
+*Granthi: Higher-Order Quantum Programming via Unitary Wiring*).  See the
+[top-level README](../README.md#author--citation) for BibTeX.
 
-## Reporting Bugs
+## Reporting bugs
 
-Please report bugs, unexpected compiler behavior, or documentation issues via
-[GitHub Issues](https://github.com/radhajagadeesan/QPL/issues). A minimal
-reproducer (an OCaml term, a Bridge JSON dump, or a short Python test that
-exhibits the problem) is very helpful.
+[GitHub Issues](https://github.com/radhajagadeesan/QPL/issues) — a
+minimal `let%source` reproducer is ideal.
 
 ## License
 

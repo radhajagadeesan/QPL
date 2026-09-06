@@ -1,5 +1,9 @@
 # Granthi API Reference
 
+> **Internal.** This documents compiler-facing layers (Raw/Bridge/Python
+> IR), which are not the public v1.0.0 user interface and not promised
+> stable.  Users should start at `PROGRAMMING_GUIDE.md`.
+
 Complete reference for types, terms, and compilation functions.
 
 ---

@@ -1,3 +1,8 @@
+> **HISTORICAL RECORD — PPX vertical-slice report**
+> Retained verbatim for provenance (checkpoint source-ppx-slice-20260905).  It describes the system as
+> it stood at that checkpoint, not the current system.  For current
+> documentation start at [`../INDEX.md`](../INDEX.md).
+
 # Source Frontend Vertical Slice — Report
 
 Status: **uncommitted, for review.**  Companion:
@@ -351,7 +356,7 @@ New: `ocaml/ppx/{dune, qpl_source_ppx.ml, qpl_source_pp.ml}`,
 `ocaml/test/source_frontend_harness.ml`,
 `ocaml/test/source_frontend/pass/pass_quickstart.ml`,
 `ocaml/test/source_frontend/reject/*.{ml,diag}` (6 pairs),
-`docs/SOURCE_FRONTEND_LEDGER.md`, this report.
+`docs/history/SOURCE_FRONTEND_LEDGER.md`, this report.
 
 Modified: `ocaml/test/dune` only (the slice test stanza, the harness
 executable, and its runtest rule).

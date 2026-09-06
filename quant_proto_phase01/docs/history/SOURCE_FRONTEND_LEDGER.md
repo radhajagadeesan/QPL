@@ -1,10 +1,15 @@
+> **HISTORICAL RECORD — Phase-1 feasibility ledger, superseded by ocaml/counterparts/coverage.tsv**
+> Retained verbatim for provenance (checkpoints source-ppx-slice-20260905 / source-frontend-datatypes-20260905).  It describes the system as
+> it stood at that checkpoint, not the current system.  For current
+> documentation start at [`../INDEX.md`](../INDEX.md).
+
 # Source Frontend Feasibility Ledger (corrected, 34 rows)
 
 Status: **superseded as the living authority by
 `ocaml/counterparts/coverage.tsv`**, which the `run_counterparts` CI
 test validates row-by-row.  This file remains the Phase-1 feasibility
 analysis; the Phase-2 addendum at the end records what has since been
-implemented.  Companion to `SOURCE_FRONTEND_SLICE_REPORT.md`.  One row
+implemented.  Companion to `history/SOURCE_FRONTEND_SLICE_REPORT.md`.  One row
 per file in `ocaml/demos/` (the 34-demo manifest).  Every
 classification below was re-derived from the demo's actual contents and
 from the sealed `source.mli` at HEAD `a052e14`, not carried over from
@@ -152,7 +157,7 @@ facts where the demo pins them.
   `let%source`), `permute`, and `involution_permute` (certified label
   permutations with constructor-name PPX sugar, forward convention,
   padding states fixed).  See
-  `docs/E2_DATATYPE_PERMUTATION_PROPOSAL.md` for the shipped design and
+  `docs/DATATYPE_ELABORATION.md` for the shipped design and
   the canonical LEFT-association decision (fixed by the clean calculus
   in `narymonoidal.tex`/`datatypes-new.tex` and pinned structurally by
   `test_source_datatype_ops`).

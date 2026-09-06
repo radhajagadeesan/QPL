@@ -1,5 +1,9 @@
 # Granthi Compiler API Guide
 
+> **Internal.** This documents compiler-facing layers (Raw/Bridge/Python
+> IR), which are not the public v1.0.0 user interface and not promised
+> stable.  Users should start at `PROGRAMMING_GUIDE.md`.
+
 This guide is for developers extending or embedding the Granthi compiler. It explains the Python core API, compilation functions, and higher-order compilation hooks.
 
 For surface language programming, see `PROGRAMMING_GUIDE.md`.

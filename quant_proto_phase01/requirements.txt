@@ -1,0 +1,11 @@
+# Canonical Python dependencies for the Granthi backend (v1.0.0).
+# Install BEFORE running the OCaml suite: `dune test` invokes this
+# backend through the bridge.
+#
+# pytket is the circuit backend.  The release was developed and tested
+# against pytket 2.x (artifact Docker image pins 2.11.0); any recent 2.x
+# should work.  numpy is used for unitary comparison; pytest runs the
+# regression suite.
+numpy
+pytest
+pytket>=2.0,<3

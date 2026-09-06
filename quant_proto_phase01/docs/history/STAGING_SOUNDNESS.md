@@ -1,3 +1,8 @@
+> **HISTORICAL RECORD — staging design study; the described staging.ml/.mli was never shipped**
+> Retained verbatim for provenance (pre-release design note).  It describes the system as
+> it stood at that checkpoint, not the current system.  For current
+> documentation start at [`../INDEX.md`](../INDEX.md).
+
 # OCaml Staging: Representation and Soundness
 
 This document describes the OCaml representation used in `ocaml/lib/staging.ml` for verifying soundness of the staging approach.

@@ -1,3 +1,8 @@
+> **HISTORICAL RECORD — SeqCut / beta-boundary red-green witness record (all green at the final addendum)**
+> Retained verbatim for provenance (checkpoints semantic-seqcut-20260905 / beta-boundary-20260905).  It describes the system as
+> it stood at that checkpoint, not the current system.  For current
+> documentation start at [`../INDEX.md`](../INDEX.md).
+
 # Release-safety status
 
 > **Addendum 2026-09-05 (later) — checkpoint `beta-boundary-20260905`.**

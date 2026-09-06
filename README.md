@@ -1,113 +1,117 @@
 # Granthi
 
-Higher-order quantum programming via unitary wiring.
+**Higher-order quantum programming via unitary wiring — v1.0.0**
 
-Granthi is an experimental quantum programming language/compiler for writing
-linear typed programs and compiling them to quantum circuits. The OCaml surface
-language enforces linear use of quantum data, while the backend lowers structural
-operations, case analysis, and higher-order wiring into pytket circuits.
+Granthi is a research quantum programming language and compiler.  Programs
+are written in a linearly typed OCaml surface syntax, checked at compile
+time, and compiled to pytket circuits.  Structural operations
+(associativity, commutativity, distributivity) compile to zero gates;
+computational content (gates, coherent case analysis, controlled
+dispatch) emits real quantum gates.
 
 ## Status
 
-Research prototype. APIs and semantics are still evolving.
+**Version 1.0.0 — a usable research language.**  The public user
+interface is the ergonomic `let%source` Source syntax described below and
+in the [Programming Guide](quant_proto_phase01/docs/PROGRAMMING_GUIDE.md).
+The internal Raw/Bridge OCaml APIs and the Python term IR remain
+compiler-facing compatibility layers: available, tested, but not the
+recommended user syntax and not covered by the public interface promise.
 
-## What It Does
+## Five-minute quickstart
 
-- Enforces no-cloning/no-discarding through a linear type discipline
-- Provides an OCaml surface language for typed quantum programs
-- Compiles structural isomorphisms such as associativity, twist, and distributivity
-- Supports sum types, n-ary datatypes, case analysis, and controlled operations
-- Supports higher-order programs (lambdas, application) via boundary splicing
-- Emits pytket circuits through a Python backend
-- Includes executable demos and regression tests
-
-## Using Granthi
-
-**Granthi's user-facing front-end is the OCaml surface language.** Programs
-should be written in OCaml, elaborated to the bridge IR, and passed to the
-Python backend for compilation to circuits — the pipeline is
-`OCaml → Bridge → Python`.
-
-> ⚠️ **Do not author terms directly against the Python term IR.**
-> The Python layer (`python/src/lang/terms.py`, `python/src/compile/`) is a
-> low-level compilation backend. It checks widths and domain/codomain matching
-> but **does not** enforce linearity, and it will silently accept and
-> miscompile terms that violate the OCaml surface's linear type discipline.
-> Authoring higher-order or coherent-case programs directly at this layer can
-> produce circuits that typecheck but do not implement any well-defined
-> semantics. See [`docs/LIMITATIONS.md`](quant_proto_phase01/docs/LIMITATIONS.md#4-python-linearity-checking--language-design)
-> for details.
-
-> ⚠️ **Within the OCaml surface, prefer the case sugars over raw ⊕-Map primitives.**
-> Case analysis and coherent branching should be written via `case_hom`,
-> `case_hom0`, `ocase_hom`, `ocase_hom0`, or the datatype `control` /
-> `phased_control` combinators. These carry the soundness guard for the
-> first-order sum-payload restriction (see
-> [`docs/LIMITATIONS.md`](quant_proto_phase01/docs/LIMITATIONS.md#4-python-linearity-checking--language-design)),
-> so ill-formed uses fail at the smart-constructor call site with a clear
-> error. Constructions that bypass the sugars — raw `omap0`, `omap`, `omapn`,
-> `oplusmap0`, `oplusmap`, `o_n_plusmap` — will build without error but
-> will fail at `Bridge.compile` with the same first-order error (from the
-> Python defense-in-depth check). The error is caught, just one pipeline
-> stage later than ideal.
-
-Use `quant_proto_phase01/ocaml/` as the entry point. Every user-facing demo
-under `ocaml/demos/` illustrates the correct pattern (case sugars and
-datatype `control`, not raw ⊕-Map).
-
-## Repository Layout
-
-- `quant_proto_phase01/ocaml/` — OCaml surface language, elaborator, bridge, demos, tests
-- `quant_proto_phase01/python/` — Python core compiler and pytket backend
-- `quant_proto_phase01/docs/` — user and developer documentation
-- `quant_proto_phase01/python/tests/` — Python regression tests
-
-The code currently lives under `quant_proto_phase01/` as a single project.
-
-## Quick Start
-
-### OCaml surface language (primary user-facing layer)
-
-Assumes an initialized opam switch (OCaml 4.14 or compatible). If you don't
-have one, run `opam switch create 4.14.2 && eval $(opam env)` first.
+Prerequisites: OCaml 4.14 (opam) and Python 3.10+.  Install the Python
+backend first — the OCaml test suite calls into it:
 
 ```bash
-cd quant_proto_phase01/ocaml
-opam install dune yojson
+cd quant_proto_phase01
+pip install -r requirements.txt        # numpy, pytest, pytket
+
+opam install dune ppxlib               # inside an OCaml 4.14 switch
+cd ocaml
 dune build
 dune test
 ```
 
-### Demos
+A Granthi program is ordinary OCaml under `let%source`.  The quantum
+switch — coherently choosing the order of two operations — is four lines
+(this exact program is compiled by
+[`ocaml/examples/doc_examples.ml`](quant_proto_phase01/ocaml/examples/doc_examples.ml)
+in `dune test`):
 
-```bash
-cd quant_proto_phase01/ocaml
-dune exec demos/algorithms_e2e.exe
-dune exec demos/short_circuit_e2e.exe
-dune exec demos/n_plusmap_e2e.exe
+```ocaml
+let%source qswitch_hs (p : (qbool, q) tensor) =
+  let (b, x) = split p in
+  case b
+    ~zero:(h (s x))
+    ~one_:(s (h x))
 ```
 
-### Python backend tests
+Datatypes are ordinary variants; matching is ordinary `match`:
 
-```bash
-cd quant_proto_phase01
-PYTHONPATH=python/src pytest python/tests
+```ocaml
+type traffic = Red | Amber | Green [@@source.datatype]
+
+let%source signal (d : Traffic.t) (y : q) =
+  match d with
+  | Red -> h y
+  | Amber -> s y
+  | Green -> t y
 ```
 
-## Requirements
+Run the compiled documentation examples and a demo:
 
-- OCaml 4.14 or compatible — opam, dune, yojson
-- Python 3.10+ — numpy, pytest, pytket, pytket-pyzx
+```bash
+dune exec examples/doc_examples.exe
+dune exec demos/source_quickstart_e2e.exe
+```
+
+## What the language provides
+
+- **Linear typing**: every quantum variable is consumed exactly once,
+  enforced at compile time with located diagnostics.
+- **Higher-order functions** as physically real wire bundles (boundary
+  exposure/splicing; no closures, no runtime).
+- **Coherent case** over `qbool` and general first-order sums —
+  tag-preserving, with identical branch contexts.
+- **First-order datatypes** (`[@@source.datatype]`, the Qudit(n)
+  abstraction) with selection, exhaustive matching, and certified label
+  permutations/involutions; general sums remain first-order.
+- **Certified host operations** (`Op` combinators: composition, tensor,
+  coherences, distributors, exponentials of involutions, phases).
+- **A tested compilation pipeline**: Source → sealed calculus → Bridge →
+  Python compiler → pytket circuits, with gate-free structural
+  distributivity and semantic sequential-composition checking.
+
+## Repository layout
+
+- `quant_proto_phase01/ocaml/` — the language: PPX frontend (`ppx/`),
+  sealed Source calculus (`lib/`), compiled doc examples (`examples/`),
+  concise counterparts + coverage ledger (`counterparts/`), demos, tests.
+- `quant_proto_phase01/python/` — the compiler backend (internal).
+- `quant_proto_phase01/docs/` — documentation
+  ([index](quant_proto_phase01/docs/INDEX.md)).
 
 ## Documentation
 
-Start here:
+- [Programming Guide](quant_proto_phase01/docs/PROGRAMMING_GUIDE.md) —
+  **start here**: the authoritative language guide, with compiled examples.
+- [Examples and demos](quant_proto_phase01/ocaml/demos/README.md) —
+  concise Source counterparts and the retained compiler demos.
+- [Limitations](quant_proto_phase01/docs/LIMITATIONS.md) — the sole
+  current limitations authority.
+- [Verification](quant_proto_phase01/docs/VERIFICATION.md) — how to
+  reproduce the test and demo results.
+- [Documentation index](quant_proto_phase01/docs/INDEX.md) — current
+  versus historical documents.
+- Internal/advanced: [sealed and Raw OCaml APIs](quant_proto_phase01/docs/OCAML_DSL.md),
+  [compiler pipeline](quant_proto_phase01/docs/COMPILER_API_GUIDE.md),
+  [datatype elaboration](quant_proto_phase01/docs/DATATYPE_ELABORATION.md).
 
-- [`quant_proto_phase01/README.md`](quant_proto_phase01/README.md)
-- [`quant_proto_phase01/docs/PROGRAMMING_GUIDE.md`](quant_proto_phase01/docs/PROGRAMMING_GUIDE.md)
-- [`quant_proto_phase01/docs/OCAML_DSL.md`](quant_proto_phase01/docs/OCAML_DSL.md)
-- [`quant_proto_phase01/docs/COMPILER_API_GUIDE.md`](quant_proto_phase01/docs/COMPILER_API_GUIDE.md)
-- [`quant_proto_phase01/docs/LIMITATIONS.md`](quant_proto_phase01/docs/LIMITATIONS.md)
+> ⚠️ The Python layer (`python/src/`) checks types and widths but does
+> **not** enforce linearity; terms authored directly against it can
+> miscompile.  It is an internal backend.  Write programs in
+> `let%source`.
 
 ## Author / Citation
 
@@ -119,8 +123,6 @@ To appear at **OOPSLA 2026**:
 > Programming via Unitary Wiring.* Proceedings of the ACM on Programming
 > Languages (PACMPL), OOPSLA 2026. To appear.
 
-BibTeX (final citation info will be updated once the proceedings are published):
-
 ```bibtex
 @article{AbramskyJagadeesan2026Granthi,
   author  = {Samson Abramsky and Radha Jagadeesan},
@@ -131,12 +133,11 @@ BibTeX (final citation info will be updated once the proceedings are published):
 }
 ```
 
-## Reporting Bugs
+## Reporting bugs
 
-Please report bugs, unexpected compiler behavior, or documentation issues via
-[GitHub Issues](https://github.com/radhajagadeesan/QPL/issues). A minimal
-reproducer (an OCaml term, a Bridge JSON dump, or a short Python test that
-exhibits the problem) is very helpful.
+Please report bugs, unexpected compiler behavior, or documentation issues
+via [GitHub Issues](https://github.com/radhajagadeesan/QPL/issues).  A
+minimal `let%source` reproducer is ideal.
 
 ## License
 

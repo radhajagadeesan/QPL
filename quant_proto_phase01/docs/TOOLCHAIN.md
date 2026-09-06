@@ -1,6 +1,11 @@
 # Granthi Compiler Toolchain
 
-This document describes the two-stage compilation pipeline from source language to quantum circuits.
+This document describes the compilation pipeline from source language to
+quantum circuits.  Note that the **user-facing entry point** sits above
+what is drawn here: `let%source` programs are elaborated by the PPX
+frontend into the sealed `Qpl_surface.Source` calculus, which lowers to
+the Raw terms this document begins from (see `PROGRAMMING_GUIDE.md` and
+`OCAML_DSL.md`).
 
 ---
 
@@ -119,7 +124,10 @@ PYTHONPATH=python/src pytest  # Run tests
 1. **Traverse AST** — Walk the term tree recursively
 2. **Accumulate permutations** — Structural ops (twist, assoc, dist) become `WirePerm` compositions
 3. **Emit gates** — Gate terms emit to pytket, indices reindexed through current permutation
-4. **Return result** — `Compiled(circuit, perm)` with final circuit and boundary permutation
+4. **Return result** — a `Compiled` artifact: the circuit, the boundary
+   permutation (an optimisation, not the semantic boundary), an explicit
+   `global_phase`, and the emitter-recorded boundary **frames/ports**
+   that the frame-aware pipeline treats as authoritative
 
 ### Key Compilation Rules
 

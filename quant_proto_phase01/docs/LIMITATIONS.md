@@ -1,6 +1,10 @@
 # Known Limitations
 
-Last updated: 2026-09-05.
+**This document is the sole current limitations authority** for Granthi
+v1.0.0.  Other documents describe designs or history; when they mention a
+restriction, this file's statement governs.
+
+Last updated: 2026-09-05 (v1.0.0).
 
 ---
 
@@ -251,7 +255,7 @@ not a soundness gap.
 
 ---
 
-## 8. Coherent ⊕-introduction (`Sum_αβ`) — not exposed as an artifact primitive
+## 8. Coherent ⊕-introduction (`Sum_αβ`) — closed-premise Raw only; no sealed-Source introduction
 
 The formal source calculus contains a coherent ⊕-introduction rule
 
@@ -262,25 +266,25 @@ $$
 
 that produces an `A ⊕ B` value with a freshly-allocated tag qubit
 prepped to `α|0⟩ + β|1⟩`, distinct from `Map_αβ(R_1, R_2) : (A ⊕ B) ⊸
-(C ⊕ D)` (which transforms an already-tagged sum). The artifact ships
-the Map family end-to-end (`PlusMap`, `NPlusMap`, `PhasedPlusMap`,
-`case_hom`, `datatype control`, additive iso families) but does not
-expose a first-class coherent ⊕-introduction constructor.
+(C ⊕ D)` (which transforms an already-tagged sum).
 
-The natural derivation `Sum = Map at source I` is not usable in the
-current DSL: while `val one : [`One] ty` exists at the type level,
-there is no term-level introduction for a value of type `one`
-(no `unit_intro`, no `star`, no `(unit, [`One]) prog` primitive), so
-the state-prep morphisms `R_1 : (unit, one ⊸ A) prog` that `omap0 one
-one _ _` would need cannot be constructed. Sum is genuinely a missing
-primitive, not merely absent sugar.
+**What is implemented:** a CLOSED-PREMISE introduction exists at the
+internal Raw layer and below — `Linear.sum_ α β r₁ r₂` lowers through
+`Bridge.TSum` to the backend `Sum` node per
+`docs/SUM_INTRODUCTION_DESIGN.md` (the Flat-Sum realization: canonical-
+frame inclusions, inactive-context identity transport, exact-tag branch
+coefficients, premise global phase promoted, padding fixed).
 
-The repair plan — add `Sum` to the DSL by copying the `Map` emitter
-with the source side blank (no input tag, no input payload; fresh
-output tag ancilla prepped to `α|0⟩+β|1⟩`) — is documented in
-`docs/SUM_INTRODUCTION_DESIGN.md`.
+**What is deliberately NOT exposed:** the sealed `Source` calculus and
+the `let%source` surface expose **no sum introduction at all** (see the
+conformance fixture `test/source_conformance/reject/no_sum_introduction`),
+and the Raw constructor takes **closed** premises only — there is no
+open-premise (free-context) introduction anywhere.  Do not describe
+Granthi as supporting general coherent ⊕-introduction at the user
+surface.
 
-**Status:** OPEN. Implementation deferred; design agreed.
+**Status:** closed-premise Raw/backend introduction implemented and
+tested; sealed-surface introduction intentionally absent in v1.0.0.
 
 ---
 

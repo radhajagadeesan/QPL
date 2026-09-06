@@ -10,7 +10,8 @@ Target badges: **Available**, **Functional**, **Reusable**, **Results Reproduced
 ## 1. Getting Started (< 5 minutes)
 
 The artifact ships as a Docker image with the full toolchain baked in:
-Debian 12, OCaml 4.14, dune 3.14, Python 3.11, pytket 2.11.0.
+Debian 12, OCaml 4.14, dune and ppxlib (>= 0.37) from opam, Python 3.11,
+pytket pinned at 2.11.0.
 
 ```bash
 # from the artifact directory (the one containing Dockerfile)
@@ -41,11 +42,17 @@ docker run --rm -v "$PWD/results:/work/artifact/results" granthi-ae \
     artifact/reproduce.sh
 ```
 
-Runs every demo in the claims table below, saves each run's stdout to
-`artifact/results/<demo>.out`, and byte-diffs it against the committed
-`ocaml/demos/<demo>.output`. Also runs the full Python `pytest` suite.
+Runs the complete v1.0.0 verification surface: `dune build`, the full
+`dune runtest` (including the `let%source` frontend compile-pass/reject
+harness, the 34-row Source counterpart coverage harness, datatype
+invariants, and the compiled documentation examples), then **all 34
+demos** from `ocaml/demos/manifest.tsv` — 32 golden demos byte-diffed
+against committed `.output` files and 2 intentional no-fixture dumps —
+and finally the full Python `pytest` suite.  A missing golden is a
+failure, not a skip.
 
-Exit code = number of failed reproductions (0 on full success).
+Exit code 0 only on the exact expected outcome
+(32 golden + 2 no-fixture + all suites green).
 
 ## 4. Claims Table
 
@@ -109,9 +116,10 @@ The system is designed to be extended. See:
   points (adding a gate, adding a type constructor, adding a rewrite).
 - `docs/API_REFERENCE.md` — reference documentation.
 - `docs/LIMITATIONS.md` — honest inventory of what is and is not supported.
-- `docs/OCAML_DSL.md` — the OCaml surface DSL (Linear GADT).
-- `RadhaMSG/full_source_language_compilation_spec.md` — full compilation
-  spec (higher-order boundary exposure, Apply as splicing).
+- `docs/OCAML_DSL.md` — the sealed Source API and internal Raw layers.
+- `docs/PROGRAMMING_GUIDE.md` — the `let%source` user syntax (v1.0.0
+  public interface), with examples compiled by
+  `ocaml/examples/doc_examples.ml`.
 
 Concrete recipes:
 
@@ -145,8 +153,7 @@ quant_proto_phase01/
 │   ├── src/                  ← lang/, compile/, core/
 │   ├── tests/                ← pytest suite
 │   └── demos/                ← illustrative Python-side demos
-├── docs/                     ← user + developer docs
-└── RadhaMSG/                 ← specs and design notes
+└── docs/                     ← user + developer docs (see docs/INDEX.md)
 ```
 
 ## 7. Native Install (if not using Docker)
@@ -176,10 +183,9 @@ artifact/reproduce.sh
 
 ## 8. Availability
 
-The tagged source snapshot is deposited on Zenodo with a permanent DOI.
-The DOI will be inserted here at final submission time.
-
-    Zenodo DOI: 10.5281/zenodo.XXXXXXX   (to be filled in on upload)
+A DOI has **not** been assigned to this snapshot.  If the release is
+archived (e.g., on Zenodo), the identifier will be added here; no
+deposit is claimed until then.
 
 License: MIT (see `LICENSE`).
 

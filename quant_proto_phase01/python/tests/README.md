@@ -1,26 +1,21 @@
-# Phase 1 Test Additions (Drop-in)
+# Python backend regression tests
 
-These files are intended to be *added into your existing* `tests/` directory.
+The regression suite for the internal Python compiler backend.  Run from
+`quant_proto_phase01/`:
 
-They are designed to be:
-- compatible with a flat, numbered test layout
-- deterministic (seeded)
-- robust to minor API refactors (via small helper shims)
-
-## Additions
-- `conftest.py` : shared seed fixture
-- `helpers.py`  : small stable helpers (imports/introspection)
-- `test_11_perm_convention_lock.py` : pins WirePerm mapping direction
-- `test_23_structure_no_swaps_regression.py` : structural terms must not emit SWAPs
-- `test_32_compile_determinism.py` : compilation determinism
-- `test_41_materialize_equivalence_small.py` : materialize adds SWAPs only
-
-## Run
 ```bash
-PYTHONPATH=python/src pytest -q
+PYTHONPATH=python/src pytest python/tests -q
 ```
 
-Optionally override seed:
-```bash
-QPL_SEED=999 PYTHONPATH=python/src pytest -q
-```
+Expected: all tests pass (v1.0.0 baseline: 1570 passed / 0 failed; the
+suite grows over time).
+
+The suite covers the term IR, typing/width checks, structural lowering
+(twist/assoc/dist as gate-free wire permutations), sum encodings and the
+blockwise open-sum machinery, the relational SeqCut composition
+authority, beta-boundary inheritance, exponentials, datatype dispatch,
+tag permutations, and the golden fixtures produced by the OCaml bridge.
+
+These tests exercise **internal** layers.  Language-level behaviour is
+tested from the OCaml side (`ocaml/test/`, `ocaml/counterparts/`); see
+`docs/VERIFICATION.md` for the complete verification surface.

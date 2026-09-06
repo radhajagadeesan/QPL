@@ -158,8 +158,8 @@ The two fundamental mechanisms are therefore complete:
 ## Witness encoding
 
 A total *n*-way partition is an iterated binary split, reusing the existing
-`split` witness verbatim. Verified to compile
-(`scratchpad/witness_check.ml`, clean, no warnings):
+`split` witness verbatim (the shipped form lives in `ocaml/lib/linear.ml`;
+its use is exercised by the `o_n_plusmap` demos and tests):
 
 ```ocaml
 (* existing, unchanged *)

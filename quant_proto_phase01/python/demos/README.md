@@ -1,9 +1,8 @@
 # Python Backend Demos
 
-> **The primary user language for this release is OCaml.** Users should write programs
-> using the OCaml Linear DSL (`ocaml/lib/linear.ml`), which compiles through the full
-> pipeline: OCaml → Bridge → Python → pytket circuits. See `ocaml/demos/` for
-> user-facing E2E demos.
+> **The user language is the `let%source` Source syntax** (see
+> `docs/PROGRAMMING_GUIDE.md`), compiled OCaml → Bridge → Python →
+> pytket.  The OCaml Linear DSL and this Python layer are internal.
 >
 > The Python demos below exercise the **compilation backend** directly. They are useful
 > for testing and understanding the compiler internals, but are not the intended

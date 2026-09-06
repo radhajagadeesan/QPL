@@ -1,7 +1,10 @@
-# SPLASH 2026 Artifact Evaluation image for Granthi / QPL.
+# Granthi v1.0.0 image (also used for SPLASH 2026 Artifact Evaluation).
 #
 # Base: OCaml team's official Debian 12 + OCaml 4.14 image.
-# Adds: dune, Python 3.11 venv, pytket 2.11.0, the QPL source tree.
+# Adds: dune and ppxlib (whatever the opam repository resolves for OCaml
+# 4.14 — deliberately not pinned; ppxlib must be >= 0.37 for the Source
+# PPX, which current resolutions satisfy), a Python 3.11 venv with
+# pytket pinned at 2.11.0, and the source tree.
 #
 # Build:   docker build -t granthi-ae .
 # Run:     docker run --rm -it granthi-ae
@@ -27,7 +30,7 @@ WORKDIR /home/opam
 # whatever the opam repository resolves for OCaml 4.14 is fine, and pinning
 # too tightly risks unsolvable constraints between opam runs.
 RUN opam update && \
-    opam install -y dune
+    opam install -y dune "ppxlib>=0.37"
 
 # --- Python venv with pytket ----------------------------------------------
 # Kept in /home/opam/venv, activated implicitly by prepending to PATH.

@@ -1,5 +1,76 @@
 # Release Notes
 
+## v1.0.0 — Granthi as a usable research language
+
+### Summary
+
+Granthi v1.0.0 makes the language usable: programs are written in the
+ergonomic `let%source` Source syntax — ordinary OCaml syntax with linear
+typing, coherent case analysis, first-order datatypes, and higher-order
+functions as physically real wire bundles — and compiled through the
+sealed Source calculus to pytket circuits.
+
+**Interface promise.** The public v1.0.0 interface is the `let%source`
+Source surface (and the sealed `Qpl_surface.Source` module it targets).
+The internal Raw/Linear, Bridge, and Python compiler APIs remain in the
+tree, tested, for compiler development and regression purposes; they are
+*not* promised as stable public APIs.
+
+### Highlights
+
+- **Ergonomic frontend.**  `let%source` bindings with annotated
+  parameters; tuples and `split`; linear application; `case` over
+  `qbool` and general first-order sums; ordinary `match` over declared
+  datatypes; visible polymorphism witnesses (`(a : 'a P.t)`);
+  annotation-directed non-endomorphism host operations.  Every
+  violation of linearity, typing, or exhaustiveness is a located
+  compile-time diagnostic.
+- **Sealed Source calculus.**  The PPX's target re-proves typing,
+  linearity, context routing, and the first-order sum restriction
+  independently — and the frontend's *meaning*-preservation is pinned by
+  circuit-equality tests against handwritten oracles.
+- **First-order datatypes** (`[@@source.datatype]`): the Qudit(n)
+  abstraction — generative nominal types elaborating to hidden
+  first-order sums, with selection, exhaustive matching, and certified
+  label permutations/involutions (forward convention, padding fixed,
+  canonical left-associated representation pinned structurally).  Group
+  operations are derived, not assumed: shifts/negations are declared
+  permutations; addition is a selector of shifts.
+- **Complete counterpart coverage.**  All 34 historical demo behaviours
+  have executed concise Source counterparts, semantically checked
+  against legacy oracles (112 checks at the release baseline) under a
+  machine-validated coverage ledger; the retained Raw demos continue to
+  serve as independent oracles and golden regressions.
+- **Compiler completions.**  Gate-free distributivity for all four
+  distributors with naturality witnesses at fidelity 1.0; the blockwise
+  open-sum backend with capability dispatch; semantic relational SeqCut
+  composition; beta-boundary inheritance.  Compositions the authorities
+  cannot certify are refused, never silently miscompiled.
+
+### Limitations and deferrals
+
+`docs/LIMITATIONS.md` is the sole authority.  In brief: general sums are
+first-order by design (the v0.2 soundness fix, unchanged); the sealed
+surface exposes no coherent ⊕-introduction (a closed-premise Raw
+introduction exists internally); some fallback code paths have pytket
+width ceilings; **Align normalization is deferred post-v1.0.0** — it
+concerns circuit size at splices, not correctness
+(`docs/ALIGN_NORMALIZATION.md`).
+
+### Verification baseline (2026-09-05)
+
+- Python backend suite: **1570 passed / 0 failed**.
+- Complete OCaml `dune build` + `dune test`: green — frontend harness
+  (1 pass + 23 located reject fixtures), counterpart coverage
+  (**112 / 0** with ledger cross-validation and anti-vacuity scan),
+  datatype invariants, compiled documentation examples.
+- Demo battery: **32 golden demos byte-identical** to committed outputs
+  plus 2 intentional no-fixture dumps.
+
+See `docs/VERIFICATION.md` for reproduction commands.
+
+---
+
 ## v0.2 — Soundness fix: first-order restriction on sum payloads
 
 ### Summary
