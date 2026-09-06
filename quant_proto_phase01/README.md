@@ -1,6 +1,6 @@
 # Granthi
 
-**Higher-Order Quantum Programming via Unitary Wiring — v1.0.0**
+**Higher-Order Quantum Programming via Unitary Wiring — v1.0.1**
 
 Granthi is a research quantum programming language and compiler.  The
 public user interface is the ergonomic `let%source` Source syntax: linear

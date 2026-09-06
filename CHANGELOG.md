@@ -8,6 +8,45 @@ loosely — this is a research prototype; version bumps track soundness,
 compatibility, and observable-behavior changes rather than strict API
 churn.
 
+## [1.0.1] — 2026-09-06 — Release documentation and reproduction corrections
+
+Documentation, comments, reproduction scripts, and release presentation
+only — no compiler semantics, circuits, or golden outputs changed.
+
+### Fixed
+- `docs/LIMITATIONS.md §1b`: `ctrl_ho_eta_e2e` is no longer a blocked
+  width-3 example — the open-use Block path compiles it exactly
+  (blockdiag on the 80-dimensional selected boundary, zero leakage and
+  phase, both modes); the dense Strategy-B width restriction is retained
+  as the genuinely remaining fallback limit.
+- `docs/LIMITATIONS.md §10`: the branch inclusions/projections DO exist
+  (`SourcePortRef` / `BranchMainProjection` / completed-branch Blocks /
+  `CutFace`); the remaining restriction is precisely asymmetric CLOSED
+  dense synthesis.
+- `docs/LIMITATIONS.md §6` / `docs/ALIGN_NORMALIZATION.md`: the
+  23-command figure is the selector's inner pipeline; the complete
+  curried selector is the 25-gate optimization baseline; the applied
+  H/S/T selector already has an exact independent oracle (`rtol=0`,
+  zero leakage, both modes); a dense oracle for the unapplied abstract
+  function value remains deferred; 27-demo sweep corrected to 34.
+- `ocaml/demos/ctrl_ho_eta_e2e.ml`: obsolete compilation-failure header
+  replaced with the supported result (comments only; output unchanged).
+- `ARTIFACT.md`: native install now includes `ppxlib>=0.37`; Docker
+  results mount corrected to `$PWD/artifact/results`.
+- Artifact scripts: repository backend is prepended to an existing
+  `PYTHONPATH` instead of being skipped.
+- `docs/OCAML_DSL.md`: removed the nonexistent `weaken` example (marked
+  genuine pseudocode); `o_n_plusmap` signature corrected to the exact
+  `linear.mli` form (typed branches + partition evidence).
+- `python/demos/README.md`: the Raw oterm QSwitch and the 8-wire/0-gate
+  discussion classified as legacy/theory artifacts, with pointers to the
+  current Source qswitch and its compiled artifact.
+- Public references to unavailable files replaced with tracked documents
+  or "the accompanying paper".
+- Published the v1.0.0 GitHub Release from the existing tag.
+
+---
+
 ## [1.0.0] — 2026-09-05 — Granthi v1.0.0
 
 Granthi is now a usable research language.  The public user interface is

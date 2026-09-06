@@ -28,7 +28,7 @@ if command -v opam >/dev/null 2>&1; then
 fi
 
 # Ensure Python sees the source tree.
-export PYTHONPATH="${PYTHONPATH:-$ROOT/python/src}"
+export PYTHONPATH="$ROOT/python/src${PYTHONPATH:+:$PYTHONPATH}"
 
 pass=0
 fail=0

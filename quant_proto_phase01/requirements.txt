@@ -1,4 +1,4 @@
-# Canonical Python dependencies for the Granthi backend (v1.0.0).
+# Canonical Python dependencies for the Granthi backend (v1.0.x).
 # Install BEFORE running the OCaml suite: `dune test` invokes this
 # backend through the bridge.
 #

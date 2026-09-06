@@ -19,13 +19,20 @@ each splice, emitting `A† ; G_C ; A`. Nothing currently looks across
 neighbouring splices, so a chain emits an alignment and its inverse back to
 back, and several alignments in sequence stay as separate permutation boxes.
 
-The visible symptom is `ocaml/demos/curried_select_3_e2e`, which went from
-**13 to 23 commands** — ten `ToffoliBox`es, repeatedly on the same wire
-triple.
+The visible symptom is `ocaml/demos/curried_select_3_e2e`: the
+selector's INNER pipeline went from **13 to 23 commands** — ten
+`ToffoliBox`es, repeatedly on the same wire triple — and the complete
+curried selector (abstract 16-qubit form and applied H/S/T form alike)
+sits at a **25-gate** baseline.  That 25-gate figure is the optimization
+target for this task.
 
 Note what that demo does and does not establish. It establishes successful
 compilation and unchanged printed result lines. It does **not** itself compute
-a numerical semantic equivalence. The splice is correct by the tested Align
+a numerical semantic equivalence — but the APPLIED H/S/T selector already has
+an independent exact oracle (`rtol=0`, zero leakage, both materialization
+modes: `python/tests/test_release_safety.py::test_D_curried_selector_is_h_s_t`);
+what remains deferred with this task is a dense oracle for the UNAPPLIED
+abstract function value. The splice is correct by the tested Align
 mechanism — the exact framed-semantics (`rtol=0`) and zero-leakage assertions
 live in `python/tests/test_align_acceptance.py` — but a dedicated semantic
 oracle for the curried selector is part of this task, not evidence already in
@@ -55,7 +62,7 @@ This task is done when **all** of the following hold:
    must not regress from the value the correctness repair achieved.
 
 6. **Rerun every gate:** full Python suite (zero warnings), `dune test
-   --force`, the OCaml bridge round-trip, and the 27-demo sweep against
+   --force`, the OCaml bridge round-trip, and the 34-demo sweep against
    committed HEAD, with every diff classified as intended / serialization-only
    / semantic regression.
 

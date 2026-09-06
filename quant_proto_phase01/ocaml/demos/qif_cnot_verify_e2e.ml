@@ -135,7 +135,7 @@
       Reading A — expressible and correct.
       Reading B — ALSO expressible. Python's type_of checks widths and
                   domain/codomain but does NOT enforce linearity (see
-                  CLAUDE.md 'Linearity Checking'). The following literal
+                  docs/LIMITATIONS.md §4). The following literal
                   transcription of the paper's (⋆⋆), using PlusMap +
                   UndistL for qif and LetPair + Apply for the body,
 
@@ -150,8 +150,8 @@
 
                   with then_val = identity_Lam and else_val = X_Lam,
                   is accepted by assert_well_typed and compiled without
-                  error. Empirically observed (see scratchpad
-                  reader_qif_demo.py), the compiler produces:
+                  error. Empirically observed in a development
+                  reproduction, the compiler produces:
 
                     3 qubits, 1 gate: SWAP q[0], q[2]
                     PlusMap(k=1): 0 left gates, 0 right gates
@@ -175,8 +175,8 @@
                   (⋆⋆) — just plumbing + ancilla, no meaningful
                   operation at all. Typecheck accepts; compilation
                   succeeds; the result has none of the intended
-                  semantics. This is the exact miscompile mode CLAUDE.md
-                  warns about under 'Linearity Checking (Python)'.
+                  semantics. This is the exact miscompile mode documented
+                  in docs/LIMITATIONS.md §4 (Python linearity checking).
 
     Bottom line: the paper's warning targets a naïve typing rule (⋆) that
     would type Reading B as a valid term. Granthi's fix is the first-order

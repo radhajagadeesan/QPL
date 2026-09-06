@@ -6,19 +6,16 @@
         The ⊕-map's target is Plus(one ⊗ q, one ⊗ q) — first-order —
         so Guard 2 passes. This certifies Guard 2's target-only
         property (higher-order sources are not rejected).
-      - Compilation to a circuit: hits a documented pytket-imposed
-        limitation. See docs/LIMITATIONS.md §1b:
-          "Higher-order Apply/Lam chains inside PlusMap branches, when
-           the total width exceeds 3, present as opaque to auto-flatten
-           and Strategy A/B falls back onto pytket's Unitary3qBox
-           ceiling."
-        Our summand payload is width 3 (I ⊗ ((Q⊸Q) ⊗ Q) — endo=2, q=1),
-        tag=1, so total width = 4 > 3. No Unitary4qBox exists in pytket.
-        The compile error surfaces as a wire-alias symptom from Strategy A
-        trying to route around the width ceiling.
-      - The demo below reports both: type accepted, compilation blocked
-        by the documented pytket ceiling. Neither indicates a soundness
-        problem — the guard did its job.
+      - Compilation to a circuit: SUPPORTED. The open-use Block path
+        compiles the term from its completed branches; the emitted
+        circuit acts as blockdiag of the two branch actions on the
+        80-dimensional selected boundary, with zero leakage and zero
+        phase, in both materialization modes. Verified by
+        python/tests/test_release_safety.py::
+        test_F1_ctrl_ho_compiles_and_is_exact_on_its_selected_block.
+        (An earlier revision of this header reported a pytket width-3
+        compilation blocker; that predates the blockwise open-use Block
+        machinery. See docs/LIMITATIONS.md §1b and §10.)
 
     Type (curried, with f as a Granthi λ-arg):
       ctrl_ho : ((Q ⊸ Q) ⊸ (Q ⊸ Q)) ⊸ (Q ⊗ (Q ⊸ Q)) ⊸ (Q ⊸ Q ⊗ Q)

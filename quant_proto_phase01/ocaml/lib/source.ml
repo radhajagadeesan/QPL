@@ -639,9 +639,9 @@ module Datatype = struct
     | VNil -> []
     | VCons (head, tail) -> head :: to_list tail
 
-  (* The clean Source calculus fixes the LEFT-associated expansion
-     (narymonoidal.tex: bigplus_{i=0}^{n} A_i := (bigplus_{i=0}^{n-1}) ⊕ A_n;
-     datatypes-new.tex fixes Q_n to that expansion at base = I).  Flat tag
+  (* The clean Source calculus (accompanying paper) fixes the
+     LEFT-associated expansion bigplus_{i<=n} A_i := (bigplus_{i<n}) ⊕ A_n
+     and defines Q_n as that expansion at base = I.  Flat tag
      codes are the left-to-right leaf order under either association, so
      this choice is structural, and it is pinned structurally — not just
      behaviorally — by test_source_datatype_ops. *)
@@ -716,7 +716,7 @@ module Datatype = struct
     (*                                                                *)
     (* The pipeline is a single flat dispatch over the canonical       *)
     (* LEFT-associated representation fixed by the clean calculus       *)
-    (* (narymonoidal.tex: bigplus_{i<=n} := (bigplus_{i<n}) ⊕ A_n);     *)
+    (* (accompanying paper: bigplus_{i<=n} := (bigplus_{i<n}) ⊕ A_n);   *)
     (* branch order is declaration order, the tag survives, and every  *)
     (* branch consumes the identical complete nominal linear context.  *)
     (* -------------------------------------------------------------- *)

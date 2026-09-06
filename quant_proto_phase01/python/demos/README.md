@@ -97,19 +97,20 @@ PYTHONPATH=python/src python python/demos/qswitch_abstract_demo.py
 4. LetPair structure for destructuring
 5. Instantiation with H, S
 
-### QSwitch (OCaml oterm) — `ocaml/demos/abstract_qswitch_oterm_e2e.ml`
+### QSwitch (LEGACY Raw oterm) — `ocaml/demos/abstract_qswitch_oterm_e2e.ml`
 
-OCaml surface language demo showing higher-order QSwitch as a lambda term:
+**Legacy Raw-layer artifact**, retained as an independent oracle and
+golden regression.  It builds the higher-order QSwitch with Raw
+open-term constructors (Lam, LetPair, Var, App, PlusMap) — this is NOT
+current Source syntax.  The current qswitch is the four-line
+`let%source` program in `docs/PROGRAMMING_GUIDE.md` §5, compiled by
+`ocaml/examples/doc_examples.ml`, with its concise counterpart and
+semantic checks in `ocaml/counterparts/`.
 
-**Run:**
+**Run (legacy):**
 ```bash
 cd ocaml && dune exec demos/abstract_qswitch_oterm_e2e.exe
 ```
-
-**What it shows:**
-1. QSwitch type: `(Q→Q) ⊗ (Q→Q) ⊗ Bool ⊗ Q → Bool ⊗ Q`
-2. Full source language: Lam, LetPair, Var, App, PlusMap
-3. Instantiation with concrete gate pairs and unitary verification
 
 ### QSwitch (abstract circuit) — `qswitch_abstract_circuit_theory_demo.py` (THEORY ONLY)
 
@@ -134,7 +135,13 @@ PYTHONPATH=python/src python python/demos/qswitch_abstract_circuit_theory_demo.p
 5. Quantum CASE circuit with anti-control pattern
 6. Abstract function application (Apply as pure wiring)
 
-**Key insight:** The abstract QSwitch is **pure routing + control** with 0 gates. The control qubit `b` passes through to the output.
+**Key insight (theory artifact):** in this THEORY-ONLY presentation the
+abstract QSwitch is pure routing + control with 0 gates and the control
+qubit passes through.  This is a legacy pedagogical view of the Raw
+8-wire encoding, not a description of the current compiled artifact —
+the current Source qswitch compiles to a real circuit (the H/S instance:
+4 wires, 6 gates; see `docs/PROGRAMMING_GUIDE.md` and
+`ocaml/examples/doc_examples.ml`).
 
 ### QSwitch (instantiation) — `qswitch_instantiation_demo.py`
 

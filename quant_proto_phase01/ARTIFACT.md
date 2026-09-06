@@ -38,11 +38,11 @@ Exit code 0 = all four checks passed.
 ## 3. Full Reproduction (~5–10 minutes)
 
 ```bash
-docker run --rm -v "$PWD/results:/work/artifact/results" granthi-ae \
+docker run --rm -v "$PWD/artifact/results:/work/artifact/results" granthi-ae \
     artifact/reproduce.sh
 ```
 
-Runs the complete v1.0.0 verification surface: `dune build`, the full
+Runs the complete v1.0.x verification surface: `dune build`, the full
 `dune runtest` (including the `let%source` frontend compile-pass/reject
 harness, the 34-row Source counterpart coverage harness, datatype
 invariants, and the compiled documentation examples), then **all 34
@@ -61,7 +61,7 @@ property the artifact verifies. Verification is via the demo's own printed
 assertions (`PASS`/`SUCCESS`/composition-law checks/`eq_circ` fidelity checks)
 plus a byte-for-byte `diff` against a committed reference output.
 
-Sections refer to `compiler_new.tex` (the paper source).
+Sections refer to the accompanying paper.
 
 | # | Paper location | Example | Demo | Claim verified |
 |---|---|---|---|---|
@@ -117,7 +117,7 @@ The system is designed to be extended. See:
 - `docs/API_REFERENCE.md` — reference documentation.
 - `docs/LIMITATIONS.md` — honest inventory of what is and is not supported.
 - `docs/OCAML_DSL.md` — the sealed Source API and internal Raw layers.
-- `docs/PROGRAMMING_GUIDE.md` — the `let%source` user syntax (v1.0.0
+- `docs/PROGRAMMING_GUIDE.md` — the `let%source` user syntax (the
   public interface), with examples compiled by
   `ocaml/examples/doc_examples.ml`.
 
@@ -166,7 +166,7 @@ sudo apt install -y opam build-essential git
 opam init -y --disable-sandboxing
 opam switch create 4.14.2 --yes
 eval $(opam env)
-opam install -y dune.3.14.0
+opam install -y dune.3.14.0 'ppxlib>=0.37'
 
 # 2. Python 3.11 (or 3.12) venv with pytket
 python3 -m venv venv

@@ -1,5 +1,39 @@
 # Release Notes
 
+## v1.0.1 — Documentation and reproduction corrections
+
+A patch release: documentation, comments, reproduction scripts, and
+release presentation only.  No compiler semantics, circuit output,
+golden files, or the v1.0.0 tag were touched.
+
+Highlights:
+
+- **Limitations brought up to date with the shipped compiler**:
+  `ctrl_ho_eta_e2e` compiles exactly through the open-use Block path
+  (80-dimensional selected boundary, zero leakage and phase, both
+  modes) and is no longer listed as width-blocked; §10 now records the
+  implemented `SourcePortRef` / `BranchMainProjection` /
+  completed-Block / `CutFace` machinery, retaining only the real
+  asymmetric closed dense-synthesis restriction.
+- **Curried-selector record corrected**: 23 commands is the inner
+  pipeline; the complete selector is the 25-gate optimization baseline;
+  the applied H/S/T selector already carries an exact independent
+  oracle (`rtol=0`, zero leakage, both materialization modes); a dense
+  oracle for the unapplied abstract function value remains deferred
+  with Align normalization.
+- **Reviewer instructions repaired**: `ppxlib>=0.37` added to the
+  native install; Docker results mount corrected; `PYTHONPATH`
+  prepends the repository backend.
+- **Stale API/example docs fixed**: no `weaken`, exact `o_n_plusmap`
+  signature, legacy Raw QSwitch clearly labeled with pointers to the
+  current Source program; no public reference to unavailable files.
+- v1.0.0 published as a GitHub Release from its immutable tag.
+
+The v1.0.0 verification baselines are unchanged and still govern
+(`docs/VERIFICATION.md`).
+
+---
+
 ## v1.0.0 — Granthi as a usable research language
 
 ### Summary

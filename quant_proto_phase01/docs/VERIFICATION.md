@@ -1,6 +1,6 @@
 # Verification and Reproduction
 
-How to reproduce Granthi v1.0.0's verification results from a clean
+How to reproduce Granthi's verification results (v1.0.x) from a clean
 checkout, and what to expect.  Counts below are the recorded baseline at
 the v1.0.0 release (2026-09-05); suites grow over time, so treat them as
 "at least" rather than frozen.

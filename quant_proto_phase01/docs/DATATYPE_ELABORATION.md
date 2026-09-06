@@ -15,10 +15,10 @@ structural permutation / flat dispatch on the hidden Unit-sum representation
 
 ## Canonical representation decision (corrected)
 
-The designated authority is the CLEAN Source calculus, not the older
-developer note: `narymonoidal.tex` fixes the **left-associated**
-expansion `bigplus_{i=0}^{n} A_i := (bigplus_{i=0}^{n-1} A_i) ⊕ A_n`,
-and `datatypes-new.tex` fixes `Q_n` to that expansion at base `I`.
+The designated authority is the CLEAN Source calculus of the
+accompanying paper, which fixes the **left-associated** expansion
+`bigplus_{i=0}^{n} A_i := (bigplus_{i=0}^{n-1} A_i) ⊕ A_n` and defines
+`Q_n` as that expansion at base `I`.
 `Source.Datatype.unit_sum` is therefore left-associated
 (`unit_sum n = Plus (unit_sum (n-1), Unit)`), and the flat sums built
 by `cases`/`cases0` mirror it.  (An older untracked developer

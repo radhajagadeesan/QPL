@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full reproduction driver for Granthi v1.0.0.
+# Full reproduction driver for Granthi v1.0.x.
 #
 # Covers the complete verification surface:
 #   1. dune build
@@ -29,7 +29,7 @@ if command -v opam >/dev/null 2>&1; then
     eval "$(opam env)"
 fi
 
-export PYTHONPATH="${PYTHONPATH:-$ROOT/python/src}"
+export PYTHONPATH="$ROOT/python/src${PYTHONPATH:+:$PYTHONPATH}"
 
 MANIFEST="$ROOT/ocaml/demos/manifest.tsv"
 
@@ -40,7 +40,7 @@ fail=0
 hr() { printf '%s\n' "----------------------------------------------------------------"; }
 
 echo "=========================================================="
-echo "  Granthi v1.0.0 — full reproduction"
+echo "  Granthi — full reproduction (v1.0.x verification surface)"
 echo "=========================================================="
 echo "Working directory: $ROOT"
 echo "Results directory: $RESULTS"
@@ -133,7 +133,7 @@ echo ""
 echo "=========================================================="
 printf 'Summary: %d golden demos byte-identical, %d intentional no-fixture dumps ran, %d failures\n' \
     "$pass_golden" "$pass_nofixture" "$fail"
-echo "Expected at v1.0.0: 32 golden, 2 no-fixture, 0 failures."
+echo "Expected baseline (recorded at v1.0.0): 32 golden, 2 no-fixture, 0 failures."
 echo "=========================================================="
 
 if [ "$fail" -eq 0 ] && [ "$pass_golden" -eq 32 ] && [ "$pass_nofixture" -eq 2 ]; then

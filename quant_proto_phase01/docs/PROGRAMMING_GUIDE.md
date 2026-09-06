@@ -1,6 +1,6 @@
 # Granthi Programming Guide
 
-**The authoritative guide to writing Granthi programs (v1.0.0).**
+**The authoritative guide to writing Granthi programs (v1.0.1).**
 
 Granthi programs are written in the ergonomic `let%source` Source syntax:
 ordinary OCaml syntax, checked and elaborated by a PPX rewriter into the

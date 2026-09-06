@@ -4,8 +4,8 @@
 
    Conventions pinned here:
    - the hidden representation is the canonical LEFT-associated expansion
-     fixed by the clean calculus (narymonoidal.tex:
-     bigplus_{i<=n} A_i := (bigplus_{i<n} A_i) ⊕ A_n), pinned
+     fixed by the clean calculus of the accompanying paper
+     (bigplus_{i<=n} A_i := (bigplus_{i<n} A_i) ⊕ A_n), pinned
      STRUCTURALLY below through the serialized representation — an exact
      tree, which flattening cannot fake;
    - right-associated legacy oracles are related through the explicit

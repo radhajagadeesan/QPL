@@ -4,7 +4,7 @@
 v1.0.0.  Other documents describe designs or history; when they mention a
 restriction, this file's statement governs.
 
-Last updated: 2026-09-05 (v1.0.0).
+Last updated: 2026-09-06 (v1.0.1).
 
 ---
 
@@ -88,21 +88,27 @@ Strategy B requires total width w = k + payload_width ≤ 3.
 **What this blocks:**
 
 - Opaque branches on deeply left-skewed sums with 6+ summands where the
-  outer PlusMap has a 5/1 or worse split.
-- **Higher-order Apply/Lam chains inside PlusMap branches, when the total
-  width (tag + max payload) exceeds 3.** Compiled terms whose branches
-  contain `oapp`/`olam` cascades (e.g., `oapp (ovar "f") (ovar "h") ...`
-  where `f` is a Granthi λ-bound function value) present as opaque
-  branches to the auto-flatten pass; the fallback (Strategy A/B) then
-  hits the width-3 ceiling for any sum whose input summand exceeds
-  1-qubit payload. Concrete example:
-  `ocaml/demos/ctrl_ho_eta_e2e.ml` — the `oplusmap` there has summand
-  payload width 3 (`I ⊗ ((Q⊸Q) ⊗ Q)`) and hits this ceiling.
+  outer PlusMap has a 5/1 or worse split, **when they reach the dense
+  Strategy-B fallback**.
+- Higher-order Apply/Lam chains inside PlusMap branches are opaque to
+  auto-flatten, but they no longer end at this ceiling in the shipped
+  path: the blockwise open-use Block machinery compiles them from their
+  completed branches.  The former blocked example,
+  `ocaml/demos/ctrl_ho_eta_e2e.ml` (summand payload `I ⊗ ((Q⊸Q) ⊗ Q)`,
+  total width 4), **now compiles exactly**: the emitted circuit acts as
+  the block-diagonal of its completed branches on the 80-dimensional
+  selected boundary, with zero leakage and zero phase, in both
+  materialization modes
+  (`python/tests/test_release_safety.py::test_F1_ctrl_ho_compiles_and_is_exact_on_its_selected_block`).
+- The width-3 ceiling remains real for constructions that genuinely fall
+  through to the dense Strategy-B synthesis (no completed-Block route
+  and an asymmetric split); no currently shipped demo exercises that
+  fallback at width > 3.
 - Earlier phrasing "OCaml pipeline's elaborated terms are always
   decomposable" was too strong. Precise statement: **first-order
   elaborated terms are always decomposable**; higher-order branches
-  (Apply chains under λ) are opaque to auto-flatten and share the
-  Python-API branch limit.
+  (Apply chains under λ) are opaque to auto-flatten and take the
+  completed-Block path instead.
 
 **OCaml-side:** The `omap0`/`oplusmap0` smart constructors accept nested Plus summands
 (e.g., `W = I ⊕ Bool` where `Bool = I⊕I`). For flat n-ary sums, prefer `omapn`/`control`.
@@ -243,15 +249,19 @@ for the full design and `docs/COMPILER_INVARIANTS.md` for the invariants.
 
 Known remaining inefficiency: adjacent Aligns are not yet cancelled, so a
 chain of splices can emit an alignment and its inverse back to back
-(`ocaml/demos/curried_select_3_e2e` goes from 13 to 23 commands). That
-demo establishes successful compilation and unchanged printed result
-lines; it does not itself compute a numerical semantic equivalence. The
-splice is correct by the tested Align mechanism (see the exact
-framed-semantics and zero-leakage assertions in
-`python/tests/test_align_acceptance.py`); a dedicated semantic oracle for
-the curried selector is deferred together with Align normalization, and
-is tracked in `docs/ALIGN_NORMALIZATION.md`. This is a missing peephole,
-not a soundness gap.
+(the selector's INNER pipeline grew from 13 to 23 commands; the
+complete curried selector — abstract or applied — compiles at **25
+gates**, which is the optimization baseline). The applied H/S/T selector
+has an **independent exact semantic oracle**: the framed action equals
+the expected H/S/T dispatch at `rtol=0` with zero leakage, in both
+materialization modes
+(`python/tests/test_release_safety.py::test_D_curried_selector_is_h_s_t`),
+alongside the Align mechanism's own exact framed-semantics and
+zero-leakage assertions (`python/tests/test_align_acceptance.py`).  A
+dense semantic oracle for the UNAPPLIED abstract function value (the
+16-qubit curried λ itself) remains deferred with Align normalization and
+is tracked in `docs/ALIGN_NORMALIZATION.md`.  The missing item is a
+peephole plus one abstract-value oracle, not a soundness gap.
 
 ---
 
@@ -366,10 +376,17 @@ U j_i^- = j_i^+ \gamma_i U_i,
 $$
 
 followed by the fixed canonical bijection from unused source words to
-unused target words. This is deferred rather than approximated because
-$j_i^\pm$ do not yet exist explicitly in the implementation (index maps are
-computed inline), and introducing ad-hoc frame conversions in their place
-is exactly the class of defect this document exists to stop.
+unused target words.  The branch inclusions/projections DO now exist
+explicitly: the implementation records `SourcePortRef` provenance,
+per-polarity `BranchMainProjection`s, completed-branch Blocks, and
+`CutFace` interfaces (`python/src/compile/frames.py`), and the open-use
+Block path compiles through them — this is exactly how
+`ctrl_ho_eta_e2e` now compiles as blockdiag on its 80-dimensional
+selected boundary with zero leakage and phase (§1b).  The remaining
+restriction is precisely the **asymmetric CLOSED dense synthesis**
+case: closed blocks whose completed source and target frames do not
+coincide, where the currently recorded authority is still insufficient
+and the term is rejected before emission rather than approximated.
 
 Tests: `python/tests/test_nplusmap_frame_dispatch.py` — canonical frame,
 reassociation invariance, open-branch routing, rejection before emission,

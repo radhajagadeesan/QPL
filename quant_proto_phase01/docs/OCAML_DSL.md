@@ -425,13 +425,15 @@ val app : ('g1, [`Lolli of 'a * 'b]) prog -> ('g2, 'a) prog
 
 If you try to use a variable twice, OCaml's type checker rejects it:
 
-```ocaml
-(* This won't compile - x would be used twice *)
-let bad = pair var var  (* Type error! *)
-
-(* This works - each var consumes its context slot *)
-let good = pair var (weaken var)  (* Different context positions *)
+```text
+(* pseudocode illustration — there is no `weaken` in the API *)
+pair v v          (* rejected: the same context slot would be consumed twice *)
+pair v w          (* accepted: v and w occupy different context slots *)
 ```
+
+There is deliberately no weakening operation anywhere in the API; every
+context slot is consumed exactly once, and the type of `pair` above makes
+duplicate consumption a type error.
 
 ### Soundness Properties
 
@@ -531,7 +533,9 @@ use the oterm-level `o_n_plusmap` primitive. This is the n-ary analog of binary
 asymmetric Z_n (n ≠ power of 2) cleanly without nested-binary tag mismatches.
 
 ```ocaml
-val o_n_plusmap : 'a ty array -> 'c ty -> ('g, 'c) oterm array
+val o_n_plusmap : 'c ty
+              -> ('parts, 'c) branches
+              -> ('g, 'parts) partition
               -> ('g, [`Lolli of 'sum_in * 'sum_out]) oterm
 ```
 
