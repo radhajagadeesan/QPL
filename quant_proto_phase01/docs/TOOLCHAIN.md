@@ -115,9 +115,12 @@ The Python compiler performs direct recursive-descent over the Core IR, producin
 
 ```bash
 cd quant_proto_phase01
-PYTHONPATH=python/src python python/demos/qswitch_demo.py
 PYTHONPATH=python/src pytest  # Run tests
 ```
+
+The Python layer is exercised through the OCaml pipeline (every demo in
+`ocaml/demos/` compiles through it) and through the pytest suite; it is
+not driven directly by hand-written Python programs.
 
 ### Compilation Process
 
@@ -183,8 +186,7 @@ quant_proto_phase01/
 │   │   │   └── to_pytket.py   # Main compiler
 │   │   └── typing_/
 │   │       └── check.py       # Type inference
-│   ├── tests/                 # pytest test suite
-│   └── demos/                 # Python demos with outputs
+│   └── tests/                 # pytest test suite
 │
 └── docs/                      # Documentation
 ```
@@ -229,14 +231,12 @@ from compile.to_pytket import compile
 
 ### Running Demos
 
-```bash
-# Python demos
-cd quant_proto_phase01
-PYTHONPATH=python/src python python/demos/qswitch_demo.py
-PYTHONPATH=python/src python python/demos/exp_twist_demo.py
+All demos are PPX/Source-authored programs compiled through the full
+pipeline (OCaml → Bridge → Python → circuit):
 
-# OCaml E2E demos (full pipeline to circuits)
-cd ocaml
+```bash
+cd quant_proto_phase01/ocaml
+dune exec demos/source_quickstart_e2e.exe
 dune exec demos/abstract_qswitch_oterm_e2e.exe
 dune exec demos/zn_controlled_phase_e2e.exe
 ```
@@ -250,8 +250,7 @@ dune exec demos/zn_controlled_phase_e2e.exe
 | Build OCaml | `cd ocaml && dune build` |
 | Run OCaml tests | `cd ocaml && dune test` |
 | Run Python tests | `cd quant_proto_phase01 && PYTHONPATH=python/src pytest` |
-| Run Python demo | `PYTHONPATH=python/src python python/demos/<demo>.py` |
-| Run OCaml demo | `cd ocaml && dune exec demos/<demo>.exe` |
+| Run a demo (Source program) | `cd ocaml && dune exec demos/<demo>.exe` |
 | Type-check OCaml | `cd ocaml && dune build @check` |
 
 ---

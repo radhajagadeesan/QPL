@@ -496,7 +496,10 @@ PYTHONPATH=python/src python my_program.py
 
 - `API_REFERENCE.md` — Complete API signatures
 - `IR_DESIGN.md` — IR architecture and compilation semantics
-- `python/demos/qswitch_demo.py` — Working higher-order example
-- `python/demos/qswitch_abstract_circuit_theory_demo.py` — Abstract QSwitch circuit diagrams (no instantiation)
-- `python/demos/qswitch_instantiation_demo.py` — QSwitch[H,H] vs QSwitch[H,S] with simplification analysis
-- `ocaml/demos/` — OCaml E2E demos (full pipeline to circuits)
+- `ocaml/demos/` — the demo suite: PPX/Source-authored programs through
+  the full pipeline (e.g. `abstract_qswitch_oterm_e2e.ml`,
+  `qswitch_instantiated_e2e.ml`, `source_quickstart_e2e.ml`)
+- The working abstract QSwitch example is the PPX/Source program
+  `cp_qswitch` (`ocaml/counterparts/surface_programs.ml`), sealed as the
+  `qswitch_abstract_sealed` fixture and compiled to its 8-wire carrier
+  by `python/tests/test_lam_direct_boundary.py`

@@ -314,8 +314,7 @@ not exposed through the OCaml surface, not carried by the OCaml → Bridge
 JSON encoding, and not reachable from the OCaml-only entry point that
 the artifact prescribes for user-facing use. They remain in the Python
 term IR only to keep the Python direct-API test suite
-(`python/tests/test_encode_decode.py`) and the Python-side
-`case_demo.py` intact.
+(`python/tests/test_encode_decode.py`) intact.
 
 Both class docstrings carry an explicit `LEGACY` marker pointing at
 this entry. The reviewer (R1)'s ART-7 concern is addressed by explicit
@@ -393,26 +392,10 @@ Tests: `python/tests/test_nplusmap_frame_dispatch.py` — canonical frame,
 reassociation invariance, open-branch routing, rejection before emission,
 asymmetric-frame rejection.
 
-## 11. Legacy Python direct-API demos and `Pair(function value, data)`
+## 11. `Pair(function value, data)` at a Python-API root
 
-Three **legacy Python direct-API demos** fail identically on v1.0.0 and
-on the current tree (verified on both; unrelated to the 2026-09 Lam
-allocation repair):
-
-- `python/demos/qswitch_abstract_demo.py` and
-  `python/demos/qswitch_term_demo.py` — `AlignError: cannot align frames
-  of different semantic dimensions (4 vs 3)`;
-- `python/demos/short_circuit_demo.py` — `UnsupportedFrame: X on
-  wire(s) [0] does not preserve the code space of (I ⊕ (I ⊕ I))` (the
-  fail-closed primitive-frame gate).
-
-These are Python-API programs predating the boundary-frame machinery;
-the supported demo battery is the **OCaml/Source E2E set**
-(`ocaml/demos/`, all green against their goldens). The remaining
-Python demos run; these three fail closed rather than miscompiling.
-
-Separately, compiling `Pair(f_value, data)` — a tensor pair whose first
-component is a function value — at a Python-API root fails closed with
+Compiling `Pair(f_value, data)` — a tensor pair whose first component
+is a function value — at a Python-API root fails closed with
 `ProvenanceError: route par^-: wire 0 is placed twice` (also present on
 v1.0.0). This is the same `par^-` route class as the recorded "Source
 higher-order specialization" limitation in §0 above (applying the
@@ -422,7 +405,7 @@ side. The same shapes are reachable and green through supported routes
 only these roots hit the par-route collision.
 
 **Status:** pre-existing, fail-closed, out of the OCaml-only entry
-point. Not fixed by (and not a regression of) the Lam repair.
+point.
 
 ---
 

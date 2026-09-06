@@ -2,7 +2,7 @@
 
     Full pipeline: OCaml Linear DSL -> Bridge -> Python compile -> Circuit
 
-    Mirrors the Python exp_twist_demo.py. Verifies:
+    Verifies:
     1. TwistTen(Q,Q) compiles (sanity check)
     2. exp_i(pi/4, twist) compiles via direct unitary synthesis
     3. exp_i(pi/4, twist) ; exp_i(pi/4, twist) composition
@@ -77,7 +77,6 @@ let () =
   banner "exp(i*theta*Twist) E2E Demo";
   print_endline "";
   print_endline "Full pipeline: OCaml Linear DSL -> Bridge -> Python compile -> Circuit";
-  print_endline "Mirrors the Python exp_twist_demo.py verification.";
 
   (* --- Part 1: TwistTen(Q,Q) sanity check --- *)
   banner "Part 1: TwistTen(Q,Q) Compilation (sanity check)";

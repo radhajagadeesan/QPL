@@ -8,6 +8,33 @@ loosely — this is a research prototype; version bumps track soundness,
 compatibility, and observable-behavior changes rather than strict API
 churn.
 
+## [Unreleased]
+
+### Removed
+- The hand-written Python demo layer (`quant_proto_phase01/python/demos/`,
+  22 files: 15 demo scripts, the `demo_utils.py` runner, `README.md`
+  index, `verify_abstract_qswitch.py`, an HTML animation, and three
+  output snapshots). Demos are the PPX/Source-authored suite in
+  `ocaml/demos/`, compiled through the full OCaml → Bridge → Python
+  pipeline; the raw-Python authoring surface those scripts demonstrated
+  was already superseded and deprecated for user-facing use.
+  Historical detail: three of the removed scripts had failed closed
+  since before v1.0.0 because they predated the current representation —
+  `qswitch_abstract_demo.py` and `qswitch_term_demo.py` built the
+  QSwitch control-payload pair at the dimensionally invalid type
+  `I ⊗ (I ⊕ Q)` (dimension 3, via `DistR`) instead of the correct
+  `((I ⊕ I) ⊗ Q) → ((I ⊗ Q) ⊕ (I ⊗ Q))` (dimension 4, via `DistL`),
+  and `short_circuit_demo.py` applied a raw `X` to a 3-label
+  `(I ⊕ (I ⊕ I))` frame. These were obsolete demos, not compiler
+  defects; the compiler's refusals were correct. The working abstract
+  QSwitch example is the PPX/Source program `cp_qswitch`
+  (`ocaml/counterparts/surface_programs.ml`), sealed as the
+  `qswitch_abstract_sealed` fixture and exercised by
+  `python/tests/test_lam_direct_boundary.py`.
+- The lineage line "Mirrors the Python exp_twist_demo.py verification."
+  from `ocaml/demos/exp_twist_e2e.ml` and its golden output
+  (descriptive text only; the demo's verified semantics are unchanged).
+
 ## [1.0.1] — 2026-09-06 — Release documentation and reproduction corrections
 
 Documentation, comments, reproduction scripts, and release presentation

@@ -14,8 +14,11 @@ The Python code here is Granthi's **low-level compilation backend**:
 - `src/compile/to_pytket.py` — the compiler from term IR to pytket circuits.
 - `src/typing_/check.py` — width and domain/codomain checking.
 - `tests/` — regression tests for the backend.
-- `demos/` — legacy Python demonstrations (kept for backend testing; not the
-  recommended way to write programs).
+
+Demonstrations live in `ocaml/demos/`: every demo is a PPX/Source-authored
+program compiled through the full OCaml → Bridge → Python pipeline. (The
+former hand-written Python demo directory was removed together with the
+superseded raw-Python authoring surface.)
 
 ## What this layer is not
 

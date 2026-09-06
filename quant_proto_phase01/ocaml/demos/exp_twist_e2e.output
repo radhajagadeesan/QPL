@@ -4,7 +4,6 @@
 ==========================================================================
 
 Full pipeline: OCaml Linear DSL -> Bridge -> Python compile -> Circuit
-Mirrors the Python exp_twist_demo.py verification.
 
 ==========================================================================
   Part 1: TwistTen(Q,Q) Compilation (sanity check)
